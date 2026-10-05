@@ -4,3 +4,4 @@ build-*/
 *.xcuserstate
 xcuserdata/
 imgui.ini
+data/happy_buddha.ply
