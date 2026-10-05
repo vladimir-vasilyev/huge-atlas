@@ -14,6 +14,12 @@ Moments& Moments::operator-=(const Moments& o)
     return *this;
 }
 
+Moments& Moments::operator*=(double w)
+{
+    area *= w; first *= w; second *= w; areaNormal *= w;
+    return *this;
+}
+
 Moments triangleMoments(const EVec3& a, const EVec3& b, const EVec3& c, const EVec3& n)
 {
     Moments m;

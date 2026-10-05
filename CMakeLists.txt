@@ -70,6 +70,8 @@ add_library(vsa_core STATIC
     src/core/Proxy.cpp
     src/core/Partition.h
     src/core/Partition.cpp
+    src/core/Operations.h
+    src/core/Operations.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
@@ -89,6 +91,10 @@ add_test(NAME metrics COMMAND test_metrics ${CMAKE_SOURCE_DIR}/data/cube.obj)
 
 add_executable(test_partition tests/test_partition.cpp)
 target_link_libraries(test_partition PRIVATE vsa_core)
+add_executable(test_operations tests/test_operations.cpp)
+target_link_libraries(test_operations PRIVATE vsa_core)
+add_test(NAME operations COMMAND test_operations)
+
 add_test(NAME partition COMMAND test_partition ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
 
 # ---------------------------------------------------------------- Application

@@ -34,6 +34,7 @@ struct Moments {
 
     Moments& operator+=(const Moments& o);
     Moments& operator-=(const Moments& o);
+    Moments& operator*=(double w);   // weight: the triangle counts w times
     friend Moments operator+(Moments a, const Moments& b) { return a += b; }
     friend Moments operator-(Moments a, const Moments& b) { return a -= b; }
 

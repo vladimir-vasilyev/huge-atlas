@@ -23,14 +23,6 @@ struct QueueItem {
 
 using Queue = std::priority_queue<QueueItem>;
 
-void recomputeRegions(const VSAInput& in, VSAState& s)
-{
-    s.regions.assign(s.proxies.size(), Moments());
-    for (size_t f = 0; f < s.label.size(); ++f)
-        if (s.label[f] >= 0)
-            s.regions[s.label[f]] += in.moments[f];
-}
-
 // Claims `face` for `proxy` and queues its unlabeled neighbors.
 void claim(const VSAInput& in, VSAState& s, Queue& q, int face, int proxy)
 {
@@ -75,6 +67,25 @@ std::vector<int> minErrorFaces(const VSAInput& in, const VSAState& s, const std:
 
 } // namespace
 
+void recomputeRegions(const VSAInput& in, VSAState& s)
+{
+    s.regions.assign(s.proxies.size(), Moments());
+    for (size_t f = 0; f < s.label.size(); ++f)
+        if (s.label[f] >= 0)
+            s.regions[s.label[f]] += in.moments[f];
+}
+
+void setSeeds(const VSAInput& in, VSAState& s, const std::vector<int>& seedFaces)
+{
+    s.seedFace = seedFaces;
+    s.proxies.clear();
+    for (int f : s.seedFace)
+        s.proxies.push_back(fitProxy(s.metric, in.moments[f]));
+    s.label.clear();
+    s.regions.assign(s.proxies.size(), Moments());
+    s.energyHistory.clear();
+}
+
 void initRandomSeeds(const VSAInput& in, VSAState& s, int k, uint64_t rngSeed)
 {
     std::vector<int> candidates;
@@ -94,13 +105,7 @@ void initRandomSeeds(const VSAInput& in, VSAState& s, int k, uint64_t rngSeed)
         std::swap(candidates[i], candidates[d(rng)]);
     }
 
-    s.proxies.clear();
-    s.seedFace.assign(candidates.begin(), candidates.begin() + k);
-    for (int f : s.seedFace)
-        s.proxies.push_back(fitProxy(s.metric, in.moments[f]));
-    s.label.clear();
-    s.regions.assign(s.proxies.size(), Moments());
-    s.energyHistory.clear();
+    setSeeds(in, s, std::vector<int>(candidates.begin(), candidates.begin() + k));
 }
 
 int partition(const VSAInput& in, VSAState& s)

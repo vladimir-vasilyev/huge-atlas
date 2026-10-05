@@ -26,6 +26,12 @@ struct VSAState {
     int k() const { return int(proxies.size()); }
 };
 
+// Installs the given faces as seeds (a proxy is fitted to each) and clears the labels.
+void setSeeds(const VSAInput& in, VSAState& s, const std::vector<int>& seedFaces);
+
+// Recomputes s.regions from the labels (unassigned faces are skipped).
+void recomputeRegions(const VSAInput& in, VSAState& s);
+
 // Picks min(k, #non-degenerate faces) distinct random faces as seeds and fits a proxy to each.
 // Deterministic for a given rng seed. Clears the labels.
 void initRandomSeeds(const VSAInput& in, VSAState& s, int k, uint64_t rngSeed);
@@ -61,6 +67,7 @@ struct LloydStepInfo {
 struct LloydResult {
     int  iterations = 0;
     bool converged = false;
+    int  teleports = 0;             // accepted proxy teleportations (runLloydTeleport)
 };
 
 // One iteration: partition + fit. Appends the energy to s.energyHistory.
