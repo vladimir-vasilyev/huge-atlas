@@ -230,12 +230,101 @@ static void testHemisphereFile(const std::string& path)
     }
 }
 
+static Fixture makeCubeFixture()
+{
+    TriMesh m;
+    addCube(m, 0.0);
+    return Fixture(std::move(m));
+}
+
+static void testLloydCube()
+{
+    const Fixture fx = makeCubeFixture();
+    const VSAInput in = fx.input();
+
+    // seeds on six different sides: already a fixed point, energy 0
+    VSAState s;
+    s.seedFace = {0, 2, 4, 6, 8, 10};
+    for (int f : s.seedFace) s.proxies.push_back(fitProxy(s.metric, fx.fm[f]));
+    const LloydResult r = runLloyd(in, s);
+    CHECK(r.converged && r.iterations <= 3);
+    CHECK(s.k() == 6);
+    CHECK_NEAR(totalEnergy(s), 0.0, 1e-12);
+    CHECK(int(s.energyHistory.size()) == r.iterations);
+
+    // random seeds can get stuck (two seeds on one side), but some seeds must reach 6 planar sides
+    int perfect = 0;
+    for (uint64_t seed = 1; seed <= 100; ++seed) {
+        VSAState t;
+        initRandomSeeds(in, t, 6, seed);
+        const LloydResult rr = runLloyd(in, t);
+        CHECK(rr.converged);
+        CHECK(allLabeled(t) && regionsConnected(fx.mesh, t));
+        if (totalEnergy(t) < 1e-12) ++perfect;
+    }
+    CHECK(perfect >= 1);
+
+    // L2 metric: the same one-seed-per-side start is also a fixed point
+    VSAState s2;
+    s2.metric = Metric::L2;
+    s2.seedFace = {0, 2, 4, 6, 8, 10};
+    for (int f : s2.seedFace) s2.proxies.push_back(fitProxy(s2.metric, fx.fm[f]));
+    CHECK(runLloyd(in, s2).converged);
+    CHECK_NEAR(totalEnergy(s2), 0.0, 1e-12);
+}
+
+static void testLloydBump()
+{
+    Fixture fx(makeBump(16));
+    const VSAInput in = fx.input();
+    for (Metric me : {Metric::L2, Metric::L21}) {
+        for (uint64_t seed = 1; seed <= 4; ++seed) {
+            VSAState s;
+            s.metric = me;
+            initRandomSeeds(in, s, 8, seed);
+            const LloydResult r = runLloyd(in, s);
+            CHECK(r.converged && r.iterations < 100);
+            CHECK(int(s.energyHistory.size()) == r.iterations);
+            CHECK(allLabeled(s) && regionsConnected(fx.mesh, s));
+            // iterating improves on the first partition
+            CHECK(s.energyHistory.back() <= s.energyHistory.front() + 1e-12);
+
+            VSAState t;
+            t.metric = me;
+            initRandomSeeds(in, t, 8, seed);
+            runLloyd(in, t);
+            CHECK(t.label == s.label && t.energyHistory == s.energyHistory);   // deterministic
+        }
+    }
+
+    // stopping rules in isolation
+    VSAState s;
+    LloydParams p;
+    p.patience = 3; p.relTolerance = 1e-3;
+    LloydStepInfo moving;                 // labels changed
+    s.energyHistory = {10.0, 5.0, 5.0, 5.0};
+    CHECK(!lloydConverged(s, p, moving));  // only two flat steps so far
+    s.energyHistory = {10.0, 5.0, 5.0, 5.0, 5.0};
+    CHECK(lloydConverged(s, p, moving));
+    s.energyHistory = {10.0, 5.0, 4.0, 3.0, 2.0};
+    CHECK(!lloydConverged(s, p, moving));
+    LloydStepInfo fixedPoint;
+    fixedPoint.labelsChanged = false;
+    CHECK(lloydConverged(s, p, fixedPoint));
+    LloydParams few; few.maxIterations = 2;
+    VSAState u;
+    initRandomSeeds(in, u, 8, 1);
+    CHECK(runLloyd(in, u, few).iterations <= 2);
+}
+
 int main(int argc, char** argv)
 {
     testCubeSixSeeds();
     testDisconnectedComponents();
     testSeedCount();
     testRandomBump();
+    testLloydCube();
+    testLloydBump();
     if (argc > 1) testHemisphereFile(argv[1]);
     std::printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;

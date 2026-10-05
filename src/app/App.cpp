@@ -9,6 +9,7 @@
 #include <ImGuiFileDialog.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 
@@ -140,6 +141,8 @@ void App::openMesh(const std::string& path)
     vsa_ = VSAState();
     vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
     vsaAdded_ = vsaSteps_ = 0;
+    lloydRunning_ = false;
+    lloydStatus_.clear();
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -178,8 +181,26 @@ void App::uploadMesh()
     meshRenderer_.upload(mesh_, colors);
 }
 
+void App::lloydTick()
+{
+    if (!lloydRunning_ || vsa_.k() == 0) { lloydRunning_ = false; return; }
+    const LloydStepInfo info = lloydStep(vsaInput(), vsa_);
+    vsaAdded_ = info.added;
+    ++vsaSteps_;
+    ++lloydIter_;
+    uploadMesh();
+    if (lloydConverged(vsa_, lloydParams_, info)) {
+        lloydRunning_ = false;
+        lloydStatus_ = "converged after " + std::to_string(lloydIter_) + " iterations";
+    } else if (lloydIter_ >= lloydParams_.maxIterations) {
+        lloydRunning_ = false;
+        lloydStatus_ = "stopped: max iterations (" + std::to_string(lloydIter_) + ")";
+    }
+}
+
 void App::drawVsaPanel()
 {
+    lloydTick();
     if (!ImGui::Begin("VSA")) { ImGui::End(); return; }
     if (!meshRenderer_.hasMesh()) {
         ImGui::TextUnformatted("No mesh loaded");
@@ -192,6 +213,8 @@ void App::drawVsaPanel()
         vsa_ = VSAState();
         vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
         vsaAdded_ = vsaSteps_ = 0;
+        lloydRunning_ = false;
+        lloydStatus_.clear();
         if (colorMode_ == 2) uploadMesh();
     }
     ImGui::InputInt("Proxies (k)", &vsaK_);
@@ -203,6 +226,8 @@ void App::drawVsaPanel()
         vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
         initRandomSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
         vsaAdded_ = vsaSteps_ = 0;
+        lloydRunning_ = false;
+        lloydStatus_.clear();
         refresh();
     }
     ImGui::SameLine();
@@ -221,21 +246,50 @@ void App::drawVsaPanel()
     }
     ImGui::SameLine();
     if (ImGui::Button("Step")) {   // one Lloyd iteration: partition + fit
-        vsaAdded_ = partition(vsaInput(), vsa_);
-        fitProxies(vsaInput(), vsa_);
+        vsaAdded_ = lloydStep(vsaInput(), vsa_).added;
         ++vsaSteps_;
         colorMode_ = 2;
         uploadMesh();
     }
+    ImGui::SameLine();
+    if (!lloydRunning_) {
+        if (ImGui::Button("Run")) {
+            lloydRunning_ = true;
+            lloydIter_ = 0;
+            lloydStatus_.clear();
+            colorMode_ = 2;
+        }
+    } else if (ImGui::Button("Stop")) {
+        lloydRunning_ = false;
+        lloydStatus_ = "stopped";
+    }
     ImGui::EndDisabled();
 
+    ImGui::InputInt("Max iterations", &lloydParams_.maxIterations);
+    lloydParams_.maxIterations = std::max(1, lloydParams_.maxIterations);
+    ImGui::InputInt("Patience", &lloydParams_.patience);
+    lloydParams_.patience = std::max(1, lloydParams_.patience);
+    {
+        float tol = float(lloydParams_.relTolerance);
+        if (ImGui::InputFloat("Rel. tolerance", &tol, 0.0f, 0.0f, "%.1e"))
+            lloydParams_.relTolerance = std::max(0.0f, tol);
+    }
+
     ImGui::Separator();
+    if (!lloydStatus_.empty())
+        ImGui::TextUnformatted(lloydStatus_.c_str());
     ImGui::Text("Proxies : %d", vsa_.k());
     ImGui::Text("Partitions run : %d", vsaSteps_);
     if (vsaAdded_ > 0)
         ImGui::Text("Added for unseeded components: %d", vsaAdded_);
     if (vsa_.label.size() == mesh_.n_faces())
         ImGui::Text("Energy : %.6f", totalEnergy(vsa_));
+    if (!vsa_.energyHistory.empty()) {
+        const std::vector<float> h(vsa_.energyHistory.begin(), vsa_.energyHistory.end());
+        char overlay[48];
+        std::snprintf(overlay, sizeof(overlay), "E = %.5g", h.back());
+        ImGui::PlotLines("##energy", h.data(), int(h.size()), 0, overlay, FLT_MAX, FLT_MAX, ImVec2(-1, 80));
+    }
     ImGui::End();
 }
 

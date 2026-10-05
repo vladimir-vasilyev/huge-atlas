@@ -20,6 +20,7 @@ struct VSAState {
     std::vector<Proxy>  proxies;
     std::vector<Moments> regions;    // per-proxy moments of the faces currently labeled with it
     std::vector<int>    label;       // per face: proxy index, -1 = unassigned (empty before the first partition)
+    std::vector<double> energyHistory;   // E after every Lloyd step (lloydStep)
     std::vector<int>   seedFace;     // initial seed face per proxy; used by the first partition only
 
     int k() const { return int(proxies.size()); }
@@ -42,3 +43,30 @@ void fitProxies(const VSAInput& in, VSAState& s);
 
 // Total error E(R, P) = sum over regions of metricError.
 double totalEnergy(const VSAState& s);
+
+// ---- Lloyd iterations (partition -> fit). Greedy flooding does not guarantee a monotone energy,
+// so convergence is judged by a fixed point or by a small relative change, never by monotonicity.
+struct LloydParams {
+    int    maxIterations = 100;
+    double relTolerance  = 1e-4;   // |E_{i-1} - E_i| / max(E_{i-1}, E_i) below this ...
+    int    patience      = 3;      // ... for this many consecutive iterations
+};
+
+struct LloydStepInfo {
+    int    added = 0;               // proxies added for unseeded components
+    bool   labelsChanged = true;
+    double energy = 0.0;            // after the fit
+};
+
+struct LloydResult {
+    int  iterations = 0;
+    bool converged = false;
+};
+
+// One iteration: partition + fit. Appends the energy to s.energyHistory.
+LloydStepInfo lloydStep(const VSAInput& in, VSAState& s);
+
+// Fixed point (labels unchanged) or relative energy change below tolerance for `patience` steps.
+bool lloydConverged(const VSAState& s, const LloydParams& p, const LloydStepInfo& last);
+
+LloydResult runLloyd(const VSAInput& in, VSAState& s, const LloydParams& p = {});

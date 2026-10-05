@@ -63,6 +63,11 @@ private:
     int              vsaMetric_ = 0;       // 0 - L2,1  1 - L2
     int              vsaAdded_ = 0;        // proxies added by the last partition for unseeded components
     int              vsaSteps_ = 0;
+    LloydParams      lloydParams_;
+    bool             lloydRunning_ = false;
+    int              lloydIter_ = 0;       // iterations done in the current run
+    std::string      lloydStatus_;
+    void lloydTick();                      // one Lloyd step of a running loop (called once per frame)
 
     bool             dragging_ = false;
     bool             panning_ = false;

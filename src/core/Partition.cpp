@@ -1,6 +1,7 @@
 #include "core/Partition.h"
 
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 #include <queue>
 #include <random>
@@ -50,22 +51,26 @@ void runQueue(const VSAInput& in, VSAState& s, Queue& q)
     }
 }
 
-// Face of minimum error among those labeled `proxy` in `prev`. Degenerate faces have ~zero error
-// for any proxy, so they are chosen only if nothing else is available.
-int minErrorFace(const VSAInput& in, const VSAState& s, const std::vector<int>& prev, int proxy)
+// For every proxy: the face of minimum error among those labeled with it in `prev` (one pass).
+// Degenerate faces have ~zero error for any proxy, so they are chosen only if nothing else is available.
+std::vector<int> minErrorFaces(const VSAInput& in, const VSAState& s, const std::vector<int>& prev)
 {
-    int best = -1, bestDegenerate = -1;
-    double bestErr = 0.0, bestDegErr = 0.0;
+    const size_t k = s.proxies.size();
+    std::vector<int> best(k, -1), bestDegenerate(k, -1);
+    std::vector<double> bestErr(k, 0.0), bestDegErr(k, 0.0);
     for (size_t f = 0; f < prev.size(); ++f) {
-        if (prev[f] != proxy) continue;
-        const double e = metricError(s.metric, in.moments[f], s.proxies[proxy]);
+        const int r = prev[f];
+        if (r < 0 || size_t(r) >= k) continue;
+        const double e = metricError(s.metric, in.moments[f], s.proxies[r]);
         if (in.faces.degenerate[f]) {
-            if (bestDegenerate < 0 || e < bestDegErr) { bestDegenerate = int(f); bestDegErr = e; }
-        } else if (best < 0 || e < bestErr) {
-            best = int(f); bestErr = e;
+            if (bestDegenerate[r] < 0 || e < bestDegErr[r]) { bestDegenerate[r] = int(f); bestDegErr[r] = e; }
+        } else if (best[r] < 0 || e < bestErr[r]) {
+            best[r] = int(f); bestErr[r] = e;
         }
     }
-    return best >= 0 ? best : bestDegenerate;
+    for (size_t r = 0; r < k; ++r)
+        if (best[r] < 0) best[r] = bestDegenerate[r];
+    return best;
 }
 
 } // namespace
@@ -95,6 +100,7 @@ void initRandomSeeds(const VSAInput& in, VSAState& s, int k, uint64_t rngSeed)
         s.proxies.push_back(fitProxy(s.metric, in.moments[f]));
     s.label.clear();
     s.regions.assign(s.proxies.size(), Moments());
+    s.energyHistory.clear();
 }
 
 int partition(const VSAInput& in, VSAState& s)
@@ -105,12 +111,10 @@ int partition(const VSAInput& in, VSAState& s)
     // seed of every proxy
     std::vector<int> prev;
     prev.swap(s.label);
-    std::vector<int> seeds(k0, -1);
-    for (int i = 0; i < k0; ++i) {
-        int f = prev.size() == nF ? minErrorFace(in, s, prev, i) : -1;
-        if (f < 0 && i < int(s.seedFace.size())) f = s.seedFace[i];
-        seeds[i] = f;
-    }
+    std::vector<int> seeds = prev.size() == nF ? minErrorFaces(in, s, prev) : std::vector<int>(k0, -1);
+    for (int i = 0; i < k0; ++i)
+        if (seeds[i] < 0 && i < int(s.seedFace.size()))
+            seeds[i] = s.seedFace[i];
 
     s.label.assign(nF, -1);
     Queue q;
@@ -148,4 +152,42 @@ double totalEnergy(const VSAState& s)
     for (size_t i = 0; i < s.proxies.size() && i < s.regions.size(); ++i)
         e += metricError(s.metric, s.regions[i], s.proxies[i]);
     return e;
+}
+
+LloydStepInfo lloydStep(const VSAInput& in, VSAState& s)
+{
+    LloydStepInfo info;
+    const std::vector<int> before = s.label;
+    info.added = partition(in, s);
+    info.labelsChanged = before != s.label;
+    fitProxies(in, s);
+    info.energy = totalEnergy(s);
+    s.energyHistory.push_back(info.energy);
+    return info;
+}
+
+bool lloydConverged(const VSAState& s, const LloydParams& p, const LloydStepInfo& last)
+{
+    // fixed point: the partition did not change, so fitting reproduces the same proxies
+    if (!last.labelsChanged && last.added == 0) return true;
+
+    const auto& h = s.energyHistory;
+    const int n = int(h.size());
+    if (n < p.patience + 1) return false;
+    for (int i = n - p.patience; i < n; ++i) {
+        const double denom = std::max({std::abs(h[i - 1]), std::abs(h[i]), 1e-300});
+        if (std::abs(h[i - 1] - h[i]) / denom >= p.relTolerance) return false;
+    }
+    return true;
+}
+
+LloydResult runLloyd(const VSAInput& in, VSAState& s, const LloydParams& p)
+{
+    LloydResult r;
+    while (r.iterations < p.maxIterations) {
+        const LloydStepInfo info = lloydStep(in, s);
+        ++r.iterations;
+        if (lloydConverged(s, p, info)) { r.converged = true; break; }
+    }
+    return r;
 }
