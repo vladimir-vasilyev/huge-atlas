@@ -64,6 +64,10 @@ add_library(vsa_core STATIC
     src/core/MeshTypes.h
     src/core/MeshPrep.h
     src/core/MeshPrep.cpp
+    src/core/Metrics.h
+    src/core/Metrics.cpp
+    src/core/Proxy.h
+    src/core/Proxy.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
@@ -76,6 +80,10 @@ enable_testing()
 add_executable(test_meshprep tests/test_meshprep.cpp)
 target_link_libraries(test_meshprep PRIVATE vsa_core)
 add_test(NAME meshprep COMMAND test_meshprep ${CMAKE_SOURCE_DIR}/data/cube.obj)
+
+add_executable(test_metrics tests/test_metrics.cpp)
+target_link_libraries(test_metrics PRIVATE vsa_core)
+add_test(NAME metrics COMMAND test_metrics ${CMAKE_SOURCE_DIR}/data/cube.obj)
 
 # ---------------------------------------------------------------- Application
 set(APP_SOURCES

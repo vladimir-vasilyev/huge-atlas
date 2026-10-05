@@ -132,6 +132,9 @@ void App::openMesh(const std::string& path)
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
     diag_ = diagnose(mesh_, faceData_);
+    wholeMesh_ = Moments();
+    for (const Moments& fm : computeFaceMoments(mesh_, faceData_))
+        wholeMesh_ += fm;
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -285,6 +288,13 @@ void App::drawUI()
             ImGui::Text("Degenerate faces   : %d", diag_.degenerateFaces);
             ImGui::Text("Non-manifold verts : %d", diag_.nonManifoldVertices);
             ImGui::Text("Isolated verts     : %d", diag_.isolatedVertices);
+            ImGui::Separator();
+            ImGui::TextUnformatted("Best single proxy for the whole mesh");
+            for (Metric me : {Metric::L21, Metric::L2}) {
+                const Proxy p = fitProxy(me, wholeMesh_);
+                ImGui::Text("%-4s N=(%.3f %.3f %.3f) err=%.5f", metricName(me),
+                            p.N[0], p.N[1], p.N[2], metricError(me, wholeMesh_, p));
+            }
         }
     }
     ImGui::End();

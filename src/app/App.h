@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/MeshPrep.h"
+#include "core/Proxy.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
 #include "render/MeshRenderer.h"
@@ -44,6 +45,7 @@ private:
     TriMesh          mesh_;
     FaceData         faceData_;
     MeshDiagnostics  diag_;
+    Moments          wholeMesh_;       // moments of all faces (stage 2 check)
     MeshRenderer     meshRenderer_;
     Camera           camera_;
     std::string      lastDir_ = ".";
