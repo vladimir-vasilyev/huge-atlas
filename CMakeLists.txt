@@ -97,6 +97,14 @@ add_test(NAME operations COMMAND test_operations)
 
 add_test(NAME partition COMMAND test_partition ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
 
+# Picking needs a GL context, so it links the render sources and GLFW
+add_executable(test_picking tests/test_picking.cpp
+    src/render/MeshRenderer.cpp src/render/Shader.cpp src/render/GL.cpp src/render/Camera.cpp)
+target_include_directories(test_picking PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_picking PRIVATE vsa_core glfw OpenGL::GL)
+target_compile_definitions(test_picking PRIVATE GL_SILENCE_DEPRECATION GLFW_INCLUDE_NONE)
+add_test(NAME picking COMMAND test_picking)
+
 # ---------------------------------------------------------------- Application
 set(APP_SOURCES
     src/app/main.cpp

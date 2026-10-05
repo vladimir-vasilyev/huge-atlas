@@ -134,73 +134,118 @@ void App::openMesh(const std::string& path)
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
     diag_ = diagnose(mesh_, faceData_);
-    faceMoments_ = computeFaceMoments(mesh_, faceData_);
+    baseMoments_ = computeFaceMoments(mesh_, faceData_);
+    faceWeights_.assign(mesh_.n_faces(), 1.0f);
+    faceMoments_ = baseMoments_;
     wholeMesh_ = Moments();
     for (const Moments& fm : faceMoments_)
         wholeMesh_ += fm;
     vsa_ = VSAState();
     vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
     vsaAdded_ = vsaSteps_ = 0;
-    lloydRunning_ = false;
+    job_.reset();
     lloydStatus_.clear();
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
 }
 
+namespace {
+
+void hueColor(int index, float out[3])
+{
+    // golden-ratio hue steps give well-separated colors for any number of regions
+    const float h = std::fmod(float(index) * 0.61803399f, 1.0f) * 6.0f;
+    const float x = 1.0f - std::fabs(std::fmod(h, 2.0f) - 1.0f);
+    const float c = 0.85f, m = 0.1f;
+    float r = 0, g = 0, b = 0;
+    switch (int(h)) {
+        case 0: r = c; g = x; break;
+        case 1: r = x; g = c; break;
+        case 2: g = c; b = x; break;
+        case 3: g = x; b = c; break;
+        case 4: r = x; b = c; break;
+        default: r = c; b = x; break;
+    }
+    out[0] = r + m; out[1] = g + m; out[2] = b + m;
+}
+
+// weight 1 is neutral gray-blue, heavier goes to red, lighter to blue (log scale)
+void weightColor(float w, float out[3])
+{
+    const float neutral[3] = {0.55f, 0.58f, 0.65f};
+    const float lw = std::max(-3.0f, std::min(4.0f, std::log2(std::max(w, 1e-6f))));
+    static const float heavy[3] = {1.0f, 0.2f, 0.1f}, light[3] = {0.1f, 0.25f, 0.95f};
+    const float* target = lw >= 0 ? heavy : light;
+    const float t = lw >= 0 ? lw / 4.0f : -lw / 3.0f;
+    for (int k = 0; k < 3; ++k) out[k] = neutral[k] + (target[k] - neutral[k]) * t;
+}
+
+} // namespace
+
 void App::uploadMesh()
 {
     std::vector<float> colors;
+    const size_t nF = mesh_.n_faces();
     if (colorMode_ == 1) {
-        colors.resize(mesh_.n_faces() * 3);
-        for (size_t i = 0; i < mesh_.n_faces(); ++i)
+        colors.resize(nF * 3);
+        for (size_t i = 0; i < nF; ++i)
             for (int k = 0; k < 3; ++k)
                 colors[i * 3 + k] = float(faceData_.normal[i][k] * 0.5 + 0.5);
-    }
-    else if (colorMode_ == 2 && vsa_.label.size() == mesh_.n_faces()) {
-        colors.resize(mesh_.n_faces() * 3);
-        for (size_t i = 0; i < mesh_.n_faces(); ++i) {
+    } else if (colorMode_ == 2 && vsa_.label.size() == nF) {
+        colors.resize(nF * 3);
+        for (size_t i = 0; i < nF; ++i) {
             const int l = vsa_.label[i];
-            if (l < 0) { colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = 0.3f; continue; }
-            // golden-ratio hue steps give well-separated colors for any number of regions
-            const float h = std::fmod(float(l) * 0.61803399f, 1.0f) * 6.0f;
-            const float x = 1.0f - std::fabs(std::fmod(h, 2.0f) - 1.0f);
-            const float c = 0.85f, m = 0.1f;
-            float r = 0, g = 0, b = 0;
-            switch (int(h)) {
-                case 0: r = c; g = x; break;
-                case 1: r = x; g = c; break;
-                case 2: g = c; b = x; break;
-                case 3: g = x; b = c; break;
-                case 4: r = x; b = c; break;
-                default: r = c; b = x; break;
-            }
-            colors[i * 3] = r + m; colors[i * 3 + 1] = g + m; colors[i * 3 + 2] = b + m;
+            if (l < 0) colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = 0.3f;
+            else hueColor(l, &colors[i * 3]);
         }
+    } else if (colorMode_ == 3 && faceWeights_.size() == nF) {
+        colors.resize(nF * 3);
+        for (size_t i = 0; i < nF; ++i)
+            weightColor(faceWeights_[i], &colors[i * 3]);
     }
     meshRenderer_.upload(mesh_, colors);
 }
 
-void App::lloydTick()
+void App::rebuildMoments()
 {
-    if (!lloydRunning_ || vsa_.k() == 0) { lloydRunning_ = false; return; }
-    const LloydStepInfo info = lloydStep(vsaInput(), vsa_);
-    vsaAdded_ = info.added;
-    ++vsaSteps_;
-    ++lloydIter_;
-    uploadMesh();
-    if (lloydConverged(vsa_, lloydParams_, info)) {
-        lloydRunning_ = false;
-        lloydStatus_ = "converged after " + std::to_string(lloydIter_) + " iterations";
-    } else if (lloydIter_ >= lloydParams_.maxIterations) {
-        lloydRunning_ = false;
-        lloydStatus_ = "stopped: max iterations (" + std::to_string(lloydIter_) + ")";
+    faceMoments_ = baseMoments_;
+    wholeMesh_ = Moments();
+    for (size_t i = 0; i < faceMoments_.size(); ++i) {
+        if (faceWeights_[i] != 1.0f) faceMoments_[i] *= double(faceWeights_[i]);
+        wholeMesh_ += faceMoments_[i];
     }
+    if (vsa_.label.size() == mesh_.n_faces())
+        fitProxies(vsaInput(), vsa_);   // also recomputes the region moments
+}
+
+void App::startJob(RefineJob::Kind kind)
+{
+    job_ = std::make_unique<RefineJob>(kind, lloydParams_, teleportParams_, vsaK_);
+    lloydStatus_.clear();
+    colorMode_ = 2;
+}
+
+void App::jobTick()
+{
+    if (!job_) return;
+    if (vsa_.k() == 0) { job_.reset(); return; }
+    const bool more = job_->step(vsaInput(), vsa_);
+    ++vsaSteps_;
+    uploadMesh();
+    if (more) return;
+
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "finished: %d iterations, %d teleports, k = %d, %s",
+                  job_->iterations(), job_->teleports(), vsa_.k(),
+                  job_->lastRunConverged() ? "converged" : "stopped at max iterations");
+    lloydStatus_ = buf;
+    job_.reset();
 }
 
 void App::drawVsaPanel()
 {
-    lloydTick();
+    jobTick();
     if (!ImGui::Begin("VSA")) { ImGui::End(); return; }
     if (!meshRenderer_.hasMesh()) {
         ImGui::TextUnformatted("No mesh loaded");
@@ -208,31 +253,38 @@ void App::drawVsaPanel()
         return;
     }
 
+    auto resetState = [&] {
+        job_.reset();
+        lloydStatus_.clear();
+        vsaAdded_ = vsaSteps_ = 0;
+    };
+    auto refresh = [&] { if (colorMode_ == 2) uploadMesh(); };
+    const bool running = job_ != nullptr;
+    const bool partitioned = vsa_.label.size() == mesh_.n_faces();
+
     const char* metrics[] = {"L2,1", "L2"};
     if (ImGui::Combo("Metric", &vsaMetric_, metrics, 2)) {
         vsa_ = VSAState();
         vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
-        vsaAdded_ = vsaSteps_ = 0;
-        lloydRunning_ = false;
-        lloydStatus_.clear();
-        if (colorMode_ == 2) uploadMesh();
+        resetState();
+        refresh();
     }
     ImGui::InputInt("Proxies (k)", &vsaK_);
     vsaK_ = std::max(1, std::min(vsaK_, int(mesh_.n_faces())));
-    ImGui::InputInt("Random seed", &vsaRngSeed_);
 
-    auto refresh = [&] { if (colorMode_ == 2) uploadMesh(); };
+    const char* methods[] = {"Random", "Farthest point"};
+    ImGui::Combo("Seeding", &seedMethod_, methods, 2);
+    ImGui::InputInt("Random seed", &vsaRngSeed_);
     if (ImGui::Button("Seed")) {
         vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
-        initRandomSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
-        vsaAdded_ = vsaSteps_ = 0;
-        lloydRunning_ = false;
-        lloydStatus_.clear();
+        if (seedMethod_ == 0) initRandomSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
+        else                  initFarthestSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
+        resetState();
         refresh();
     }
-    ImGui::SameLine();
-    const bool seeded = vsa_.k() > 0;
-    ImGui::BeginDisabled(!seeded);
+
+    ImGui::SeparatorText("Lloyd");
+    ImGui::BeginDisabled(vsa_.k() == 0 || running);
     if (ImGui::Button("Partition")) {
         vsaAdded_ = partition(vsaInput(), vsa_);
         ++vsaSteps_;
@@ -251,19 +303,16 @@ void App::drawVsaPanel()
         colorMode_ = 2;
         uploadMesh();
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (!lloydRunning_) {
-        if (ImGui::Button("Run")) {
-            lloydRunning_ = true;
-            lloydIter_ = 0;
-            lloydStatus_.clear();
-            colorMode_ = 2;
-        }
+    if (!running) {
+        ImGui::BeginDisabled(vsa_.k() == 0);
+        if (ImGui::Button("Run")) startJob(RefineJob::Kind::Lloyd);
+        ImGui::EndDisabled();
     } else if (ImGui::Button("Stop")) {
-        lloydRunning_ = false;
+        job_.reset();
         lloydStatus_ = "stopped";
     }
-    ImGui::EndDisabled();
 
     ImGui::InputInt("Max iterations", &lloydParams_.maxIterations);
     lloydParams_.maxIterations = std::max(1, lloydParams_.maxIterations);
@@ -275,14 +324,66 @@ void App::drawVsaPanel()
             lloydParams_.relTolerance = std::max(0.0f, tol);
     }
 
+    ImGui::SeparatorText("Proxy operations");
+    ImGui::BeginDisabled(!partitioned || running);
+    if (ImGui::Button("Insert")) {
+        if (insertProxy(vsaInput(), vsa_)) { colorMode_ = 2; uploadMesh(); }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete cheapest")) {
+        RegionPair m;
+        if (findBestMerge(vsaInput(), vsa_, m) && deleteProxy(vsaInput(), vsa_, m.a, m.b)) {
+            colorMode_ = 2;
+            uploadMesh();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Teleport")) {
+        if (teleportProxy(vsaInput(), vsa_, teleportParams_.ratio)) { colorMode_ = 2; uploadMesh(); }
+        else lloydStatus_ = "teleport: no admissible move";
+    }
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(running);
+    if (ImGui::Button("Grow to k")) {
+        if (vsa_.k() == 0) {
+            vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+            initFarthestSeeds(vsaInput(), vsa_, 1, uint64_t(vsaRngSeed_));
+        }
+        startJob(RefineJob::Kind::Grow);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(vsa_.k() < 3);
+    if (ImGui::Button("Run + teleport")) startJob(RefineJob::Kind::Teleport);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    {
+        float ratio = float(teleportParams_.ratio);
+        if (ImGui::SliderFloat("Teleport ratio", &ratio, 0.05f, 1.0f))
+            teleportParams_.ratio = ratio;
+        ImGui::InputInt("Max teleports", &teleportParams_.maxTeleports);
+        teleportParams_.maxTeleports = std::max(1, teleportParams_.maxTeleports);
+    }
+
+    ImGui::SeparatorText("Weights");
+    ImGui::Checkbox("Paint (Alt+drag rotates)", &paintMode_);
+    ImGui::SliderInt("Brush radius (px)", &brushRadius_, 2, 100);
+    ImGui::SliderFloat("Brush weight", &brushWeight_, 0.1f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::Checkbox("Erase (set to 1)", &eraseMode_);
+    if (ImGui::Button("Reset weights")) {
+        std::fill(faceWeights_.begin(), faceWeights_.end(), 1.0f);
+        rebuildMoments();
+        if (colorMode_ == 2 || colorMode_ == 3) uploadMesh();
+    }
+
     ImGui::Separator();
     if (!lloydStatus_.empty())
         ImGui::TextUnformatted(lloydStatus_.c_str());
+    if (running) ImGui::TextUnformatted("running...");
     ImGui::Text("Proxies : %d", vsa_.k());
     ImGui::Text("Partitions run : %d", vsaSteps_);
     if (vsaAdded_ > 0)
         ImGui::Text("Added for unseeded components: %d", vsaAdded_);
-    if (vsa_.label.size() == mesh_.n_faces())
+    if (partitioned)
         ImGui::Text("Energy : %.6f", totalEnergy(vsa_));
     if (!vsa_.energyHistory.empty()) {
         const std::vector<float> h(vsa_.energyHistory.begin(), vsa_.energyHistory.end());
@@ -291,6 +392,38 @@ void App::drawVsaPanel()
         ImGui::PlotLines("##energy", h.data(), int(h.size()), 0, overlay, FLT_MAX, FLT_MAX, ImVec2(-1, 80));
     }
     ImGui::End();
+}
+
+void App::paintWeights(int fbW, int fbH)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    int winW = 0, winH = 0;
+    glfwGetWindowSize(window_, &winW, &winH);
+    if (winW <= 0 || winH <= 0 || fbH <= 0) return;
+    const float scale = float(fbW) / float(winW);
+
+    // brush outline
+    ImGui::GetForegroundDrawList()->AddCircle(io.MousePos, float(brushRadius_) / scale,
+                                              IM_COL32(255, 255, 255, 200), 32, 1.5f);
+
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        if (painted_) {   // end of a stroke: apply the weights to the moments and refit once
+            painted_ = false;
+            rebuildMoments();
+            if (colorMode_ == 2) uploadMesh();
+        }
+        return;
+    }
+    float vp[16];
+    camera_.viewProj(float(fbW) / float(fbH), vp);
+    std::vector<int> ids;
+    meshRenderer_.pickFaces(vp, fbW, fbH, int(io.MousePos.x * scale), fbH - 1 - int(io.MousePos.y * scale),
+                            brushRadius_, ids);
+    if (ids.empty()) return;
+    const float w = eraseMode_ ? 1.0f : brushWeight_;
+    for (int f : ids) faceWeights_[f] = w;
+    painted_ = true;
+    if (colorMode_ == 3) uploadMesh();
 }
 
 void App::handleSceneInput()
@@ -304,7 +437,15 @@ void App::handleSceneInput()
     glfwGetWindowSize(window_, &w, &h);   // ImGui coordinates are in window points
     const double x = io.MousePos.x, y = io.MousePos.y;
 
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    // In paint mode the left button paints; Alt+left still rotates
+    const bool painting = paintMode_ && !io.KeyAlt && meshRenderer_.hasMesh();
+    if (painting) {
+        int fbW, fbH;
+        glfwGetFramebufferSize(window_, &fbW, &fbH);
+        paintWeights(fbW, fbH);
+    }
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !painting) {
         dragging_ = true;
         camera_.beginRotate(x, y, w, h);
     }
@@ -417,6 +558,8 @@ void App::drawUI()
         if (ImGui::RadioButton("Face normals", &colorMode_, 1)) uploadMesh();
         ImGui::SameLine();
         if (ImGui::RadioButton("Regions", &colorMode_, 2)) uploadMesh();
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Weights", &colorMode_, 3)) uploadMesh();
         if (ImGui::Button("Reset camera")) camera_.reset();
         ImGui::Separator();
         if (meshRenderer_.hasMesh()) {

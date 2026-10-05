@@ -1,5 +1,7 @@
 #include "render/MeshRenderer.h"
 
+#include <algorithm>
+
 namespace {
 
 const char* kVS = R"(#version 410 core
@@ -41,6 +43,25 @@ void main() {
 }
 )";
 
+const char* kPickVS = R"(#version 410 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uVP;
+flat out int vId;
+void main() {
+    vId = gl_VertexID / 3 + 1;      // vertices are unrolled: three per face; 0 means "no face"
+    gl_Position = uVP * vec4(aPos, 1.0);
+}
+)";
+
+const char* kPickFS = R"(#version 410 core
+flat in int vId;
+out vec4 fragColor;
+void main() {
+    fragColor = vec4(float(vId & 255) / 255.0, float((vId >> 8) & 255) / 255.0,
+                     float((vId >> 16) & 255) / 255.0, 1.0);
+}
+)";
+
 } // namespace
 
 bool MeshRenderer::init(std::string* errorLog)
@@ -50,6 +71,8 @@ bool MeshRenderer::init(std::string* errorLog)
     uView_      = shader_.uniform("uView");
     uWire_      = shader_.uniform("uWire");
     uWireWidth_ = shader_.uniform("uWireWidth");
+    if (!pickShader_.build(kPickVS, kPickFS, errorLog)) return false;
+    uPickVP_ = pickShader_.uniform("uVP");
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
     return true;
@@ -102,8 +125,85 @@ void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe
     GL_CHECK();
 }
 
+void MeshRenderer::ensurePickTarget(int w, int h)
+{
+    if (pickFbo_ && w == pickW_ && h == pickH_) return;
+    if (!pickFbo_) {
+        glGenFramebuffers(1, &pickFbo_);
+        glGenTextures(1, &pickColor_);
+        glGenRenderbuffers(1, &pickDepth_);
+    }
+    glBindTexture(GL_TEXTURE_2D, pickColor_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, pickDepth_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, pickFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pickColor_, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, pickDepth_);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    pickW_ = w;
+    pickH_ = h;
+    GL_CHECK();
+}
+
+void MeshRenderer::pickFaces(const float vp[16], int fbW, int fbH, int cx, int cy, int radius,
+                             std::vector<int>& out)
+{
+    if (!vertexCount_ || fbW <= 0 || fbH <= 0) return;
+    ensurePickTarget(fbW, fbH);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, pickFbo_);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
+    glViewport(0, 0, fbW, fbH);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    pickShader_.use();
+    glUniformMatrix4fv(uPickVP_, 1, GL_FALSE, vp);
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLES, 0, vertexCount_);
+    glBindVertexArray(0);
+
+    const int x0 = std::max(cx - radius, 0), x1 = std::min(cx + radius, fbW - 1);
+    const int y0 = std::max(cy - radius, 0), y1 = std::min(cy + radius, fbH - 1);
+    if (x1 >= x0 && y1 >= y0) {
+        const int w = x1 - x0 + 1, h = y1 - y0 + 1;
+        std::vector<unsigned char> px(size_t(w) * h * 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(x0, y0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        const size_t first = out.size();
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int dx = x0 + x - cx, dy = y0 + y - cy;
+                if (dx * dx + dy * dy > radius * radius) continue;
+                const unsigned char* c = &px[(size_t(y) * w + x) * 4];
+                const int id = c[0] | (c[1] << 8) | (c[2] << 16);
+                if (id > 0) out.push_back(id - 1);
+            }
+        std::sort(out.begin() + first, out.end());
+        out.erase(std::unique(out.begin() + first, out.end()), out.end());
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    GL_CHECK();
+}
+
 void MeshRenderer::destroy()
 {
+    if (pickFbo_) { glDeleteFramebuffers(1, &pickFbo_); pickFbo_ = 0; }
+    if (pickColor_) { glDeleteTextures(1, &pickColor_); pickColor_ = 0; }
+    if (pickDepth_) { glDeleteRenderbuffers(1, &pickDepth_); pickDepth_ = 0; }
+    pickShader_.destroy();
+    pickW_ = pickH_ = 0;
     if (vbo_) { glDeleteBuffers(1, &vbo_); vbo_ = 0; }
     if (vao_) { glDeleteVertexArrays(1, &vao_); vao_ = 0; }
     shader_.destroy();

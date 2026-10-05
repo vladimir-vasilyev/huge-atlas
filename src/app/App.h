@@ -1,13 +1,16 @@
 #pragma once
 
 #include "core/MeshPrep.h"
+#include "core/Operations.h"
 #include "core/Partition.h"
 #include "core/Proxy.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
 #include "render/MeshRenderer.h"
 
+#include <memory>
 #include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -27,6 +30,10 @@ private:
     void openMesh(const std::string& path);
     void uploadMesh();
     void drawVsaPanel();
+    void rebuildMoments();                 // face moments = base moments * weights; refit if partitioned
+    void startJob(RefineJob::Kind kind);
+    void jobTick();                        // one step of the running job (once per frame)
+    void paintWeights(int fbW, int fbH);
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
 
     GLFWwindow* window_ = nullptr;
@@ -55,7 +62,7 @@ private:
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
-    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions
+    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights
     // Stage 3: VSA
     VSAState         vsa_;
     int              vsaK_ = 6;
@@ -64,10 +71,19 @@ private:
     int              vsaAdded_ = 0;        // proxies added by the last partition for unseeded components
     int              vsaSteps_ = 0;
     LloydParams      lloydParams_;
-    bool             lloydRunning_ = false;
-    int              lloydIter_ = 0;       // iterations done in the current run
+    TeleportParams   teleportParams_;
+    int              seedMethod_ = 1;      // 0 - random, 1 - farthest point
+    std::unique_ptr<RefineJob> job_;       // running Lloyd / grow / teleport job
     std::string      lloydStatus_;
-    void lloydTick();                      // one Lloyd step of a running loop (called once per frame)
+
+    // Stage 5: per-face weights (error density), painted with a brush
+    std::vector<Moments> baseMoments_;     // unweighted
+    std::vector<float>   faceWeights_;
+    bool             paintMode_ = false;
+    bool             eraseMode_ = false;
+    int              brushRadius_ = 20;    // framebuffer pixels
+    float            brushWeight_ = 4.0f;
+    bool             painted_ = false;     // weights changed during the current stroke
 
     bool             dragging_ = false;
     bool             panning_ = false;
