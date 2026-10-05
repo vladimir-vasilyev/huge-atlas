@@ -8,6 +8,7 @@
 #include <imgui_impl_opengl3.h>
 #include <ImGuiFileDialog.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -132,9 +133,13 @@ void App::openMesh(const std::string& path)
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
     diag_ = diagnose(mesh_, faceData_);
+    faceMoments_ = computeFaceMoments(mesh_, faceData_);
     wholeMesh_ = Moments();
-    for (const Moments& fm : computeFaceMoments(mesh_, faceData_))
+    for (const Moments& fm : faceMoments_)
         wholeMesh_ += fm;
+    vsa_ = VSAState();
+    vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+    vsaAdded_ = vsaSteps_ = 0;
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -149,7 +154,89 @@ void App::uploadMesh()
             for (int k = 0; k < 3; ++k)
                 colors[i * 3 + k] = float(faceData_.normal[i][k] * 0.5 + 0.5);
     }
+    else if (colorMode_ == 2 && vsa_.label.size() == mesh_.n_faces()) {
+        colors.resize(mesh_.n_faces() * 3);
+        for (size_t i = 0; i < mesh_.n_faces(); ++i) {
+            const int l = vsa_.label[i];
+            if (l < 0) { colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = 0.3f; continue; }
+            // golden-ratio hue steps give well-separated colors for any number of regions
+            const float h = std::fmod(float(l) * 0.61803399f, 1.0f) * 6.0f;
+            const float x = 1.0f - std::fabs(std::fmod(h, 2.0f) - 1.0f);
+            const float c = 0.85f, m = 0.1f;
+            float r = 0, g = 0, b = 0;
+            switch (int(h)) {
+                case 0: r = c; g = x; break;
+                case 1: r = x; g = c; break;
+                case 2: g = c; b = x; break;
+                case 3: g = x; b = c; break;
+                case 4: r = x; b = c; break;
+                default: r = c; b = x; break;
+            }
+            colors[i * 3] = r + m; colors[i * 3 + 1] = g + m; colors[i * 3 + 2] = b + m;
+        }
+    }
     meshRenderer_.upload(mesh_, colors);
+}
+
+void App::drawVsaPanel()
+{
+    if (!ImGui::Begin("VSA")) { ImGui::End(); return; }
+    if (!meshRenderer_.hasMesh()) {
+        ImGui::TextUnformatted("No mesh loaded");
+        ImGui::End();
+        return;
+    }
+
+    const char* metrics[] = {"L2,1", "L2"};
+    if (ImGui::Combo("Metric", &vsaMetric_, metrics, 2)) {
+        vsa_ = VSAState();
+        vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+        vsaAdded_ = vsaSteps_ = 0;
+        if (colorMode_ == 2) uploadMesh();
+    }
+    ImGui::InputInt("Proxies (k)", &vsaK_);
+    vsaK_ = std::max(1, std::min(vsaK_, int(mesh_.n_faces())));
+    ImGui::InputInt("Random seed", &vsaRngSeed_);
+
+    auto refresh = [&] { if (colorMode_ == 2) uploadMesh(); };
+    if (ImGui::Button("Seed")) {
+        vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+        initRandomSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
+        vsaAdded_ = vsaSteps_ = 0;
+        refresh();
+    }
+    ImGui::SameLine();
+    const bool seeded = vsa_.k() > 0;
+    ImGui::BeginDisabled(!seeded);
+    if (ImGui::Button("Partition")) {
+        vsaAdded_ = partition(vsaInput(), vsa_);
+        ++vsaSteps_;
+        colorMode_ = 2;
+        uploadMesh();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Fit")) {
+        fitProxies(vsaInput(), vsa_);
+        refresh();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Step")) {   // one Lloyd iteration: partition + fit
+        vsaAdded_ = partition(vsaInput(), vsa_);
+        fitProxies(vsaInput(), vsa_);
+        ++vsaSteps_;
+        colorMode_ = 2;
+        uploadMesh();
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::Text("Proxies : %d", vsa_.k());
+    ImGui::Text("Partitions run : %d", vsaSteps_);
+    if (vsaAdded_ > 0)
+        ImGui::Text("Added for unseeded components: %d", vsaAdded_);
+    if (vsa_.label.size() == mesh_.n_faces())
+        ImGui::Text("Energy : %.6f", totalEnergy(vsa_));
+    ImGui::End();
 }
 
 void App::handleSceneInput()
@@ -274,6 +361,8 @@ void App::drawUI()
         if (ImGui::RadioButton("Gray", &colorMode_, 0)) uploadMesh();
         ImGui::SameLine();
         if (ImGui::RadioButton("Face normals", &colorMode_, 1)) uploadMesh();
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Regions", &colorMode_, 2)) uploadMesh();
         if (ImGui::Button("Reset camera")) camera_.reset();
         ImGui::Separator();
         if (meshRenderer_.hasMesh()) {
@@ -298,6 +387,8 @@ void App::drawUI()
         }
     }
     ImGui::End();
+
+    drawVsaPanel();
 
     handleSceneInput();
 
