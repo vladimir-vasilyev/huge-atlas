@@ -4,8 +4,8 @@
 
 #include <string>
 
-// Владеющая обёртка над шейдерной программой GL. Некопируемая, перемещаемая.
-// Исходники шейдеров храним строками в коде: не нужно возиться с путями к ресурсам в Xcode.
+// Owning wrapper around a GL shader program. Non-copyable, movable.
+// Shader sources are kept as strings in code: no resource paths to manage in Xcode.
 class ShaderProgram {
 public:
     ShaderProgram() = default;
@@ -16,7 +16,7 @@ public:
     ShaderProgram(ShaderProgram&& other) noexcept;
     ShaderProgram& operator=(ShaderProgram&& other) noexcept;
 
-    // Компилирует и линкует программу. При ошибке возвращает false и пишет лог в errorLog.
+    // Compiles and links the program. On failure returns false and writes the log to errorLog.
     bool build(const char* vertexSrc, const char* fragmentSrc, std::string* errorLog = nullptr);
 
     void use() const;

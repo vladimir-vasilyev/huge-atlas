@@ -23,13 +23,13 @@ const char* kFS = R"(#version 410 core
 in vec3 vBary;
 in vec3 vColor;
 in vec3 vViewPos;
-uniform float uWire;       // 0 или 1
-uniform float uWireWidth;  // в пикселях
+uniform float uWire;       // 0 or 1
+uniform float uWireWidth;  // in pixels
 out vec4 fragColor;
 void main() {
-    // плоская нормаль из производных позиции в пространстве камеры
+    // flat normal from position derivatives in view space
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
-    float diff = abs(n.z) * 0.75 + 0.25;       // свет из камеры, двусторонний
+    float diff = abs(n.z) * 0.75 + 0.25;       // headlight, two-sided
     vec3 col = vColor * diff;
     if (uWire > 0.5) {
         vec3 d = fwidth(vBary);

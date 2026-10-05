@@ -1,7 +1,7 @@
 #pragma once
 
-// Единая точка подключения OpenGL. На macOS загрузчик не нужен:
-// OpenGL.framework экспортирует все функции 4.1 Core напрямую.
+// Single entry point for OpenGL. No loader is needed on macOS:
+// OpenGL.framework exports all 4.1 Core functions directly.
 #ifdef __APPLE__
   #ifndef GL_SILENCE_DEPRECATION
     #define GL_SILENCE_DEPRECATION
@@ -13,7 +13,7 @@
 
 namespace gl {
 
-// Печатает все накопившиеся ошибки GL с местом вызова. Возвращает true, если ошибок не было.
+// Prints all pending GL errors with the call site. Returns true if there were none.
 bool checkError(const char* file, int line);
 
 } // namespace gl

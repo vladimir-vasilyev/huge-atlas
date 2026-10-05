@@ -21,7 +21,7 @@ int main(int argc, char** argv)
     CHECK(d.components == 1);
     CHECK(d.boundaryLoops == 0);
     CHECK(d.degenerateFaces == 0 && d.nonManifoldVertices == 0 && d.isolatedVertices == 0);
-    CHECK(std::abs(d.totalArea - 6.0) < 1e-12);   // единичный куб
+    CHECK(std::abs(d.totalArea - 6.0) < 1e-12);   // unit cube
     for (auto f : m.faces()) CHECK(std::abs(fd.normal[f.idx()].norm() - 1.0) < 1e-12);
 
     std::printf(failures ? "FAILED (%d)\n" : "OK\n", failures);

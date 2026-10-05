@@ -60,7 +60,7 @@ bool ShaderProgram::build(const char* vertexSrc, const char* fragmentSrc, std::s
     glAttachShader(prog, vs);
     glAttachShader(prog, fs);
     glLinkProgram(prog);
-    glDeleteShader(vs);  // помечены на удаление, освободятся вместе с программой
+    glDeleteShader(vs);  // flagged for deletion, freed together with the program
     glDeleteShader(fs);
 
     GLint ok = GL_FALSE;

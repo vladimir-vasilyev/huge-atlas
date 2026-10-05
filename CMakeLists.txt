@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Должно быть задано до project()
+# Must be set before project()
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT APPLE)
-    message(FATAL_ERROR "Пока поддерживается только macOS (OpenGL 4.1 Core через OpenGL.framework)")
+    message(FATAL_ERROR "Only macOS is supported for now (OpenGL 4.1 Core via OpenGL.framework)")
 endif()
 
 set(EXT_DIR ${CMAKE_SOURCE_DIR}/external)
@@ -26,7 +26,7 @@ add_subdirectory(${EXT_DIR}/glfw EXCLUDE_FROM_ALL)
 
 find_package(OpenGL REQUIRED)
 
-# ---------------------------------------------------------------- Dear ImGui (ветка docking)
+# ---------------------------------------------------------------- Dear ImGui (docking branch)
 set(IMGUI_DIR ${EXT_DIR}/imgui)
 add_library(imgui STATIC
     ${IMGUI_DIR}/imgui.cpp
@@ -50,7 +50,7 @@ target_link_libraries(ImGuiFileDialog PUBLIC imgui)
 add_library(eigen INTERFACE)
 target_include_directories(eigen SYSTEM INTERFACE ${EXT_DIR}/eigen)
 
-# ---------------------------------------------------------------- OpenMesh (статически)
+# ---------------------------------------------------------------- OpenMesh (static)
 set(OPENMESH_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(BUILD_APPS OFF CACHE BOOL "" FORCE)
 set(OPENMESH_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
@@ -59,7 +59,7 @@ set(DISABLE_QMAKE_BUILD ON CACHE BOOL "" FORCE)
 set(OPENMESH_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${EXT_DIR}/OpenMesh EXCLUDE_FROM_ALL)
 
-# ---------------------------------------------------------------- Ядро (без GL/ImGui)
+# ---------------------------------------------------------------- Core (no GL/ImGui)
 add_library(vsa_core STATIC
     src/core/MeshTypes.h
     src/core/MeshPrep.h
@@ -67,17 +67,17 @@ add_library(vsa_core STATIC
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
-# OM_STATIC_BUILD: явная регистрация ридеров OpenMesh (иначе линкер выбросит их из статической библиотеки)
+# OM_STATIC_BUILD: explicit registration of OpenMesh readers (otherwise the linker drops them from the static library)
 target_compile_definitions(vsa_core PUBLIC _USE_MATH_DEFINES OM_STATIC_BUILD)
 target_compile_options(vsa_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-# ---------------------------------------------------------------- Тесты
+# ---------------------------------------------------------------- Tests
 enable_testing()
 add_executable(test_meshprep tests/test_meshprep.cpp)
 target_link_libraries(test_meshprep PRIVATE vsa_core)
 add_test(NAME meshprep COMMAND test_meshprep ${CMAKE_SOURCE_DIR}/data/cube.obj)
 
-# ---------------------------------------------------------------- Приложение
+# ---------------------------------------------------------------- Application
 set(APP_SOURCES
     src/app/main.cpp
     src/app/App.h
@@ -99,7 +99,7 @@ target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_app PRIVATE vsa_core ImGuiFileDialog imgui glfw OpenGL::GL)
 target_compile_options(vsa_app PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-# Удобства для Xcode: группы файлов как в дереве, схема с рабочей папкой = корень проекта
+# Xcode conveniences: file groups mirror the tree, scheme working directory = project root
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "src" FILES ${APP_SOURCES})
 set_target_properties(vsa_app PROPERTIES
     XCODE_GENERATE_SCHEME TRUE

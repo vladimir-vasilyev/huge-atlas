@@ -11,7 +11,7 @@ out vec3 vColor;
 void main() {
     float c = cos(uAngle), s = sin(uAngle);
     vec2 p = vec2(c * aPos.x - s * aPos.y, s * aPos.x + c * aPos.y);
-    p.x /= uAspect;                     // без искажения при любом соотношении сторон
+    p.x /= uAspect;                     // no distortion at any aspect ratio
     gl_Position = vec4(p, 0.0, 1.0);
     vColor = aColor;
 }

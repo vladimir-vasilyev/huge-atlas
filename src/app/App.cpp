@@ -1,6 +1,6 @@
 #include "app/App.h"
 
-#include "render/GL.h"   // строго до GLFW (GLFW_INCLUDE_NONE задан в CMake)
+#include "render/GL.h"   // strictly before GLFW (GLFW_INCLUDE_NONE is set in CMake)
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -32,7 +32,7 @@ bool App::init(int width, int height, const char* title)
     if (!glfwInit())
         return false;
 
-    // macOS: максимум 4.1, обязательно Core + forward-compatible
+    // macOS: 4.1 at most, Core + forward-compatible is mandatory
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -72,7 +72,7 @@ bool App::init(int width, int height, const char* title)
     }
     imguiReady_ = true;
 
-    // ---- Тестовая геометрия
+    // ---- Test geometry
     std::string log;
     if (!triangle_.init(&log)) {
         std::fprintf(stderr, "DebugTriangle shader error:\n%s\n", log.c_str());
@@ -85,7 +85,7 @@ bool App::init(int width, int height, const char* title)
     }
     showTriangle_ = false;
     rotate_ = false;
-    openMesh("data/cube.obj");   // файл по умолчанию; при ошибке просто сообщение в статусе
+    openMesh("data/cube.obj");   // default file; on failure only a status message
 
     glEnable(GL_DEPTH_TEST);
     GL_CHECK();
@@ -97,7 +97,7 @@ void App::run()
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
 
-        // Свёрнутое окно: не крутим кадры впустую
+        // Minimized window: do not spin frames needlessly
         if (glfwGetWindowAttrib(window_, GLFW_ICONIFIED)) {
             glfwWaitEventsTimeout(0.1);
             continue;
@@ -110,7 +110,7 @@ void App::run()
         drawUI();
         ImGui::Render();
 
-        // На Retina размер framebuffer в пикселях != размер окна в точках
+        // On Retina the framebuffer size in pixels != the window size in points
         int fbW = 0, fbH = 0;
         glfwGetFramebufferSize(window_, &fbW, &fbH);
         renderScene(fbW, fbH);
@@ -134,7 +134,7 @@ void App::openMesh(const std::string& path)
     diag_ = diagnose(mesh_, faceData_);
     camera_.reset();
     uploadMesh();
-    status_ = "загружено: " + path;
+    status_ = "loaded: " + path;
 }
 
 void App::uploadMesh()
@@ -157,7 +157,7 @@ void App::handleSceneInput()
         return;
     }
     int w, h;
-    glfwGetWindowSize(window_, &w, &h);   // координаты ImGui — в точках окна
+    glfwGetWindowSize(window_, &w, &h);   // ImGui coordinates are in window points
     const double x = io.MousePos.x, y = io.MousePos.y;
 
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -199,7 +199,7 @@ void App::drawMainMenu()
         ImGui::EndMainMenuBar();
     }
 
-    // Cmd+O на macOS (ImGui отображает Super как Cmd)
+    // Cmd+O on macOS (ImGui maps Super to Cmd)
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O) || ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_O))
         openRequested = true;
 
@@ -228,7 +228,7 @@ void App::drawUI()
     ImGuiIO& io = ImGui::GetIO();
 
 #ifdef IMGUI_HAS_DOCK
-    // Центральная область прозрачна: сквозь неё видна 3D-сцена
+    // The central area is transparent: the 3D scene shows through it
   #if IMGUI_VERSION_NUM >= 19100
     ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
   #else
@@ -317,7 +317,7 @@ void App::renderScene(int fbWidth, int fbHeight)
 
 void App::shutdown()
 {
-    // GL-ресурсы удаляем, пока контекст жив
+    // Delete GL resources while the context is alive
     if (window_) {
         glfwMakeContextCurrent(window_);
         triangle_.destroy();

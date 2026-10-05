@@ -7,14 +7,14 @@
 #include <string>
 #include <vector>
 
-// Меш с развёрнутыми вершинами (3 на грань): плоское затенение, цвет на грань,
-// каркас через барицентрические координаты во фрагментном шейдере.
+// Mesh with unrolled vertices (3 per face): flat shading, per-face color,
+// wireframe via barycentric coordinates in the fragment shader.
 class MeshRenderer {
 public:
     bool init(std::string* errorLog);
     void destroy();
 
-    // faceColors: rgb на грань (по face.idx()); пустой массив — серый.
+    // faceColors: rgb per face (indexed by face.idx()); an empty array means gray.
     void upload(const TriMesh& mesh, const std::vector<float>& faceColors = {});
 
     void draw(const float viewProj[16], const float view[16], bool wireframe, float wireWidth) const;

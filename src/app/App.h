@@ -9,8 +9,8 @@
 
 struct GLFWwindow;
 
-// Окно, главный цикл, ImGui. Алгоритмические модули (VSA, LinABF) сюда не попадают:
-// App только владеет их состоянием и вызывает их из UI.
+// Window, main loop, ImGui. Algorithmic modules (VSA, LinABF) do not live here:
+// App only owns their state and calls them from the UI.
 class App {
 public:
     bool init(int width, int height, const char* title);
@@ -28,10 +28,10 @@ private:
     GLFWwindow* window_ = nullptr;
     bool imguiReady_ = false;
 
-    // Информация о контексте, собирается один раз
+    // Context info, collected once
     std::string glVersion_, glRenderer_, glslVersion_;
 
-    // Состояние UI этапа 0
+    // Stage 0 UI state
     float clearColor_[3] = {0.16f, 0.17f, 0.20f};
     bool  showDemo_ = false;
     bool  showTriangle_ = true;
@@ -40,7 +40,7 @@ private:
 
     DebugTriangle triangle_;
 
-    // Этап 1: меш и его отображение
+    // Stage 1: mesh and its display
     TriMesh          mesh_;
     FaceData         faceData_;
     MeshDiagnostics  diag_;
@@ -49,7 +49,7 @@ private:
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
-    int              colorMode_ = 0;   // 0 — серый, 1 — по нормали грани
+    int              colorMode_ = 0;   // 0 - gray, 1 - face normal
     bool             dragging_ = false;
     bool             panning_ = false;
 };

@@ -2,13 +2,13 @@
 
 #include <cmath>
 
-// Arcball-камера вокруг начала координат (меш нормализован в единичный bbox).
-// Хранит поворот кватернионом; матрицы отдаёт в column-major для glUniformMatrix4fv.
+// Arcball camera around the origin (the mesh is normalized to a unit bbox).
+// Stores rotation as a quaternion; returns matrices column-major for glUniformMatrix4fv.
 class Camera {
 public:
     void reset() { *this = Camera(); }
 
-    // Координаты курсора в пикселях окна (любой согласованной системы), w/h — размер области.
+    // Cursor coordinates in window pixels (any consistent system), w/h - size of the area.
     void beginRotate(double x, double y, int w, int h) { last_ = project(x, y, w, h); }
     void rotateTo(double x, double y, int w, int h);
     void zoom(double wheelDelta) { dist_ *= std::pow(0.9, wheelDelta); if (dist_ < 0.2) dist_ = 0.2; if (dist_ > 20) dist_ = 20; }

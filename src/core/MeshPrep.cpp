@@ -11,12 +11,12 @@ bool loadMesh(const std::string& path, TriMesh& mesh, std::string* error)
     mesh.clean();
     OpenMesh::IO::Options opt;
     if (!OpenMesh::IO::read_mesh(mesh, path, opt)) {
-        if (error) *error = "не удалось прочитать файл: " + path;
+        if (error) *error = "failed to read file: " + path;
         mesh.clean();
         return false;
     }
     if (mesh.n_faces() == 0) {
-        if (error) *error = "в файле нет граней";
+        if (error) *error = "the file contains no faces";
         mesh.clean();
         return false;
     }
@@ -87,7 +87,7 @@ MeshDiagnostics diagnose(const TriMesh& mesh, const FaceData& fd)
         else if (!mesh.is_manifold(v)) ++d.nonManifoldVertices;
     }
 
-    // Компоненты связности по смежности через рёбра
+    // Connected components via edge adjacency
     std::vector<char> seen(mesh.n_faces(), 0);
     for (auto f0 : mesh.faces()) {
         if (seen[f0.idx()]) continue;
@@ -102,7 +102,7 @@ MeshDiagnostics diagnose(const TriMesh& mesh, const FaceData& fd)
         }
     }
 
-    // Граничные петли: обход по граничным полурёбрам
+    // Boundary loops: walk along boundary halfedges
     std::vector<char> visited(mesh.n_halfedges(), 0);
     for (auto h0 : mesh.halfedges()) {
         if (!mesh.is_boundary(h0) || visited[h0.idx()]) continue;

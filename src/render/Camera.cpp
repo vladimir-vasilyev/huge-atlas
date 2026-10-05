@@ -9,7 +9,7 @@ Camera::V3 Camera::project(double x, double y, int w, int h)
     double py = -(y - 0.5 * h) / r;
     const double d2 = px * px + py * py;
     if (d2 <= 0.5) return {px, py, std::sqrt(1.0 - d2)};
-    return {px, py, 0.5 / std::sqrt(d2)};   // гиперболическая ветвь вне сферы
+    return {px, py, 0.5 / std::sqrt(d2)};   // hyperbolic branch outside the sphere
 }
 
 void Camera::rotateTo(double x, double y, int w, int h)
@@ -17,7 +17,7 @@ void Camera::rotateTo(double x, double y, int w, int h)
     const V3 a = last_, b = project(x, y, w, h);
     auto norm = [](V3 v) { double n = std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z); return V3{v.x/n, v.y/n, v.z/n}; };
     const V3 u = norm(a), v = norm(b);
-    // кватернион поворота u -> v в пространстве камеры
+    // quaternion rotating u -> v in view space
     V3 c{u.y*v.z - u.z*v.y, u.z*v.x - u.x*v.z, u.x*v.y - u.y*v.x};
     const double dot = u.x*v.x + u.y*v.y + u.z*v.z;
     double dq[4] = {1 + dot, c.x, c.y, c.z};

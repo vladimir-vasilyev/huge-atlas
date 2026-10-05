@@ -2,8 +2,8 @@
 
 #include "render/Shader.h"
 
-// Вращающийся цветной треугольник: проверяет, что VAO/VBO и шейдеры 410 core работают.
-// Уберём на этапе 1, когда появится отрисовка меша.
+// Rotating colored triangle: checks that VAO/VBO and 410 core shaders work.
+// To be removed once mesh rendering is stable.
 class DebugTriangle {
 public:
     bool init(std::string* errorLog = nullptr);

@@ -15,10 +15,10 @@ struct MeshDiagnostics {
     double totalArea = 0.0;
 };
 
-// Читает OBJ/OFF/PLY/STL. Многоугольники триангулируются. false + error при неудаче.
+// Reads OBJ/OFF/PLY/STL. Polygons are triangulated. Returns false and sets error on failure.
 bool loadMesh(const std::string& path, TriMesh& mesh, std::string* error = nullptr);
 
-// Сдвиг центра bbox в начало координат и масштаб так, чтобы наибольшая сторона bbox = 1.
+// Moves the bbox center to the origin and scales so that the longest bbox side is 1.
 void normalizeToUnitBox(TriMesh& mesh);
 
 FaceData computeFaceData(const TriMesh& mesh, double degenerateAreaEps = 1e-14);
