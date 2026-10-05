@@ -19,6 +19,7 @@ public:
 
 private:
     void drawUI();
+    void drawMainMenu();
     void renderScene(int fbWidth, int fbHeight);
     void handleSceneInput();
     void openMesh(const std::string& path);
@@ -45,7 +46,7 @@ private:
     MeshDiagnostics  diag_;
     MeshRenderer     meshRenderer_;
     Camera           camera_;
-    char             pathBuf_[1024] = "data/cube.obj";
+    std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
     int              colorMode_ = 0;   // 0 — серый, 1 — по нормали грани

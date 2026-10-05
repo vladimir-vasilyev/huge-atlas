@@ -27,6 +27,9 @@ add_sub() {
 add_sub https://github.com/ocornut/imgui.git external/imgui docking
 add_sub https://github.com/glfw/glfw.git     external/glfw  3.4
 
+# Диалог выбора файлов (этап 1)
+add_sub https://github.com/aiekick/ImGuiFileDialog.git external/ImGuiFileDialog
+
 # Понадобятся с этапа 1-2 (подключаем сразу, чтобы структура не менялась)
 add_sub https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh.git external/OpenMesh
 add_sub https://gitlab.com/libeigen/eigen.git                         external/eigen 3.4.0

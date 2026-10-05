@@ -41,6 +41,11 @@ target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_compile_definitions(imgui PUBLIC GL_SILENCE_DEPRECATION GLFW_INCLUDE_NONE)
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
+# ---------------------------------------------------------------- ImGuiFileDialog
+add_library(ImGuiFileDialog STATIC ${EXT_DIR}/ImGuiFileDialog/ImGuiFileDialog.cpp)
+target_include_directories(ImGuiFileDialog PUBLIC ${EXT_DIR}/ImGuiFileDialog)
+target_link_libraries(ImGuiFileDialog PUBLIC imgui)
+
 # ---------------------------------------------------------------- Eigen (header-only)
 add_library(eigen INTERFACE)
 target_include_directories(eigen SYSTEM INTERFACE ${EXT_DIR}/eigen)
@@ -91,7 +96,7 @@ set(APP_SOURCES
 
 add_executable(vsa_app ${APP_SOURCES})
 target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(vsa_app PRIVATE vsa_core imgui glfw OpenGL::GL)
+target_link_libraries(vsa_app PRIVATE vsa_core ImGuiFileDialog imgui glfw OpenGL::GL)
 target_compile_options(vsa_app PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # Удобства для Xcode: группы файлов как в дереве, схема с рабочей папкой = корень проекта

@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <ImGuiFileDialog.h>
 
 #include <cmath>
 #include <cstdio>
@@ -84,7 +85,7 @@ bool App::init(int width, int height, const char* title)
     }
     showTriangle_ = false;
     rotate_ = false;
-    openMesh(pathBuf_);   // файл по умолчанию; при ошибке просто сообщение в статусе
+    openMesh("data/cube.obj");   // файл по умолчанию; при ошибке просто сообщение в статусе
 
     glEnable(GL_DEPTH_TEST);
     GL_CHECK();
@@ -173,6 +174,55 @@ void App::handleSceneInput()
     if (io.MouseWheel != 0.0f) camera_.zoom(io.MouseWheel);
 }
 
+void App::drawMainMenu()
+{
+    constexpr const char* kDialogKey = "OpenMeshDlg";
+    bool openRequested = false;
+
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Open...", "Cmd+O"))
+                openRequested = true;
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "Cmd+Q"))
+                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Wireframe", nullptr, &wireframe_);
+            if (ImGui::MenuItem("Reset camera"))
+                camera_.reset();
+            ImGui::Separator();
+            ImGui::MenuItem("ImGui demo", nullptr, &showDemo_);
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+
+    // Cmd+O на macOS (ImGui отображает Super как Cmd)
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O) || ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_O))
+        openRequested = true;
+
+    if (openRequested) {
+        IGFD::FileDialogConfig cfg;
+        cfg.path = lastDir_;
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal;
+        ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, "Open mesh",
+                                                "Meshes{.obj,.off,.ply,.stl},.*", cfg);
+    }
+
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    if (ImGuiFileDialog::Instance()->Display(kDialogKey, ImGuiWindowFlags_NoCollapse,
+                                             ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
+            openMesh(ImGuiFileDialog::Instance()->GetFilePathName());
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+}
+
 void App::drawUI()
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -186,7 +236,7 @@ void App::drawUI()
   #endif
 #endif
 
-    ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(12, 36), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Info")) {
         ImGui::Text("OpenGL : %s", glVersion_.c_str());
@@ -212,10 +262,9 @@ void App::drawUI()
     }
     ImGui::End();
 
+    drawMainMenu();
+
     if (ImGui::Begin("Mesh")) {
-        ImGui::InputText("Path", pathBuf_, sizeof(pathBuf_));
-        if (ImGui::Button("Open"))
-            openMesh(pathBuf_);
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::Separator();
         ImGui::Checkbox("Wireframe", &wireframe_);
