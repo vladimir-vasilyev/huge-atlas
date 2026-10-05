@@ -41,6 +41,37 @@ target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_compile_definitions(imgui PUBLIC GL_SILENCE_DEPRECATION GLFW_INCLUDE_NONE)
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
+# ---------------------------------------------------------------- Eigen (header-only)
+add_library(eigen INTERFACE)
+target_include_directories(eigen SYSTEM INTERFACE ${EXT_DIR}/eigen)
+
+# ---------------------------------------------------------------- OpenMesh (статически)
+set(OPENMESH_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(BUILD_APPS OFF CACHE BOOL "" FORCE)
+set(OPENMESH_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(OPENMESH_DOCS OFF CACHE BOOL "" FORCE)
+set(DISABLE_QMAKE_BUILD ON CACHE BOOL "" FORCE)
+set(OPENMESH_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+add_subdirectory(${EXT_DIR}/OpenMesh EXCLUDE_FROM_ALL)
+
+# ---------------------------------------------------------------- Ядро (без GL/ImGui)
+add_library(vsa_core STATIC
+    src/core/MeshTypes.h
+    src/core/MeshPrep.h
+    src/core/MeshPrep.cpp
+)
+target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
+# OM_STATIC_BUILD: явная регистрация ридеров OpenMesh (иначе линкер выбросит их из статической библиотеки)
+target_compile_definitions(vsa_core PUBLIC _USE_MATH_DEFINES OM_STATIC_BUILD)
+target_compile_options(vsa_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+# ---------------------------------------------------------------- Тесты
+enable_testing()
+add_executable(test_meshprep tests/test_meshprep.cpp)
+target_link_libraries(test_meshprep PRIVATE vsa_core)
+add_test(NAME meshprep COMMAND test_meshprep ${CMAKE_SOURCE_DIR}/data/cube.obj)
+
 # ---------------------------------------------------------------- Приложение
 set(APP_SOURCES
     src/app/main.cpp
@@ -52,11 +83,15 @@ set(APP_SOURCES
     src/render/Shader.cpp
     src/render/DebugTriangle.h
     src/render/DebugTriangle.cpp
+    src/render/Camera.h
+    src/render/Camera.cpp
+    src/render/MeshRenderer.h
+    src/render/MeshRenderer.cpp
 )
 
 add_executable(vsa_app ${APP_SOURCES})
 target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(vsa_app PRIVATE imgui glfw OpenGL::GL)
+target_link_libraries(vsa_app PRIVATE vsa_core imgui glfw OpenGL::GL)
 target_compile_options(vsa_app PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # Удобства для Xcode: группы файлов как в дереве, схема с рабочей папкой = корень проекта

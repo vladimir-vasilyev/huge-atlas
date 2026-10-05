@@ -1,6 +1,9 @@
 #pragma once
 
+#include "core/MeshPrep.h"
+#include "render/Camera.h"
 #include "render/DebugTriangle.h"
+#include "render/MeshRenderer.h"
 
 #include <string>
 
@@ -17,6 +20,9 @@ public:
 private:
     void drawUI();
     void renderScene(int fbWidth, int fbHeight);
+    void handleSceneInput();
+    void openMesh(const std::string& path);
+    void uploadMesh();
 
     GLFWwindow* window_ = nullptr;
     bool imguiReady_ = false;
@@ -32,4 +38,17 @@ private:
     float angle_ = 0.0f;
 
     DebugTriangle triangle_;
+
+    // Этап 1: меш и его отображение
+    TriMesh          mesh_;
+    FaceData         faceData_;
+    MeshDiagnostics  diag_;
+    MeshRenderer     meshRenderer_;
+    Camera           camera_;
+    char             pathBuf_[1024] = "data/cube.obj";
+    std::string      status_;
+    bool             wireframe_ = true;
+    int              colorMode_ = 0;   // 0 — серый, 1 — по нормали грани
+    bool             dragging_ = false;
+    bool             panning_ = false;
 };

@@ -78,6 +78,14 @@ bool App::init(int width, int height, const char* title)
         return false;
     }
 
+    if (!meshRenderer_.init(&log)) {
+        std::fprintf(stderr, "MeshRenderer shader error:\n%s\n", log.c_str());
+        return false;
+    }
+    showTriangle_ = false;
+    rotate_ = false;
+    openMesh(pathBuf_);   // файл по умолчанию; при ошибке просто сообщение в статусе
+
     glEnable(GL_DEPTH_TEST);
     GL_CHECK();
     return true;
@@ -109,6 +117,60 @@ void App::run()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window_);
     }
+}
+
+void App::openMesh(const std::string& path)
+{
+    TriMesh m;
+    std::string err;
+    if (!loadMesh(path, m, &err)) {
+        status_ = err;
+        return;
+    }
+    normalizeToUnitBox(m);
+    mesh_ = std::move(m);
+    faceData_ = computeFaceData(mesh_);
+    diag_ = diagnose(mesh_, faceData_);
+    camera_.reset();
+    uploadMesh();
+    status_ = "загружено: " + path;
+}
+
+void App::uploadMesh()
+{
+    std::vector<float> colors;
+    if (colorMode_ == 1) {
+        colors.resize(mesh_.n_faces() * 3);
+        for (size_t i = 0; i < mesh_.n_faces(); ++i)
+            for (int k = 0; k < 3; ++k)
+                colors[i * 3 + k] = float(faceData_.normal[i][k] * 0.5 + 0.5);
+    }
+    meshRenderer_.upload(mesh_, colors);
+}
+
+void App::handleSceneInput()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantCaptureMouse) {
+        dragging_ = panning_ = false;
+        return;
+    }
+    int w, h;
+    glfwGetWindowSize(window_, &w, &h);   // координаты ImGui — в точках окна
+    const double x = io.MousePos.x, y = io.MousePos.y;
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        dragging_ = true;
+        camera_.beginRotate(x, y, w, h);
+    }
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+        panning_ = true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) dragging_ = false;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) panning_ = false;
+
+    if (dragging_) camera_.rotateTo(x, y, w, h);
+    if (panning_) camera_.pan(io.MouseDelta.x, io.MouseDelta.y, h);
+    if (io.MouseWheel != 0.0f) camera_.zoom(io.MouseWheel);
 }
 
 void App::drawUI()
@@ -150,6 +212,36 @@ void App::drawUI()
     }
     ImGui::End();
 
+    if (ImGui::Begin("Mesh")) {
+        ImGui::InputText("Path", pathBuf_, sizeof(pathBuf_));
+        if (ImGui::Button("Open"))
+            openMesh(pathBuf_);
+        ImGui::TextWrapped("%s", status_.c_str());
+        ImGui::Separator();
+        ImGui::Checkbox("Wireframe", &wireframe_);
+        if (ImGui::RadioButton("Gray", &colorMode_, 0)) uploadMesh();
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Face normals", &colorMode_, 1)) uploadMesh();
+        if (ImGui::Button("Reset camera")) camera_.reset();
+        ImGui::Separator();
+        if (meshRenderer_.hasMesh()) {
+            ImGui::Text("Vertices : %d", diag_.vertices);
+            ImGui::Text("Edges    : %d", diag_.edges);
+            ImGui::Text("Faces    : %d", diag_.faces);
+            ImGui::Text("Euler chi: %d", diag_.eulerCharacteristic);
+            ImGui::Text("Components     : %d", diag_.components);
+            ImGui::Text("Boundary loops : %d", diag_.boundaryLoops);
+            ImGui::Text("Total area     : %.4f", diag_.totalArea);
+            ImGui::Separator();
+            ImGui::Text("Degenerate faces   : %d", diag_.degenerateFaces);
+            ImGui::Text("Non-manifold verts : %d", diag_.nonManifoldVertices);
+            ImGui::Text("Isolated verts     : %d", diag_.isolatedVertices);
+        }
+    }
+    ImGui::End();
+
+    handleSceneInput();
+
     if (showDemo_)
         ImGui::ShowDemoWindow(&showDemo_);
 
@@ -165,6 +257,13 @@ void App::renderScene(int fbWidth, int fbHeight)
 
     if (showTriangle_ && fbHeight > 0)
         triangle_.draw(angle_, float(fbWidth) / float(fbHeight));
+
+    if (meshRenderer_.hasMesh() && fbHeight > 0) {
+        float vp[16], v[16];
+        camera_.viewProj(float(fbWidth) / float(fbHeight), vp);
+        camera_.view(v);
+        meshRenderer_.draw(vp, v, wireframe_, 1.0f);
+    }
 }
 
 void App::shutdown()
@@ -173,6 +272,7 @@ void App::shutdown()
     if (window_) {
         glfwMakeContextCurrent(window_);
         triangle_.destroy();
+        meshRenderer_.destroy();
     }
     if (imguiReady_) {
         ImGui_ImplOpenGL3_Shutdown();
