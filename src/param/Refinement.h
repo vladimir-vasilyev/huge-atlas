@@ -53,7 +53,10 @@ struct RefineStats {
 
 struct RefineResult {
     std::vector<int> labels;                 // per face, the final region = patch index
-    ExtractionResult extraction;             // patches of `labels`
+    // patches of `labels`. For a patch that has a parameterization the mesh of this copy is released (it is the same
+    // mesh as params[i].patch, unless the patch was cut there): use params[i].patch.mesh. faceToGlobal and the
+    // topology stay.
+    ExtractionResult extraction;
     std::vector<PatchParam> params;          // parallel to extraction.patches (empty method for non-disks)
     std::vector<char> bad;                   // parallel: still needs a split
     RefineStats stats;
@@ -70,6 +73,9 @@ public:
 
     bool finished() const { return finished_; }
     const RefineResult& result() const { return result_; }   // the last evaluation (final once finished)
+    // Moves the result out (no copy of the patches): for the caller that keeps it. The refiner is finished and
+    // empty afterwards.
+    RefineResult takeResult() { finished_ = true; return std::move(result_); }
     const std::vector<int>& labels() const { return labels_; }
 
 private:
@@ -83,7 +89,6 @@ private:
     RefineResult result_;
     bool finished_ = false;
     int nextLabel_ = 0;
-    std::unordered_map<uint64_t, PatchParam> cache_;   // by the face set of a patch
 };
 
 RefineResult refinePatches(const TriMesh& mesh, std::vector<int> labels, const RefineOptions& options = {});

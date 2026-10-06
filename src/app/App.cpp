@@ -213,9 +213,8 @@ void App::openMesh(const std::string& path)
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
     diag_ = diagnose(mesh_, faceData_);
-    baseMoments_ = computeFaceMoments(mesh_, faceData_);
     faceWeights_.assign(mesh_.n_faces(), 1.0f);
-    faceMoments_ = baseMoments_;
+    faceMoments_ = computeFaceMoments(mesh_, faceData_);
     wholeMesh_ = Moments();
     for (const Moments& fm : faceMoments_)
         wholeMesh_ += fm;
@@ -369,7 +368,7 @@ void App::uploadMesh()
         colors.assign(nF * 3, 0.3f);
         for (size_t pi = 0; pi < patches_.patches.size() && pi < linabf_.size(); ++pi) {
             if (!linabfSolved_[pi] || !linabf_[pi].ok) continue;
-            const Patch& p = patches_.patches[pi];
+            const Patch& p = patchAt(pi);
             const std::vector<double> orig = originalAngles(p.mesh);
             for (auto lf : p.mesh.faces()) {
                 double e = 0.0;
@@ -491,7 +490,7 @@ void App::rebuildBoundaryLines()
     if (showBoundaries_ && patchesValid_ && patches_.faceToPatch.size() == mesh_.n_faces()) {
         const std::vector<Vec3> po = patchExplodeOffsets();
         for (size_t pi = 0; pi < patches_.patches.size(); ++pi) {
-            const Patch& p = patches_.patches[pi];
+            const Patch& p = patchAt(pi);
             const Vec3 off = po.empty() ? Vec3(0, 0, 0) : po[pi];
             for (auto h : p.mesh.halfedges()) {
                 if (!p.mesh.is_boundary(h)) continue;
@@ -607,7 +606,7 @@ void App::solvePatches(bool onlySelected)
     for (size_t i = 0; i < patches_.patches.size(); ++i) {
         if (onlySelected && int(i) != selectedPatch_) continue;
         if (!patches_.patches[i].isDisk()) continue;
-        linabf_[i] = solveLinABF(patches_.patches[i].mesh, linabfParams_);
+        linabf_[i] = solveLinABF(patchAt(i).mesh, linabfParams_);
         linabfSolved_[i] = 1;
         uvDone_[i] = 0;
     }
@@ -621,7 +620,7 @@ void App::computeUV(bool onlySelected)
     for (size_t i = 0; i < patches_.patches.size(); ++i) {
         if (onlySelected && int(i) != selectedPatch_) continue;
         if (!linabfSolved_[i] || !linabf_[i].ok) continue;
-        const TriMesh& m = patches_.patches[i].mesh;
+        const TriMesh& m = patchAt(i).mesh;
         uv_[i] = uvGreedy_ ? anglesToUVGreedy(m, linabf_[i].angles) : anglesToUV(m, linabf_[i].angles);
         uvStats_[i] = uv_[i].ok ? analyzeUV(m, uv_[i].uv, linabf_[i].angles) : UVStats();
         uvDone_[i] = 1;
@@ -658,7 +657,7 @@ void App::drawUvPanel()
     } else if (haveParam) {
         layers.push_back({&params_[sel].patch.mesh, &params_[sel].uv, sel, &params_[sel]});
     } else if (haveStage8) {
-        layers.push_back({&patches_.patches[sel].mesh, &uv_[sel].uv, sel, nullptr});
+        layers.push_back({&patchAt(sel).mesh, &uv_[sel].uv, sel, nullptr});
     }
     if (layers.empty()) {
         ImGui::TextUnformatted("Select a patch and parameterize it (Parameterize panel)");
@@ -836,9 +835,9 @@ void App::startRefine()
 
 void App::applyRefineResult()
 {
-    const RefineResult& r = refiner_->result();
-    patches_ = r.extraction;
-    params_ = r.params;
+    RefineResult r = refiner_->takeResult();   // moved: no copy of the patches
+    patches_ = std::move(r.extraction);
+    params_ = std::move(r.params);
     const size_t n = patches_.patches.size();
     paramDone_.assign(n, 0);
     for (size_t i = 0; i < n; ++i) paramDone_[i] = params_[i].method != ParamMethod::None || !patches_.patches[i].isDisk();
@@ -847,7 +846,7 @@ void App::applyRefineResult()
     uv_.assign(n, UVResult());
     uvStats_.assign(n, UVStats());
     uvDone_.assign(n, 0);
-    patchedLabels_ = r.labels;
+    patchedLabels_ = std::move(r.labels);
     patchesValid_ = true;
     patchesRefined_ = true;
     atlasValid_ = false;
@@ -1608,9 +1607,15 @@ void App::drawLinabfPanel()
     ImGui::End();
 }
 
+const Patch& App::patchAt(size_t i) const
+{
+    if (i < params_.size() && i < paramDone_.size() && paramDone_[i] && params_[i].patch.mesh.n_faces() > 0) return params_[i].patch;
+    return patches_.patches[i];
+}
+
 void App::rebuildMoments()
 {
-    faceMoments_ = baseMoments_;
+    faceMoments_ = computeFaceMoments(mesh_, faceData_);   // the unweighted moments are cheap to recompute: no second copy is kept
     wholeMesh_ = Moments();
     for (size_t i = 0; i < faceMoments_.size(); ++i) {
         if (faceWeights_[i] != 1.0f) faceMoments_[i] *= double(faceWeights_[i]);

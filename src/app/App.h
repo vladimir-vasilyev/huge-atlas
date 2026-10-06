@@ -64,6 +64,7 @@ private:
     void bakeAtlasPreview();               // retexture: the source texture baked into the atlas layout
     void measureLayouts();                 // original layout vs ours, and the quality of the retexturing
     std::vector<BakeChart> bakeCharts() const;
+    const Patch& patchAt(size_t i) const;  // the patch to draw / solve: the parameterized (maybe cut) one, else the extracted one
     void requestSave();                    // File > Save: to the last path, or Save As if there is none
     bool performSave(const std::string& path);              // OBJ / mask PNG dialogs, drawn every frame
     void drawMakeAtlasPanel();
@@ -150,7 +151,6 @@ private:
     bool             boundaryStatsValid_ = false;
 
     // Stage 5: per-face weights (error density), painted with a brush
-    std::vector<Moments> baseMoments_;     // unweighted
     std::vector<float>   faceWeights_;
     bool             paintMode_ = false;
     bool             eraseMode_ = false;

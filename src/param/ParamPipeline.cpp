@@ -90,16 +90,18 @@ void finish(PatchParam& out, const Patch& patch, ParamMethod method, Attempt& a)
 PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const ParamOptions& opt)
 {
     PatchParam out;
-    out.patch = original;
     if (!original.isDisk()) {
+        out.patch = original;
         out.log = std::string("not a disk: ") + patchKindName(original.topology.kind);
         out.needsSplit = true;
         return out;
     }
 
-    Patch current = original;
+    // A patch carries its mesh: copies are made only when something changes (a slit) or a result is kept
+    Patch cutPatch;
+    const Patch* current = &original;
     Attempt best;   // the attempt with the fewest problems, in case nothing is injective
-    Patch bestPatch = original;
+    Patch bestPatch;
     ParamMethod bestMethod = ParamMethod::None;
     auto consider = [&](Attempt& a, const Patch& p, ParamMethod method) {
         out.log += a.what + "\n";
@@ -116,17 +118,18 @@ PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const
         if (cut > 0) {
             Patch next;
             std::string err;
-            if (!cutAtWorstVertex(source, current, opt.cutKappa, next, &err)) { out.log += "cut: " + err + "\n"; break; }
-            current = std::move(next);
+            if (!cutAtWorstVertex(source, *current, opt.cutKappa, next, &err)) { out.log += "cut: " + err + "\n"; break; }
+            cutPatch = std::move(next);
+            current = &cutPatch;
             out.log += "cut " + std::to_string(cut) + ": slit added\n";
         }
         const ParamMethod plain = cut ? ParamMethod::Cut : ParamMethod::LinABF;
-        Attempt a = attempt(current.mesh, solveLinABF(current.mesh, opt.lin), opt, "LinABF");
-        if (consider(a, current, plain)) { done = true; break; }
+        Attempt a = attempt(current->mesh, solveLinABF(current->mesh, opt.lin), opt, "LinABF");
+        if (consider(a, *current, plain)) { done = true; break; }
         if (opt.useActiveSet) {
             ActiveSetInfo info;
-            Attempt b = attempt(current.mesh, solveLinABFActiveSet(current.mesh, opt.lin, opt.active, &info), opt, "active set");
-            if (consider(b, current, cut ? ParamMethod::Cut : ParamMethod::ActiveSet)) { done = true; break; }
+            Attempt b = attempt(current->mesh, solveLinABFActiveSet(current->mesh, opt.lin, opt.active, &info), opt, "active set");
+            if (consider(b, *current, cut ? ParamMethod::Cut : ParamMethod::ActiveSet)) { done = true; break; }
         }
     }
 
@@ -149,6 +152,7 @@ PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const
         finish(out, bestPatch, bestMethod, best);
         out.injective = false;
     }
+    if (out.method == ParamMethod::None) out.patch = original;   // nothing solved at all: the caller still gets the patch
     if (out.method != ParamMethod::None) {
         out.distortion = computeDistortion(out.patch.mesh, out.uv, &out.perTriangleL2);
         double total = 0.0, bad = 0.0;

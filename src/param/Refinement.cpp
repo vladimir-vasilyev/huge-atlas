@@ -5,6 +5,9 @@
 #include "param/ThreadPool.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <mach/mach.h>
 #include <chrono>
 #include <limits>
 #include <queue>
@@ -87,6 +90,18 @@ Refiner::Refiner(const TriMesh& mesh, std::vector<int> labels, const RefineOptio
 
 void Refiner::evaluate()
 {
+    // What was computed in the previous round is reused for the patches whose faces did not change. The old
+    // parameterizations are moved, not copied: a patch carries its mesh, and a copy per round is a copy of the model.
+    std::unordered_map<uint64_t, int> previous;                // face set -> index in the previous result
+    for (size_t i = 0; i < result_.extraction.patches.size(); ++i)
+        previous[hashFaces(result_.extraction.patches[i].faceToGlobal)] = int(i);
+    std::vector<PatchParam> oldParams = std::move(result_.params);
+    const std::vector<Patch> oldPatches = [&] {                // only the face lists are needed to confirm a match
+        std::vector<Patch> v(result_.extraction.patches.size());
+        for (size_t i = 0; i < v.size(); ++i) v[i].faceToGlobal = std::move(result_.extraction.patches[i].faceToGlobal);
+        return v;
+    }();
+
     ExtractionResult ex = extractPatches(mesh_, labels_, opt_.patch);
     labels_ = ex.faceToPatch;           // compact, merged labels (-1 stays -1)
     nextLabel_ = int(ex.patches.size());
@@ -94,16 +109,15 @@ void Refiner::evaluate()
     const ParamOptions ladder = ladderFor(opt_);
     std::vector<PatchParam> params(ex.patches.size());
     std::vector<char> bad(ex.patches.size(), 0);
-    std::unordered_map<uint64_t, PatchParam> fresh;
-    // the patches that are not in the cache and are disks need the parameterization ladder: independent jobs,
+
+    // the patches that were not seen before and are disks need the parameterization ladder: independent jobs,
     // the biggest first so that the threads finish together
-    std::vector<uint64_t> keys(ex.patches.size());
     std::vector<int> work;
     for (size_t i = 0; i < ex.patches.size(); ++i) {
-        keys[i] = hashFaces(ex.patches[i].faceToGlobal);
-        auto it = cache_.find(keys[i]);
-        if (it != cache_.end() && it->second.patch.faceToGlobal == ex.patches[i].faceToGlobal) {
-            params[i] = it->second;
+        auto it = previous.find(hashFaces(ex.patches[i].faceToGlobal));
+        if (it != previous.end() && it->second < int(oldParams.size()) &&
+            oldPatches[it->second].faceToGlobal == ex.patches[i].faceToGlobal) {
+            params[i] = std::move(oldParams[it->second]);
         } else if (ex.patches[i].isDisk()) {
             work.push_back(int(i));
         } else {
@@ -117,13 +131,22 @@ void Refiner::evaluate()
     });
     ThreadPool::shared().parallelFor(int(work.size()), [&](int t) {
         const int i = work[t];
-        params[i] = parameterizePatch(mesh_, ex.patches[i], ladder);
+        // Tutte (an expensive LU factorization, and always a bad result) is the last resort: a patch that can still
+        // be split is simply split in the next round
+        ParamOptions mine = ladder;
+        const std::vector<int>& faces = ex.patches[i].faceToGlobal;
+        if (faceDepth_[faces[0]] < opt_.maxDepth && int(faces.size()) >= 2 * opt_.minFaces) mine.allowTutte = false;
+        params[i] = parameterizePatch(mesh_, ex.patches[i], mine);
+        // the mesh of the patch is in params[i].patch now: release the extracted copy at once, not at the end of the round
+        if (params[i].patch.mesh.n_faces() == ex.patches[i].mesh.n_faces() && ex.patches[i].mesh.n_faces() > 0)
+            ex.patches[i].mesh = TriMesh();
     });
-    for (size_t i = 0; i < ex.patches.size(); ++i) {
-        bad[i] = params[i].needsSplit;
-        fresh[keys[i]] = params[i];
-    }
-    cache_ = std::move(fresh);
+    for (size_t i = 0; i < ex.patches.size(); ++i) bad[i] = params[i].needsSplit;
+
+    // the patch mesh now lives in params[i].patch: release the second copy
+    for (size_t i = 0; i < ex.patches.size(); ++i)
+        if (params[i].patch.mesh.n_faces() == ex.patches[i].mesh.n_faces() && ex.patches[i].mesh.n_faces() > 0)
+            ex.patches[i].mesh = TriMesh();
 
     RefineStats stats = result_.stats;
     std::fill(stats.depthHistogram.begin(), stats.depthHistogram.end(), 0);
@@ -278,6 +301,16 @@ bool Refiner::step()
             if (splitPatch(pi)) ++done;
         }
     ++result_.stats.rounds;
+    if (std::getenv("VSA_VERBOSE")) {   // per round: how many patches, how many are bad, how much was split, the memory
+        task_vm_info_data_t vm;
+        mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+        task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm), &count);
+        size_t biggest = 0;
+        for (const Patch& p : result_.extraction.patches) biggest = std::max(biggest, p.faceToGlobal.size());
+        std::fprintf(stderr, "[refine] round %d: %zu patches (biggest %zu faces), %zu bad, %d split, footprint %.0f MB, peak %.0f MB\n",
+                     result_.stats.rounds, result_.extraction.patches.size(), biggest, order.size(), done,
+                     vm.phys_footprint / 1e6, vm.ledger_phys_footprint_peak / 1e6);
+    }
     result_.stats.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (done == 0) { finished_ = true; return false; }
     return true;
@@ -287,5 +320,5 @@ RefineResult refinePatches(const TriMesh& mesh, std::vector<int> labels, const R
 {
     Refiner r(mesh, std::move(labels), options);
     while (r.step()) {}
-    return r.result();
+    return r.takeResult();
 }
