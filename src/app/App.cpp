@@ -239,6 +239,8 @@ void App::uploadMesh()
     }
     meshRenderer_.upload(mesh_, colors, offsets);
     rebuildBoundaryLines();
+    boundaryStatsValid_ = vsa_.label.size() == nF;
+    if (boundaryStatsValid_) boundaryStats_ = computeBoundaryStats(mesh_, vsa_.label);
 }
 
 std::vector<Vec3> App::patchExplodeOffsets() const
@@ -477,6 +479,29 @@ void App::drawVsaPanel()
             lloydParams_.relTolerance = std::max(0.0f, tol);
     }
 
+    ImGui::SeparatorText("Border smoothing");
+    {
+        float lam = float(smoothParams_.lambda), kap = float(smoothParams_.kappa);
+        if (ImGui::SliderFloat("Lambda (perimeter)", &lam, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
+            smoothParams_.lambda = lam;
+        if (ImGui::SliderFloat("Kappa (crease)", &kap, 0.0f, 4.0f, "%.2f"))
+            smoothParams_.kappa = kap;
+        ImGui::SliderInt("Max sweeps", &smoothParams_.maxSweeps, 1, 30);
+        ImGui::TextDisabled("lambda = 0: off. Applied after every partition in Run / Step.");
+    }
+    vsa_.smooth = smoothParams_;
+    ImGui::BeginDisabled(!partitioned || running);
+    if (ImGui::Button("Smooth now")) {
+        const SmoothStats st = smoothLabels(vsaInput(), vsa_);
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "smoothing: %d flips in %d sweeps, perimeter %.3f -> %.3f", st.flips,
+                      st.sweeps, st.perimeterBefore, st.perimeterAfter);
+        lloydStatus_ = buf;
+        colorMode_ = 2;
+        uploadMesh();
+    }
+    ImGui::EndDisabled();
+
     ImGui::SeparatorText("Proxy operations");
     ImGui::BeginDisabled(!partitioned || running);
     if (ImGui::Button("Insert")) {
@@ -538,6 +563,9 @@ void App::drawVsaPanel()
         ImGui::Text("Added for unseeded components: %d", vsaAdded_);
     if (partitioned)
         ImGui::Text("Energy : %.6f", totalEnergy(vsa_));
+    if (boundaryStatsValid_ && partitioned)
+        ImGui::Text("Borders: length %.3f, teeth %d, spikes %d, reflex %d", boundaryStats_.perimeter,
+                    boundaryStats_.teeth, boundaryStats_.spikeVertices, boundaryStats_.reflexVertices);
     if (!vsa_.energyHistory.empty()) {
         const std::vector<float> h(vsa_.energyHistory.begin(), vsa_.energyHistory.end());
         char overlay[48];

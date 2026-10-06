@@ -14,9 +14,17 @@ struct VSAInput {
     const std::vector<Moments>& moments;   // per face, see computeFaceMoments
 };
 
+// Regularization of the borders between regions (see Smoothing.h).
+struct SmoothParams {
+    double lambda = 0.0;     // 0 = off; relative weight of the perimeter against the fit error
+    double kappa = 0.0;      // crease sensitivity of the edge weights: exp(-kappa * normal angle)
+    int    maxSweeps = 10;
+};
+
 // All mutable VSA state in one object.
 struct VSAState {
     Metric              metric = Metric::L21;
+    SmoothParams        smooth;      // applied after every partition of lloydStep
     std::vector<Proxy>  proxies;
     std::vector<Moments> regions;    // per-proxy moments of the faces currently labeled with it
     std::vector<int>    label;       // per face: proxy index, -1 = unassigned (empty before the first partition)
@@ -70,7 +78,7 @@ struct LloydResult {
     int  teleports = 0;             // accepted proxy teleportations (runLloydTeleport)
 };
 
-// One iteration: partition + fit. Appends the energy to s.energyHistory.
+// One iteration: partition, border smoothing (if s.smooth.lambda > 0), fit. Appends the energy to s.energyHistory.
 LloydStepInfo lloydStep(const VSAInput& in, VSAState& s);
 
 // Fixed point (labels unchanged) or relative energy change below tolerance for `patience` steps.

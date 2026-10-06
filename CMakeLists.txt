@@ -72,6 +72,10 @@ add_library(vsa_core STATIC
     src/core/Partition.cpp
     src/core/Operations.h
     src/core/Operations.cpp
+    src/core/BoundaryMetrics.h
+    src/core/BoundaryMetrics.cpp
+    src/core/Smoothing.h
+    src/core/Smoothing.cpp
     src/param/PatchTopology.h
     src/param/PatchTopology.cpp
     src/param/PatchExtractor.h
@@ -100,6 +104,10 @@ target_link_libraries(test_operations PRIVATE vsa_core)
 add_test(NAME operations COMMAND test_operations)
 
 add_test(NAME partition COMMAND test_partition ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
+
+add_executable(test_smoothing tests/test_smoothing.cpp)
+target_link_libraries(test_smoothing PRIVATE vsa_core)
+add_test(NAME smoothing COMMAND test_smoothing ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
 
 add_executable(test_patches tests/test_patches.cpp)
 target_link_libraries(test_patches PRIVATE vsa_core)

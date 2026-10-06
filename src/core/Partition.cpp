@@ -1,5 +1,7 @@
 #include "core/Partition.h"
 
+#include "core/Smoothing.h"
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -164,6 +166,7 @@ LloydStepInfo lloydStep(const VSAInput& in, VSAState& s)
     LloydStepInfo info;
     const std::vector<int> before = s.label;
     info.added = partition(in, s);
+    smoothLabels(in, s);
     info.labelsChanged = before != s.label;
     fitProxies(in, s);
     info.energy = totalEnergy(s);

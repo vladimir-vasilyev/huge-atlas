@@ -1,7 +1,9 @@
  #pragma once
 
+#include "core/BoundaryMetrics.h"
 #include "core/MeshPrep.h"
 #include "core/Operations.h"
+#include "core/Smoothing.h"
 #include "core/Partition.h"
 #include "core/Proxy.h"
 #include "param/PatchExtractor.h"
@@ -79,6 +81,11 @@ private:
     int              seedMethod_ = 1;      // 0 - random, 1 - farthest point
     std::unique_ptr<RefineJob> job_;       // running Lloyd / grow / teleport job
     std::string      lloydStatus_;
+
+    // Border smoothing (applied after every partition of a Lloyd step) and raggedness of the borders
+    SmoothParams     smoothParams_{0.1, 0.0, 10};
+    BoundaryStats    boundaryStats_;
+    bool             boundaryStatsValid_ = false;
 
     // Stage 5: per-face weights (error density), painted with a brush
     std::vector<Moments> baseMoments_;     // unweighted
