@@ -72,6 +72,10 @@ add_library(vsa_core STATIC
     src/core/Partition.cpp
     src/core/Operations.h
     src/core/Operations.cpp
+    src/param/PatchTopology.h
+    src/param/PatchTopology.cpp
+    src/param/PatchExtractor.h
+    src/param/PatchExtractor.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
@@ -96,6 +100,10 @@ target_link_libraries(test_operations PRIVATE vsa_core)
 add_test(NAME operations COMMAND test_operations)
 
 add_test(NAME partition COMMAND test_partition ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
+
+add_executable(test_patches tests/test_patches.cpp)
+target_link_libraries(test_patches PRIVATE vsa_core)
+add_test(NAME patches COMMAND test_patches ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
 
 # Picking needs a GL context, so it links the render sources and GLFW
 add_executable(test_picking tests/test_picking.cpp

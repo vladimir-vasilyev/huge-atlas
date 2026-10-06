@@ -145,6 +145,9 @@ void App::openMesh(const std::string& path)
     vsaAdded_ = vsaSteps_ = 0;
     job_.reset();
     lloydStatus_.clear();
+    patches_ = ExtractionResult();
+    patchesValid_ = false;
+    selectedPatch_ = -1;
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -204,7 +207,110 @@ void App::uploadMesh()
         for (size_t i = 0; i < nF; ++i)
             weightColor(faceWeights_[i], &colors[i * 3]);
     }
-    meshRenderer_.upload(mesh_, colors);
+    else if ((colorMode_ == 4 || colorMode_ == 5) && patchesValid_ && patches_.faceToPatch.size() == nF) {
+        colors.resize(nF * 3);
+        for (size_t i = 0; i < nF; ++i) {
+            const int pi = patches_.faceToPatch[i];
+            float* c = &colors[i * 3];
+            if (pi < 0) { c[0] = c[1] = c[2] = 0.3f; continue; }
+            const Patch& p = patches_.patches[pi];
+            if (colorMode_ == 4) {
+                hueColor(pi, c);
+            } else if (p.isDisk()) {
+                const float disk[3] = {0.35f, 0.75f, 0.4f}, cut[3] = {0.3f, 0.7f, 0.85f};
+                for (int k = 0; k < 3; ++k) c[k] = p.cuts ? cut[k] : disk[k];
+            } else {
+                c[0] = 0.9f; c[1] = 0.25f; c[2] = 0.2f;
+            }
+            if (pi == selectedPatch_) c[0] = c[1] = c[2] = 1.0f;
+        }
+    }
+
+    // exploded view: every patch moves away from the mesh center
+    std::vector<float> offsets;
+    if (explode_ > 0.0f && patchesValid_ && patches_.faceToPatch.size() == nF) {
+        std::vector<Vec3> center(patches_.patches.size(), Vec3(0, 0, 0));
+        std::vector<double> area(patches_.patches.size(), 0.0);
+        for (size_t i = 0; i < nF; ++i) {
+            const int pi = patches_.faceToPatch[i];
+            if (pi < 0) continue;
+            center[pi] += faceData_.centroid[i] * faceData_.area[i];
+            area[pi] += faceData_.area[i];
+        }
+        offsets.assign(nF * 3, 0.0f);
+        for (size_t i = 0; i < nF; ++i) {
+            const int pi = patches_.faceToPatch[i];
+            if (pi < 0 || area[pi] <= 0.0) continue;
+            const Vec3 c = center[pi] / area[pi];
+            for (int k = 0; k < 3; ++k) offsets[i * 3 + k] = float(c[k]) * explode_;
+        }
+    }
+    meshRenderer_.upload(mesh_, colors, offsets);
+}
+
+void App::drawPatchPanel()
+{
+    if (!ImGui::Begin("Patches")) { ImGui::End(); return; }
+    if (vsa_.label.size() != mesh_.n_faces()) {
+        ImGui::TextUnformatted("Run a partition first (VSA panel)");
+        ImGui::End();
+        return;
+    }
+    ImGui::InputInt("Merge regions smaller than", &patchOptions_.minFaces);
+    patchOptions_.minFaces = std::max(1, patchOptions_.minFaces);
+    ImGui::Checkbox("Cut multi-boundary patches into disks", &patchOptions_.cutMultiBoundary);
+    if (ImGui::Button("Extract patches")) {
+        patches_ = extractPatches(mesh_, vsa_.label, patchOptions_);
+        patchesValid_ = true;
+        patchedLabels_ = vsa_.label;
+        selectedPatch_ = -1;
+        colorMode_ = 5;
+        uploadMesh();
+    }
+    if (!patchesValid_) { ImGui::End(); return; }
+
+    if (patchedLabels_ != vsa_.label)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "stale: the partition changed since extraction");
+    if (ImGui::SliderFloat("Explode", &explode_, 0.0f, 1.0f)) uploadMesh();
+    if (ImGui::RadioButton("Patches", &colorMode_, 4)) uploadMesh();
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Patch kind", &colorMode_, 5)) uploadMesh();
+
+    int cutPatches = 0;
+    for (const Patch& p : patches_.patches) cutPatches += p.cuts > 0;
+    ImGui::Text("%d patches, %d disks (%d after cuts), %d regions merged",
+                int(patches_.patches.size()), patches_.disks, cutPatches, patches_.mergedRegions);
+
+    if (ImGui::BeginTable("patches", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+                          ImVec2(0, 220))) {
+        const char* heads[] = {"#", "Faces", "Verts", "Chi", "Loops", "Genus", "Cuts", "Kind"};
+        for (const char* h : heads) ImGui::TableSetupColumn(h);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+        for (int i = 0; i < int(patches_.patches.size()); ++i) {
+            const Patch& p = patches_.patches[i];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            char id[16];
+            std::snprintf(id, sizeof(id), "%d", i);
+            if (ImGui::Selectable(id, selectedPatch_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                selectedPatch_ = selectedPatch_ == i ? -1 : i;
+                uploadMesh();
+            }
+            ImGui::TableSetColumnIndex(1); ImGui::Text("%d", p.topology.faces);
+            ImGui::TableSetColumnIndex(2); ImGui::Text("%d", p.topology.vertices);
+            ImGui::TableSetColumnIndex(3); ImGui::Text("%d", p.topology.euler);
+            ImGui::TableSetColumnIndex(4); ImGui::Text("%d", p.topology.boundaryLoops);
+            ImGui::TableSetColumnIndex(5); ImGui::Text("%d", p.topology.genus);
+            ImGui::TableSetColumnIndex(6); ImGui::Text("%d", p.cuts);
+            ImGui::TableSetColumnIndex(7); ImGui::TextUnformatted(patchKindName(p.topology.kind));
+        }
+        ImGui::EndTable();
+    }
+    if (selectedPatch_ >= 0 && selectedPatch_ < int(patches_.patches.size()) &&
+        !patches_.patches[selectedPatch_].note.empty())
+        ImGui::TextWrapped("Patch %d: %s", selectedPatch_, patches_.patches[selectedPatch_].note.c_str());
+    ImGui::End();
 }
 
 void App::rebuildMoments()
@@ -586,6 +692,7 @@ void App::drawUI()
     ImGui::End();
 
     drawVsaPanel();
+    drawPatchPanel();
 
     handleSceneInput();
 

@@ -4,6 +4,7 @@
 #include "core/Operations.h"
 #include "core/Partition.h"
 #include "core/Proxy.h"
+#include "param/PatchExtractor.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
 #include "render/MeshRenderer.h"
@@ -34,6 +35,7 @@ private:
     void startJob(RefineJob::Kind kind);
     void jobTick();                        // one step of the running job (once per frame)
     void paintWeights(int fbW, int fbH);
+    void drawPatchPanel();
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
 
     GLFWwindow* window_ = nullptr;
@@ -62,7 +64,7 @@ private:
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
-    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights
+    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind
     // Stage 3: VSA
     VSAState         vsa_;
     int              vsaK_ = 6;
@@ -84,6 +86,14 @@ private:
     int              brushRadius_ = 20;    // framebuffer pixels
     float            brushWeight_ = 4.0f;
     bool             painted_ = false;     // weights changed during the current stroke
+
+    // Stage 6: patches
+    ExtractionResult patches_;
+    PatchOptions     patchOptions_;
+    bool             patchesValid_ = false;
+    std::vector<int> patchedLabels_;       // labels the patches were extracted from (to detect a stale result)
+    int              selectedPatch_ = -1;
+    float            explode_ = 0.0f;
 
     bool             dragging_ = false;
     bool             panning_ = false;

@@ -15,7 +15,9 @@ public:
     void destroy();
 
     // faceColors: rgb per face (indexed by face.idx()); an empty array means gray.
-    void upload(const TriMesh& mesh, const std::vector<float>& faceColors = {});
+    // faceOffsets: xyz per face, added to its three vertices (used to explode patches); may be empty.
+    void upload(const TriMesh& mesh, const std::vector<float>& faceColors = {},
+                const std::vector<float>& faceOffsets = {});
 
     void draw(const float viewProj[16], const float view[16], bool wireframe, float wireWidth) const;
 

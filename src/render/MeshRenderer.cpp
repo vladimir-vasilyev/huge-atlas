@@ -78,7 +78,8 @@ bool MeshRenderer::init(std::string* errorLog)
     return true;
 }
 
-void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceColors)
+void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceColors,
+                          const std::vector<float>& faceOffsets)
 {
     std::vector<float> buf;
     buf.reserve(mesh.n_faces() * 3 * 9);
@@ -87,10 +88,13 @@ void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceCol
         float c[3] = {0.72f, 0.74f, 0.78f};
         if (faceColors.size() >= size_t(f.idx() + 1) * 3)
             for (int k = 0; k < 3; ++k) c[k] = faceColors[f.idx() * 3 + k];
+        float o[3] = {0.f, 0.f, 0.f};
+        if (faceOffsets.size() >= size_t(f.idx() + 1) * 3)
+            for (int k = 0; k < 3; ++k) o[k] = faceOffsets[f.idx() * 3 + k];
         int i = 0;
         for (auto v : mesh.fv_range(f)) {
             const auto p = mesh.point(v);
-            buf.insert(buf.end(), {float(p[0]), float(p[1]), float(p[2]),
+            buf.insert(buf.end(), {float(p[0]) + o[0], float(p[1]) + o[1], float(p[2]) + o[2],
                                    bary[i][0], bary[i][1], bary[i][2], c[0], c[1], c[2]});
             ++i;
         }
