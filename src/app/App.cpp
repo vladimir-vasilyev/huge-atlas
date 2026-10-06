@@ -602,6 +602,16 @@ void App::drawUvPanel()
                 dl->AddCircle(toScreen(uv[v]), 8.0f, IM_COL32(255, 150, 30, 255), 16, 2.5f);
         }
     }
+    if (uvShowAtlas_ && !atlas_.horizon.empty()) {   // the final horizon of the horizon packer
+        const int n = int(atlas_.horizon.size());
+        const int step = std::max(1, n / 512);
+        ImVec2 prev = toScreen({0.0, double(atlas_.horizon[0])});
+        for (int x = step; x < n; x += step) {
+            const ImVec2 cur = toScreen({double(x) / n, double(atlas_.horizon[x])});
+            dl->AddLine(prev, cur, IM_COL32(255, 140, 40, 255), 1.5f);
+            prev = cur;
+        }
+    }
     dl->PopClipRect();
     ImGui::End();
 }
@@ -644,9 +654,14 @@ void App::packAtlasNow()
             uvArea += std::abs(signedArea(q[0], q[1], q[2]));
             area3 += 0.5 * ((p[1] - p[0]) % (p[2] - p[0])).norm();
         }
-        in[i] = {&params_[i].uv, uvArea, area3};
+        in[i] = {&params_[i].uv, uvArea, area3, &m};
     }
-    atlas_ = packAtlas(in, atlasOptions_);
+    atlas_ = atlasMethod_ == 0 ? packHorizon(in, horizonOptions_) : packAtlas(in, atlasOptions_);
+    if (!atlas_.ok) {
+        paramStatus_ = "packing failed: " + atlas_.message;
+        atlasValid_ = false;
+        return;
+    }
     atlasValid_ = true;
     uvShowAtlas_ = true;
     colorMode_ = 8;
@@ -840,20 +855,88 @@ void App::drawParamPanel()
     }
 
     ImGui::SeparatorText("Atlas");
-    {
+    ImGui::RadioButton("Horizon pack (texel exact, mip aware)", &atlasMethod_, 0);
+    ImGui::RadioButton("Shelf pack (quick)", &atlasMethod_, 1);
+    if (atlasMethod_ == 0) {
+        HorizonOptions& ho = horizonOptions_;
+        static const int kResolutions[] = {256, 512, 1024, 2048, 4096, 8192};
+        int ri = 3;
+        for (int i = 0; i < 6; ++i) if (kResolutions[i] == ho.resolution) ri = i;
+        char label[16];
+        std::snprintf(label, sizeof(label), "%d", ho.resolution);
+        if (ImGui::BeginCombo("Texture size", label)) {
+            for (int i = 0; i < 6; ++i) {
+                std::snprintf(label, sizeof(label), "%d x %d", kResolutions[i], kResolutions[i]);
+                if (ImGui::Selectable(label, i == ri)) ho.resolution = kResolutions[i];
+            }
+            ImGui::EndCombo();
+        }
+        int maxLevel = 0;
+        while ((1 << (maxLevel + 1)) <= ho.resolution) ++maxLevel;
+        maxLevel = std::max(0, maxLevel - 2);
+        ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
+        ImGui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
+        ImGui::SliderInt("Extra margin (texels)", &ho.extraTexels, 0, 16);
+        ImGui::SliderInt("Atlas border (texels)", &ho.atlasBorder, 0, 32);
+        ImGui::SliderInt("Rotations tried per chart", &ho.rotations, 1, 16);
+        ImGui::Checkbox("Longest first by diameter (else by area)", &ho.sortByDiameter);
+        const int gutter = chartGutter(ho.maxMipLevel, ho.extraTexels);
+        ImGui::Text("Gap between charts: %d texels (%.2f%% of the side); each chart reaches %d texels into it", gutter,
+                    100.0 * gutter / ho.resolution, chartMargin(ho.maxMipLevel, ho.extraTexels));
+        ImGui::TextDisabled("Bake: extrude every chart border by that many texels into the gutter.");
+    } else {
         float g = float(atlasOptions_.gutter);
         if (ImGui::SliderFloat("Gutter", &g, 0.0f, 0.05f, "%.3f")) atlasOptions_.gutter = g;
         ImGui::Checkbox("Rotate to minimum rectangle", &atlasOptions_.rotate);
-        ImGui::SliderFloat("Checker cells", &checkerCells_, 4.0f, 128.0f, "%.0f");
     }
+    ImGui::SliderFloat("Checker cells", &checkerCells_, 4.0f, 128.0f, "%.0f");
     ImGui::BeginDisabled(done == 0);
     if (ImGui::Button("Pack atlas")) packAtlasNow();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!atlasValid_);
     bool openExport = ImGui::Button("Export OBJ...");
+    ImGui::SameLine();
+    const bool openMask = ImGui::Button("Export mask PNG...");
     ImGui::EndDisabled();
-    if (atlasValid_) ImGui::Text("Efficiency %.1f%%", 100.0 * atlas_.efficiency);
+    if (atlasValid_) {
+        ImGui::Text("Efficiency %.1f%%", 100.0 * atlas_.efficiency);
+        if (atlas_.resolution > 0)
+            ImGui::Text("%d x %d, density %.1f texels per unit, gutter %d", atlas_.resolution, atlas_.resolution,
+                        atlas_.texelsPerUnit, atlas_.gutter);
+    }
+
+    constexpr const char* kMaskKey = "ExportMaskDlg";
+    if (openMask) {
+        IGFD::FileDialogConfig cfg;
+        cfg.path = lastDir_;
+        cfg.fileName = "atlas_mask.png";
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
+        ImGuiFileDialog::Instance()->OpenDialog(kMaskKey, "Export occupancy mask (alpha channel)", ".png", cfg);
+    }
+    {
+        const ImVec2 vpSize = ImGui::GetMainViewport()->Size;
+        if (ImGuiFileDialog::Instance()->Display(kMaskKey, ImGuiWindowFlags_NoCollapse, ImVec2(vpSize.x * 0.5f, vpSize.y * 0.5f))) {
+            if (ImGuiFileDialog::Instance()->IsOk()) {
+                lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
+                std::vector<MaskChart> mc;
+                for (size_t i = 0; i < params_.size(); ++i)
+                    if (paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty())
+                        mc.push_back({&params_[i].patch.mesh, &atlas_.uv[i]});
+                const int res = atlas_.resolution > 0 ? atlas_.resolution : 2048;   // the shelf packer has no texel grid: 2048
+                std::string err;
+                const std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
+                char buf[256];
+                if (writeAtlasPNG(path, mc, res, true, &err))
+                    std::snprintf(buf, sizeof(buf), "mask written: %s (%d x %d, alpha = occupancy)", path.c_str(), res, res);
+                else
+                    std::snprintf(buf, sizeof(buf), "mask export failed: %s", err.c_str());
+                paramStatus_ = buf;
+            }
+            ImGuiFileDialog::Instance()->Close();
+        }
+    }
 
     if (openExport) {
         IGFD::FileDialogConfig cfg;
@@ -874,7 +957,11 @@ void App::drawParamPanel()
                 uvv.push_back(paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty() ? &atlas_.uv[i] : nullptr);
             }
             const std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
-            const int faces = exportAtlasOBJ(path, mesh_, pv, uvv);
+            char meta[200] = "";
+            if (atlas_.resolution > 0)
+                std::snprintf(meta, sizeof(meta), "atlas resolution=%d maxMipLevel=%d gutter=%d margin=%d texelsPerUnit=%.6g",
+                              atlas_.resolution, atlas_.maxMipLevel, atlas_.gutter, atlas_.margin, atlas_.texelsPerUnit);
+            const int faces = exportAtlasOBJ(path, mesh_, pv, uvv, meta);
             char buf[256];
             if (faces < 0) std::snprintf(buf, sizeof(buf), "export failed: %s", path.c_str());
             else std::snprintf(buf, sizeof(buf), "exported %d of %d faces to %s", faces, int(mesh_.n_faces()), path.c_str());

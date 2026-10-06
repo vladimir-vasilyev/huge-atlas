@@ -7,7 +7,9 @@
 #include "core/Partition.h"
 #include "core/Proxy.h"
 #include "param/AnglesToUV.h"
+#include "param/AtlasMask.h"
 #include "param/AtlasPacker.h"
+#include "param/HorizonPacker.h"
 #include "param/LinABF.h"
 #include "param/ParamPipeline.h"
 #include "param/PatchExtractor.h"
@@ -134,7 +136,9 @@ private:
     std::vector<PatchParam> params_;      // parallel to patches_.patches
     std::vector<char> paramDone_;
     double           paramSeconds_ = 0.0;
-    AtlasOptions     atlasOptions_;
+    AtlasOptions     atlasOptions_;        // shelf packer
+    HorizonOptions   horizonOptions_;      // horizon packer
+    int              atlasMethod_ = 0;     // 0 - horizon (texel based, mip aware), 1 - shelf
     AtlasResult      atlas_;              // parallel to params_
     bool             atlasValid_ = false;
     bool             uvShowAtlas_ = false;

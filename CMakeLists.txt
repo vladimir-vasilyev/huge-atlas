@@ -96,11 +96,16 @@ add_library(vsa_core STATIC
     src/param/ParamPipeline.cpp
     src/param/AtlasPacker.h
     src/param/AtlasPacker.cpp
+    src/param/HorizonPacker.h
+    src/param/HorizonPacker.cpp
+    src/param/AtlasMask.h
+    src/param/AtlasMask.cpp
     src/param/Refinement.h
     src/param/Refinement.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
+find_package(ZLIB REQUIRED)
+target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen ZLIB::ZLIB)
 # OM_STATIC_BUILD: explicit registration of OpenMesh readers (otherwise the linker drops them from the static library)
 target_compile_definitions(vsa_core PUBLIC _USE_MATH_DEFINES OM_STATIC_BUILD)
 target_compile_options(vsa_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -153,6 +158,10 @@ add_test(NAME refinement COMMAND test_refinement)
 # the bunny run takes minutes in a Debug build: label it slow (ctest -LE slow skips it)
 add_test(NAME refinement_bunny COMMAND test_refinement ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 set_tests_properties(refinement_bunny PROPERTIES LABELS slow)
+
+add_executable(test_horizon tests/test_horizon.cpp)
+target_link_libraries(test_horizon PRIVATE vsa_core)
+add_test(NAME horizon COMMAND test_horizon)
 
 add_executable(test_patches tests/test_patches.cpp)
 target_link_libraries(test_patches PRIVATE vsa_core)

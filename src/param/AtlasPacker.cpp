@@ -157,11 +157,12 @@ AtlasResult packAtlas(const std::vector<AtlasInput>& in, const AtlasOptions& opt
 }
 
 int exportAtlasOBJ(const std::string& path, const TriMesh& source, const std::vector<const Patch*>& patches,
-                   const std::vector<const std::vector<Eigen::Vector2d>*>& atlasUV)
+                   const std::vector<const std::vector<Eigen::Vector2d>*>& atlasUV, const std::string& comment)
 {
     std::ofstream f(path);
     if (!f) return -1;
     f << "# VSA + LinABF atlas\n";
+    if (!comment.empty()) f << "# " << comment << "\n";
     char buf[128];
     for (auto v : source.vertices()) {
         const Vec3 p = source.point(v);
