@@ -16,7 +16,9 @@
 #include "param/Refinement.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
+#include "core/ObjLoader.h"
 #include "render/MeshRenderer.h"
+#include "render/SceneFramebuffer.h"
 
 #include <imgui.h>
 
@@ -90,11 +92,22 @@ private:
     std::vector<Moments> faceMoments_;
     Moments          wholeMesh_;       // moments of all faces (stage 2 check)
     MeshRenderer     meshRenderer_;
+    SceneFramebuffer scene_;
+    int              msaaSamples_ = 4;          // 0 / 2 / 4 / 8, switchable at run time
+    bool             cullBackFaces_ = false;    // on by default for big scans
+    GLuint           gpuQuery_[2] = {0, 0};     // GL_TIME_ELAPSED around the mesh draw, double buffered
+    int              gpuQueryFrame_ = 0;
+    double           gpuDrawMs_ = 0.0;          // last measured GPU time of the mesh draw
+    double           gpuDrawMsAvg_ = 0.0;
+    ObjExtras        objExtras_;                // texture coordinates / materials of the loaded OBJ
+    int              textureMaterial_ = -1;     // the material whose map is shown (-1: no texture)
+    bool             hasSourceTexture_ = false;
+    std::string      textureNote_;
     Camera           camera_;
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
-    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error,
+    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error, 10 - source texture,
                                        // 7 - stretch, 8 - UV checker, 9 - injectivity problems
     // Stage 3: VSA
     VSAState         vsa_;

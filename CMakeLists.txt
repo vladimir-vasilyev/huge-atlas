@@ -199,10 +199,14 @@ set(APP_SOURCES
     src/render/Camera.cpp
     src/render/MeshRenderer.h
     src/render/MeshRenderer.cpp
+    src/render/SceneFramebuffer.h
+    src/render/SceneFramebuffer.cpp
+    src/render/ImageFile.h
+    src/render/ImageFile.cpp
 )
 
 add_executable(vsa_app ${APP_SOURCES})
-target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)
 target_link_libraries(vsa_app PRIVATE vsa_core ImGuiFileDialog imgui glfw OpenGL::GL)
 target_compile_options(vsa_app PRIVATE -Wall -Wextra -Wno-unused-parameter)
 

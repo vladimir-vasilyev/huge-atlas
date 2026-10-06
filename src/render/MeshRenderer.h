@@ -4,11 +4,14 @@
 #include "render/GL.h"
 #include "render/Shader.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
-// Mesh with unrolled vertices (3 per face): flat shading, per-face color,
-// wireframe via barycentric coordinates in the fragment shader.
+// Indexed triangle mesh: one vertex per distinct (position, uv, offset), so large meshes share their
+// vertices (the unrolled layout used before cost 44 bytes per corner). The color of a face lives in a
+// texture buffer indexed by gl_PrimitiveID, so changing the colors (regions, stretch, ...) re-uploads
+// 4 bytes per face and never rebuilds the geometry. Flat shading comes from screen space derivatives.
 class MeshRenderer {
 public:
     bool init(std::string* errorLog);
@@ -17,14 +20,28 @@ public:
     // faceColors: rgb per face (indexed by face.idx()); an empty array means gray.
     // faceOffsets: xyz per face, added to its three vertices (used to explode patches); may be empty.
     // faceUV: u, v of the three corners of every face (6 floats, corners in face-loop order); may be
-    // empty. With checkerCells > 0 in draw() it is shown as a checkerboard.
+    // empty. A face whose u is negative counts as "no texture". With checkerCells > 0 in draw() the uv
+    // is shown as a checkerboard, with useTexture as the texture set by setTexture().
+    // The geometry is rebuilt only when the mesh was invalidated or the uv / offsets changed.
     void upload(const TriMesh& mesh, const std::vector<float>& faceColors = {},
                 const std::vector<float>& faceOffsets = {}, const std::vector<float>& faceUV = {});
 
-    void draw(const float viewProj[16], const float view[16], bool wireframe, float wireWidth,
-              float checkerCells = 0.0f) const;
+    // The next upload() rebuilds the geometry (call after the mesh was replaced or edited).
+    void invalidateGeometry() { ++geometryVersion_; }
 
-    bool hasMesh() const { return vertexCount_ > 0; }
+    // RGBA8 image, row 0 = v = 0 (bottom). Mip maps are generated; anisotropic filtering if available.
+    bool setTexture(int width, int height, const unsigned char* rgba);
+    bool hasTexture() const { return texture_ != 0; }
+
+    // wireframe is a second pass with polygon mode LINE (one pixel wide: wide lines do not exist in GL 4.1 core).
+    // cullBackFaces: counter-clockwise faces only. On a closed or scanned shell that skips about half of the
+    // triangles before rasterization; on an open surface seen from behind it shows holes.
+    void draw(const float viewProj[16], const float view[16], bool wireframe, float checkerCells = 0.0f,
+              bool useTexture = false, bool cullBackFaces = false) const;
+
+    bool hasMesh() const { return faceCount_ > 0; }
+    size_t faceCount() const { return faceCount_; }
+    size_t vertexCount() const { return vertexCount_; }
 
     // Line layer drawn over the mesh with a width in pixels (GL 4.1 core has no wide lines, so each
     // segment is expanded into a screen-space quad). Segment = 2 points + rgb, 9 floats.
@@ -41,15 +58,28 @@ public:
 
 private:
     void ensurePickTarget(int w, int h);
+    void buildGeometry(const TriMesh& mesh, const std::vector<float>& offsets, const std::vector<float>& uv);
+    void uploadColors(size_t faces, const std::vector<float>& colors);
 
-    ShaderProgram shader_, pickShader_, lineShader_;
+    ShaderProgram shader_, wireShader_, pickShader_, lineShader_;
     GLuint lineVao_ = 0, lineVbo_ = 0;
     GLsizei lineVertexCount_ = 0;
     GLint uLineVP_ = -1, uLineViewport_ = -1, uLineWidth_ = -1;
     GLuint pickFbo_ = 0, pickColor_ = 0, pickDepth_ = 0;
     int pickW_ = 0, pickH_ = 0;
     GLint uPickVP_ = -1;
-    GLuint vao_ = 0, vbo_ = 0;
-    GLsizei vertexCount_ = 0;
-    GLint uVP_ = -1, uView_ = -1, uWire_ = -1, uWireWidth_ = -1, uChecker_ = -1;
+
+    GLuint vao_ = 0, vbo_ = 0, ibo_ = 0;
+    GLuint colorBuffer_ = 0, colorTexture_ = 0;   // face colors: a buffer object seen as a texture buffer
+    GLuint texture_ = 0;
+    size_t faceCount_ = 0, vertexCount_ = 0;
+    GLsizei indexCount_ = 0;
+    bool useFaceColors_ = false;
+    GLint uVP_ = -1, uView_ = -1, uChecker_ = -1, uUseTexture_ = -1, uUseFaceColors_ = -1, uFaceColors_ = -1, uTex_ = -1;
+    GLint uWireVP_ = -1;
+
+    // what the current geometry was built from
+    unsigned geometryVersion_ = 0, builtVersion_ = ~0u;
+    uint64_t builtUvHash_ = 0, builtOffsetHash_ = 0;
+    size_t builtFaces_ = 0, builtVertices_ = 0;
 };

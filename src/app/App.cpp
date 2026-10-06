@@ -1,6 +1,8 @@
 #include "app/App.h"
 
 #include "render/GL.h"   // strictly before GLFW (GLFW_INCLUDE_NONE is set in CMake)
+#include "param/AtlasMask.h"   // writePNG
+#include "render/ImageFile.h"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -42,10 +44,7 @@ bool App::init(int width, int height, const char* title)
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
-    {   // testing hook: VSA_MSAA=0|2|4|8
-        const char* e = std::getenv("VSA_MSAA");
-        glfwWindowHint(GLFW_SAMPLES, e ? std::atoi(e) : 4);
-    }
+    glfwWindowHint(GLFW_SAMPLES, 0);   // the 3D scene renders into its own multisample target (see SceneFramebuffer)
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
 
     window_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
@@ -96,6 +95,8 @@ bool App::init(int width, int height, const char* title)
     openMesh(envMesh ? envMesh : "data/cube.obj");   // default file; on failure only a status message
     if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
     if (const char* envW = std::getenv("VSA_WIREFRAME")) wireframe_ = std::atoi(envW) != 0;
+    if (const char* envM = std::getenv("VSA_MSAA")) msaaSamples_ = std::atoi(envM);
+    if (const char* envC = std::getenv("VSA_CULL")) cullBackFaces_ = std::atoi(envC) != 0;
 
     glEnable(GL_DEPTH_TEST);
     GL_CHECK();
@@ -118,7 +119,10 @@ void App::run()
             if (benchDone == 5) benchStart = std::chrono::steady_clock::now();   // skip the first frames
             if (benchDone == 5 + benchFrames) {
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - benchStart).count();
-                std::printf("FRAMES: %d frames, %.2f ms per frame (%.1f fps)\n", benchFrames, ms / benchFrames, 1000.0 * benchFrames / ms);
+                std::printf("FRAMES: %d frames, %.2f ms per frame (%.1f fps), mesh draw %.2f ms on the GPU\n", benchFrames,
+                            ms / benchFrames, 1000.0 * benchFrames / ms, gpuDrawMsAvg_);
+                std::printf("SETTINGS: msaa=%d cull=%d wireframe=%d faces=%zu\n", msaaSamples_, int(cullBackFaces_), int(wireframe_),
+                            meshRenderer_.faceCount());
                 glfwSetWindowShouldClose(window_, GLFW_TRUE);
             }
             ++benchDone;
@@ -151,18 +155,39 @@ void App::run()
         renderScene(fbW, fbH);
 
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        if (const char* shot = std::getenv("VSA_SCREENSHOT")) {   // testing hook: write the 8th frame to a PNG and quit
+            static int frame = 0;
+            if (++frame == 8) {
+                std::vector<unsigned char> px(size_t(fbW) * fbH * 4), flipped(px.size());
+                glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                for (int y = 0; y < fbH; ++y)
+                    std::copy(px.begin() + size_t(fbH - 1 - y) * fbW * 4, px.begin() + size_t(fbH - y) * fbW * 4,
+                              flipped.begin() + size_t(y) * fbW * 4);
+                for (size_t i = 3; i < flipped.size(); i += 4) flipped[i] = 255;
+                writePNG(shot, fbW, fbH, flipped);
+                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            }
+        }
         glfwSwapBuffers(window_);
     }
 }
 
 void App::openMesh(const std::string& path)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     TriMesh m;
     std::string err;
-    if (!loadMesh(path, m, &err)) {
+    ObjExtras extras;
+    const bool isObj = path.size() > 4 && [&] {
+        std::string ext = path.substr(path.size() - 4);
+        for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return ext == ".obj";
+    }();
+    if (isObj ? !loadObj(path, m, &extras, &err) : !loadMesh(path, m, &err)) {
         status_ = err;
         return;
     }
+    const double readSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     normalizeToUnitBox(m);
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
@@ -194,8 +219,44 @@ void App::openMesh(const std::string& path)
     atlasValid_ = false;
     paramStatus_.clear();
     camera_.reset();
+
+    // the texture of the file (if it has uv and a material with a diffuse map)
+    objExtras_ = std::move(extras);
+    hasSourceTexture_ = false;
+    textureMaterial_ = -1;
+    textureNote_.clear();
+    if (objExtras_.hasUV()) {
+        for (size_t i = 0; i < objExtras_.materials.size(); ++i) {
+            if (objExtras_.materials[i].diffuseMap.empty()) continue;
+            int w = 0, h = 0;
+            std::vector<unsigned char> pixels;
+            std::string imageError;
+            const std::string image = objExtras_.directory + "/" + objExtras_.materials[i].diffuseMap;
+            if (loadImageRGBA(image, w, h, pixels, &imageError) && meshRenderer_.setTexture(w, h, pixels.data())) {
+                hasSourceTexture_ = true;
+                textureMaterial_ = int(i);
+                char note[256];
+                std::snprintf(note, sizeof(note), "texture %s (%d x %d)", objExtras_.materials[i].diffuseMap.c_str(), w, h);
+                textureNote_ = note;
+            } else {
+                textureNote_ = imageError;
+            }
+            break;   // one texture is shown; faces of other materials stay gray
+        }
+    }
+
+    // big scans: the expensive settings off by default (the user can switch them on)
+    const size_t faces = mesh_.n_faces();
+    cullBackFaces_ = faces > 500000;
+    if (faces > 500000) { wireframe_ = false; msaaSamples_ = std::min(msaaSamples_, 2); }
+    if (faces > 1500000) msaaSamples_ = 0;
+    colorMode_ = hasSourceTexture_ ? 10 : 0;
+    meshRenderer_.invalidateGeometry();
     uploadMesh();
-    status_ = "loaded: " + path;
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("loaded %s: %zu vertices, %zu faces in %.2f s (read %.2f s)%s%s\n", path.c_str(), mesh_.n_vertices(), faces,
+                seconds, readSeconds, hasSourceTexture_ ? ", " : "", textureNote_.c_str());
+    status_ = "loaded: " + path + (textureNote_.empty() ? "" : " | " + textureNote_);
 }
 
 namespace {
@@ -291,6 +352,13 @@ void App::uploadMesh()
     }
 
     std::vector<float> faceUV;
+    if (colorMode_ == 10 && hasSourceTexture_ && objExtras_.cornerUV.size() == nF * 6) {
+        // the uv of the file; faces of other materials get u = -1 (no texture)
+        faceUV = objExtras_.cornerUV;
+        for (size_t f = 0; f < nF; ++f)
+            if (objExtras_.faceMaterial.size() != nF || objExtras_.faceMaterial[f] != textureMaterial_)
+                for (int k = 0; k < 6; ++k) faceUV[f * 6 + k] = -1.0f;
+    }
     if ((colorMode_ == 7 || colorMode_ == 8 || colorMode_ == 9) && patchesValid_ && params_.size() == patches_.patches.size() &&
         patches_.faceToPatch.size() == nF) {
         colors.assign(nF * 3, 0.3f);
@@ -1610,6 +1678,8 @@ void App::drawUI()
         ImGui::Text("Framebuffer : %d x %d px (scale %.1f)", fbW, fbH,
                     winW > 0 ? float(fbW) / float(winW) : 0.0f);
         ImGui::Text("Frame       : %.2f ms (%.0f FPS)", 1000.0f / io.Framerate, io.Framerate);
+        ImGui::Text("Mesh draw   : %.2f ms on the GPU (%zu faces, %zu vertices)", gpuDrawMsAvg_, meshRenderer_.faceCount(),
+                    meshRenderer_.vertexCount());
         ImGui::Text("ImGui wants mouse: %s", io.WantCaptureMouse ? "yes" : "no");
         ImGui::Separator();
 
@@ -1627,9 +1697,20 @@ void App::drawUI()
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::Separator();
         ImGui::Checkbox("Wireframe", &wireframe_);
+        ImGui::Checkbox("Cull back faces (faster on scans)", &cullBackFaces_);
+        {
+            static const char* kAA[] = {"Off", "2x", "4x", "8x"};
+            int idx = msaaSamples_ >= 8 ? 3 : msaaSamples_ >= 4 ? 2 : msaaSamples_ >= 2 ? 1 : 0;
+            if (ImGui::Combo("Anti-aliasing (MSAA)", &idx, kAA, 4)) msaaSamples_ = idx == 0 ? 0 : (1 << idx);
+        }
+        if (!textureNote_.empty()) ImGui::TextDisabled("%s", textureNote_.c_str());
         if (ImGui::RadioButton("Gray", &colorMode_, 0)) uploadMesh();
         ImGui::SameLine();
         if (ImGui::RadioButton("Face normals", &colorMode_, 1)) uploadMesh();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hasSourceTexture_);
+        if (ImGui::RadioButton("Texture", &colorMode_, 10)) uploadMesh();
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::RadioButton("Regions", &colorMode_, 2)) uploadMesh();
         ImGui::SameLine();
@@ -1680,7 +1761,9 @@ void App::drawUI()
 
 void App::renderScene(int fbWidth, int fbHeight)
 {
+    scene_.begin(fbWidth, fbHeight, msaaSamples_);   // the default framebuffer if no multisampling
     glViewport(0, 0, fbWidth, fbHeight);
+    glEnable(GL_DEPTH_TEST);
     glClearColor(clearColor_[0], clearColor_[1], clearColor_[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -1691,10 +1774,30 @@ void App::renderScene(int fbWidth, int fbHeight)
         float vp[16], v[16];
         camera_.viewProj(float(fbWidth) / float(fbHeight), vp);
         camera_.view(v);
-        meshRenderer_.draw(vp, v, wireframe_, 1.0f, colorMode_ == 8 ? checkerCells_ : 0.0f);
+
+        // GPU time of the mesh draw, read one frame late so that nothing stalls
+        if (!gpuQuery_[0]) glGenQueries(2, gpuQuery_);
+        const int cur = gpuQueryFrame_ & 1, prev = cur ^ 1;
+        if (gpuQueryFrame_ > 1) {
+            GLint available = 0;
+            glGetQueryObjectiv(gpuQuery_[prev], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available) {
+                GLuint64 ns = 0;
+                glGetQueryObjectui64v(gpuQuery_[prev], GL_QUERY_RESULT, &ns);
+                gpuDrawMs_ = double(ns) * 1e-6;
+                gpuDrawMsAvg_ = gpuDrawMsAvg_ == 0.0 ? gpuDrawMs_ : 0.95 * gpuDrawMsAvg_ + 0.05 * gpuDrawMs_;
+            }
+        }
+        glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
+        meshRenderer_.draw(vp, v, wireframe_, colorMode_ == 8 ? checkerCells_ : 0.0f, colorMode_ == 10,
+                         cullBackFaces_);
+        glEndQuery(GL_TIME_ELAPSED);
+        ++gpuQueryFrame_;
+
         if (meshRenderer_.hasLines())
             meshRenderer_.drawLines(vp, fbWidth, fbHeight, boundaryWidth_);
     }
+    scene_.end();
 }
 
 void App::shutdown()
@@ -1704,6 +1807,8 @@ void App::shutdown()
         glfwMakeContextCurrent(window_);
         triangle_.destroy();
         meshRenderer_.destroy();
+        scene_.destroy();
+        if (gpuQuery_[0]) { glDeleteQueries(2, gpuQuery_); gpuQuery_[0] = gpuQuery_[1] = 0; }
     }
     if (imguiReady_) {
         ImGui_ImplOpenGL3_Shutdown();
