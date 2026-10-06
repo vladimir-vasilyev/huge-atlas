@@ -6,6 +6,7 @@
 #include "core/Smoothing.h"
 #include "core/Partition.h"
 #include "core/Proxy.h"
+#include "param/LinABF.h"
 #include "param/PatchExtractor.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
@@ -38,6 +39,8 @@ private:
     void jobTick();                        // one step of the running job (once per frame)
     void paintWeights(int fbW, int fbH);
     void drawPatchPanel();
+    void drawLinabfPanel();
+    void solvePatches(bool onlySelected);
     std::vector<Vec3> patchExplodeOffsets() const;   // per patch; empty if the view is not exploded
     void rebuildBoundaryLines();
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
@@ -68,7 +71,7 @@ private:
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
-    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind
+    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error
     // Stage 3: VSA
     VSAState         vsa_;
     int              vsaK_ = 6;
@@ -103,6 +106,12 @@ private:
     std::vector<int> patchedLabels_;       // labels the patches were extracted from (to detect a stale result)
     int              selectedPatch_ = -1;
     float            explode_ = 0.0f;
+
+    // Stage 7: LinABF angles per patch (parallel to patches_.patches; an entry is empty if not solved)
+    LinABFParams     linabfParams_;
+    std::vector<LinABFResult> linabf_;
+    std::vector<char> linabfSolved_;
+    double           linabfSeconds_ = 0.0;
     bool             showBoundaries_ = true;
     float            boundaryWidth_ = 3.0f;   // pixels
 

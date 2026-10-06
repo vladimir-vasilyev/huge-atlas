@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -148,6 +149,8 @@ void App::openMesh(const std::string& path)
     patches_ = ExtractionResult();
     patchesValid_ = false;
     selectedPatch_ = -1;
+    linabf_.clear();
+    linabfSolved_.clear();
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -223,6 +226,25 @@ void App::uploadMesh()
                 c[0] = 0.9f; c[1] = 0.25f; c[2] = 0.2f;
             }
             if (pi == selectedPatch_) c[0] = c[1] = c[2] = 1.0f;
+        }
+    }
+
+    else if (colorMode_ == 6 && patchesValid_ && patches_.faceToPatch.size() == nF) {
+        colors.assign(nF * 3, 0.3f);
+        for (size_t pi = 0; pi < patches_.patches.size() && pi < linabf_.size(); ++pi) {
+            if (!linabfSolved_[pi] || !linabf_[pi].ok) continue;
+            const Patch& p = patches_.patches[pi];
+            const std::vector<double> orig = originalAngles(p.mesh);
+            for (auto lf : p.mesh.faces()) {
+                double e = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    e = std::max(e, std::abs(linabf_[pi].angles[3 * lf.idx() + k] - orig[3 * lf.idx() + k]));
+                const float t = float(std::min(1.0, e / 0.3));   // 0.3 rad (about 17 degrees) saturates
+                float* c = &colors[size_t(p.faceToGlobal[lf.idx()]) * 3];
+                c[0] = 0.35f + 0.6f * t;
+                c[1] = 0.65f - 0.45f * t;
+                c[2] = 0.45f - 0.3f * t;
+            }
         }
     }
 
@@ -306,6 +328,8 @@ void App::drawPatchPanel()
     ImGui::Checkbox("Cut multi-boundary patches into disks", &patchOptions_.cutMultiBoundary);
     if (ImGui::Button("Extract patches")) {
         patches_ = extractPatches(mesh_, vsa_.label, patchOptions_);
+        linabf_.assign(patches_.patches.size(), LinABFResult());
+        linabfSolved_.assign(patches_.patches.size(), 0);
         patchesValid_ = true;
         patchedLabels_ = vsa_.label;
         selectedPatch_ = -1;
@@ -359,6 +383,81 @@ void App::drawPatchPanel()
     if (selectedPatch_ >= 0 && selectedPatch_ < int(patches_.patches.size()) &&
         !patches_.patches[selectedPatch_].note.empty())
         ImGui::TextWrapped("Patch %d: %s", selectedPatch_, patches_.patches[selectedPatch_].note.c_str());
+    ImGui::End();
+}
+
+void App::solvePatches(bool onlySelected)
+{
+    const auto t0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < patches_.patches.size(); ++i) {
+        if (onlySelected && int(i) != selectedPatch_) continue;
+        if (!patches_.patches[i].isDisk()) continue;
+        linabf_[i] = solveLinABF(patches_.patches[i].mesh, linabfParams_);
+        linabfSolved_[i] = 1;
+    }
+    linabfSeconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    colorMode_ = 6;
+    uploadMesh();
+}
+
+void App::drawLinabfPanel()
+{
+    if (!ImGui::Begin("LinABF")) { ImGui::End(); return; }
+    if (!patchesValid_ || linabf_.size() != patches_.patches.size()) {
+        ImGui::TextUnformatted("Extract patches first (Patches panel)");
+        ImGui::End();
+        return;
+    }
+    ImGui::InputInt("Max linearization steps", &linabfParams_.maxIterations);
+    linabfParams_.maxIterations = std::max(1, linabfParams_.maxIterations);
+    {
+        float tol = float(linabfParams_.wheelTolerance), th = float(linabfParams_.deficitThreshold);
+        if (ImGui::InputFloat("Wheel tolerance", &tol, 0.0f, 0.0f, "%.1e")) linabfParams_.wheelTolerance = tol;
+        if (ImGui::SliderFloat("Fan deficit threshold", &th, 0.1f, 6.0f)) linabfParams_.deficitThreshold = th;
+    }
+    ImGui::BeginDisabled(selectedPatch_ < 0);
+    if (ImGui::Button("Solve selected")) solvePatches(true);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Solve all disks")) solvePatches(false);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Angle error", &colorMode_, 6)) uploadMesh();
+
+    int solved = 0, valid = 0, failed = 0, rescaled = 0;
+    double tri = 0, vert = 0, wheel = 0, err = 0;
+    for (size_t i = 0; i < linabf_.size(); ++i) {
+        if (!linabfSolved_[i]) continue;
+        const LinABFResult& r = linabf_[i];
+        ++solved;
+        if (!r.ok) { ++failed; continue; }
+        valid += r.anglesValid;
+        rescaled += r.fansRescaled;
+        tri = std::max(tri, r.triangleResidual);
+        vert = std::max(vert, r.vertexResidual);
+        if (r.anglesValid) wheel = std::max(wheel, r.wheelResidual);
+        err = std::max(err, r.angularError);
+    }
+    ImGui::Separator();
+    ImGui::Text("Solved %d patches in %.3f s: %d valid, %d with invalid angles, %d failed", solved, linabfSeconds_,
+                valid, solved - valid - failed, failed);
+    if (solved > 0) {
+        ImGui::Text("Max residuals: triangle %.1e, vertex %.1e, wheel %.1e", tri, vert, wheel);
+        ImGui::Text("Max angular error ||e||/3nt: %.2e   fans re-estimated: %d", err, rescaled);
+    }
+    if (selectedPatch_ >= 0 && selectedPatch_ < int(linabf_.size()) && linabfSolved_[selectedPatch_]) {
+        const LinABFResult& r = linabf_[selectedPatch_];
+        ImGui::SeparatorText("Selected patch");
+        if (!r.ok) {
+            ImGui::TextWrapped("failed: %s", r.message.c_str());
+        } else {
+            ImGui::Text("%d triangles, %d interior vertices, %d constraints, %d steps", r.triangles,
+                        r.interiorVertices, r.rows, r.iterations);
+            ImGui::Text("angles in [%.4f, %.4f]  %s", r.minAngle, r.maxAngle, r.anglesValid ? "valid" : "INVALID");
+            ImGui::Text("residuals: tri %.1e vert %.1e wheel %.1e", r.triangleResidual, r.vertexResidual,
+                        r.wheelResidual);
+            if (!r.message.empty()) ImGui::TextWrapped("%s", r.message.c_str());
+        }
+    }
     ImGui::End();
 }
 
@@ -768,6 +867,7 @@ void App::drawUI()
 
     drawVsaPanel();
     drawPatchPanel();
+    drawLinabfPanel();
 
     handleSceneInput();
 
