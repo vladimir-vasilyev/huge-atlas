@@ -1,5 +1,6 @@
 #include "param/ParamPipeline.h"
 
+#include <algorithm>
 #include <cstdio>
 
 const char* paramMethodName(ParamMethod m)
@@ -52,6 +53,27 @@ Attempt attempt(const TriMesh& m, const LinABFResult& lin, const ParamOptions& o
     return a;
 }
 
+// The pair of crossing boundary edges whose adjacent faces are farthest apart in 3D.
+void crossingHints(const TriMesh& source, const Patch& patch, const InjectivityReport& rep, int& hintA, int& hintB)
+{
+    auto centroid = [&](int sourceFace) {
+        Vec3 c(0, 0, 0);
+        for (auto v : source.fv_range(TriMesh::FaceHandle(sourceFace))) c += source.point(v);
+        return c / 3.0;
+    };
+    double best = -1.0;
+    const size_t cap = std::min<size_t>(rep.uv.crossings.size(), 256);
+    for (size_t i = 0; i < cap; ++i) {
+        const auto& cr = rep.uv.crossings[i];
+        const auto f1 = patch.mesh.face_handle(patch.mesh.opposite_halfedge_handle(TriMesh::HalfedgeHandle(cr.first)));
+        const auto f2 = patch.mesh.face_handle(patch.mesh.opposite_halfedge_handle(TriMesh::HalfedgeHandle(cr.second)));
+        if (!f1.is_valid() || !f2.is_valid()) continue;
+        const int g1 = patch.faceToGlobal[f1.idx()], g2 = patch.faceToGlobal[f2.idx()];
+        const double d = (centroid(g1) - centroid(g2)).norm();
+        if (d > best) { best = d; hintA = g1; hintB = g2; }
+    }
+}
+
 void finish(PatchParam& out, const Patch& patch, ParamMethod method, Attempt& a)
 {
     out.method = method;
@@ -82,6 +104,8 @@ PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const
     auto consider = [&](Attempt& a, const Patch& p, ParamMethod method) {
         out.log += a.what + "\n";
         if (!a.solved) return false;
+        if (out.hintFaceA < 0 && !a.report.uv.crossings.empty())
+            crossingHints(source, p, a.report, out.hintFaceA, out.hintFaceB);
         if (a.report.ok()) { finish(out, p, method, a); return true; }
         if (!best.solved || a.problems() < best.problems()) { best = a; bestPatch = p; bestMethod = method; }
         return false;

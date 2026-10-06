@@ -96,6 +96,8 @@ add_library(vsa_core STATIC
     src/param/ParamPipeline.cpp
     src/param/AtlasPacker.h
     src/param/AtlasPacker.cpp
+    src/param/Refinement.h
+    src/param/Refinement.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
@@ -144,6 +146,13 @@ add_test(NAME pipeline COMMAND test_pipeline)
 add_executable(test_atlas tests/test_atlas.cpp)
 target_link_libraries(test_atlas PRIVATE vsa_core)
 add_test(NAME atlas COMMAND test_atlas)
+
+add_executable(test_refinement tests/test_refinement.cpp)
+target_link_libraries(test_refinement PRIVATE vsa_core)
+add_test(NAME refinement COMMAND test_refinement)
+# the bunny run takes minutes in a Debug build: label it slow (ctest -LE slow skips it)
+add_test(NAME refinement_bunny COMMAND test_refinement ${CMAKE_SOURCE_DIR}/data/bunny.ply)
+set_tests_properties(refinement_bunny PROPERTIES LABELS slow)
 
 add_executable(test_patches tests/test_patches.cpp)
 target_link_libraries(test_patches PRIVATE vsa_core)

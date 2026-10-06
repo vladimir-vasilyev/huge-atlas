@@ -146,6 +146,9 @@ void App::openMesh(const std::string& path)
     vsaAdded_ = vsaSteps_ = 0;
     job_.reset();
     lloydStatus_.clear();
+    refiner_.reset();
+    refineHasStats_ = false;
+    patchesRefined_ = false;
     patches_ = ExtractionResult();
     patchesValid_ = false;
     selectedPatch_ = -1;
@@ -394,13 +397,16 @@ void App::drawPatchPanel()
         paramStatus_.clear();
         patchesValid_ = true;
         patchedLabels_ = vsa_.label;
+        patchesRefined_ = false;
         selectedPatch_ = -1;
         colorMode_ = 5;
         uploadMesh();
     }
     if (!patchesValid_) { ImGui::End(); return; }
 
-    if (patchedLabels_ != vsa_.label)
+    if (patchesRefined_)
+        ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.6f, 1.0f), "refined: patches were split after the VSA partition");
+    else if (patchedLabels_ != vsa_.label)
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "stale: the partition changed since extraction");
     if (ImGui::SliderFloat("Explode", &explode_, 0.0f, 1.0f)) uploadMesh();
     if (ImGui::Checkbox("Show patch boundaries", &showBoundaries_)) rebuildBoundaryLines();
@@ -645,6 +651,102 @@ void App::packAtlasNow()
     uvShowAtlas_ = true;
     colorMode_ = 8;
     uploadMesh();
+}
+
+void App::startRefine()
+{
+    refineOptions_.param = paramOptions_;
+    refineOptions_.patch = patchOptions_;
+    refineOptions_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+    refiner_ = std::make_unique<Refiner>(mesh_, patches_.faceToPatch, refineOptions_);
+    refineHasStats_ = false;
+    paramStatus_.clear();
+}
+
+void App::applyRefineResult()
+{
+    const RefineResult& r = refiner_->result();
+    patches_ = r.extraction;
+    params_ = r.params;
+    const size_t n = patches_.patches.size();
+    paramDone_.assign(n, 0);
+    for (size_t i = 0; i < n; ++i) paramDone_[i] = params_[i].method != ParamMethod::None || !patches_.patches[i].isDisk();
+    linabf_.assign(n, LinABFResult());
+    linabfSolved_.assign(n, 0);
+    uv_.assign(n, UVResult());
+    uvStats_.assign(n, UVStats());
+    uvDone_.assign(n, 0);
+    patchedLabels_ = r.labels;
+    patchesValid_ = true;
+    patchesRefined_ = true;
+    atlasValid_ = false;
+    selectedPatch_ = -1;
+    refineStats_ = r.stats;
+    refineHasStats_ = true;
+    colorMode_ = 9;
+    uploadMesh();
+}
+
+void App::refineTick()
+{
+    if (!refiner_) return;
+    if (refiner_->step()) return;
+    applyRefineResult();
+    refiner_.reset();
+}
+
+void App::drawRefinePanel()
+{
+    refineTick();
+    if (!ImGui::Begin("Refinement")) { ImGui::End(); return; }
+    if (!patchesValid_ || params_.size() != patches_.patches.size()) {
+        ImGui::TextUnformatted("Extract patches first (Patches panel)");
+        ImGui::End();
+        return;
+    }
+    const bool running = refiner_ != nullptr;
+
+    int pol = refineOptions_.policy == RefinePolicy::FixFirst ? 0 : 1;
+    ImGui::BeginDisabled(running);
+    if (ImGui::RadioButton("Fix first (ladder, then split)", &pol, 0)) refineOptions_.policy = RefinePolicy::FixFirst;
+    if (ImGui::RadioButton("Split immediately (plain LinABF)", &pol, 1)) refineOptions_.policy = RefinePolicy::SplitImmediately;
+    ImGui::SliderInt("Max depth", &refineOptions_.maxDepth, 0, 10);
+    ImGui::SliderInt("Min faces per part", &refineOptions_.minFaces, 2, 200);
+    ImGui::SliderInt("Max rounds", &refineOptions_.maxRounds, 1, 30);
+    {
+        float lam = float(refineOptions_.smooth.lambda);
+        if (ImGui::SliderFloat("Local smoothing lambda", &lam, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
+            refineOptions_.smooth.lambda = lam;
+    }
+    ImGui::TextDisabled("Bad: not a disk, not injective, or L2 stretch above the Parameterize limit (%.1f)",
+                        paramOptions_.maxStretch);
+    if (ImGui::Button("Refine bad patches")) startRefine();
+    ImGui::EndDisabled();
+    if (running) {
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) { refiner_.reset(); paramStatus_ = "refinement stopped"; }
+        ImGui::Text("round %d running...", refiner_ ? refiner_->result().stats.rounds + 1 : 0);
+    }
+
+    if (refineHasStats_) {
+        const RefineStats& st = refineStats_;
+        ImGui::SeparatorText("Last result");
+        ImGui::Text("%d rounds, %.2f s: %d bad patches at the start, %d unresolved at the end", st.rounds, st.seconds,
+                    st.initialBad, st.unresolved);
+        ImGui::Text("%d splits: crossing hint %d, farthest %d, flood %d, Voronoi %d", st.splits, st.splitsByCrossingHint,
+                    st.splitsByFarthest, st.splitsByFlood, st.splitsByVoronoi);
+        ImGui::Text("%zu patches", patches_.patches.size());
+        std::string hist = "patches by depth:";
+        for (size_t d = 0; d < st.depthHistogram.size(); ++d)
+            if (st.depthHistogram[d] > 0) hist += "  d" + std::to_string(d) + "=" + std::to_string(st.depthHistogram[d]);
+        ImGui::TextUnformatted(hist.c_str());
+        int byMethod[5] = {0, 0, 0, 0, 0};
+        for (const PatchParam& p : params_) ++byMethod[int(p.method)];
+        ImGui::Text("LinABF %d, active set %d, slit %d, Tutte %d, not parameterized %d", byMethod[int(ParamMethod::LinABF)],
+                    byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Tutte)],
+                    byMethod[int(ParamMethod::None)]);
+    }
+    ImGui::End();
 }
 
 void App::drawParamPanel()
@@ -1266,6 +1368,7 @@ void App::drawUI()
     drawPatchPanel();
     drawLinabfPanel();
     drawParamPanel();
+    drawRefinePanel();
     drawUvPanel();
 
     handleSceneInput();

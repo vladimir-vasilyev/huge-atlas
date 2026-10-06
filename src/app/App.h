@@ -11,6 +11,7 @@
 #include "param/LinABF.h"
 #include "param/ParamPipeline.h"
 #include "param/PatchExtractor.h"
+#include "param/Refinement.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
 #include "render/MeshRenderer.h"
@@ -51,6 +52,10 @@ private:
     void drawParamPanel();
     void runParam(bool onlySelected);
     void packAtlasNow();
+    void drawRefinePanel();
+    void startRefine();
+    void refineTick();                     // one round of a running refinement (once per frame)
+    void applyRefineResult();
     std::vector<Vec3> patchExplodeOffsets() const;   // per patch; empty if the view is not exploded
     void rebuildBoundaryLines();
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
@@ -135,6 +140,13 @@ private:
     bool             uvShowAtlas_ = false;
     float            checkerCells_ = 32.0f;
     std::string      paramStatus_;
+
+    // Stage 10: refinement loop
+    RefineOptions    refineOptions_;
+    std::unique_ptr<Refiner> refiner_;
+    RefineStats      refineStats_;
+    bool             refineHasStats_ = false;
+    bool             patchesRefined_ = false;  // the patches come from the refinement, not from the VSA labels
 
     // Stage 8: UV per patch (parallel to patches_.patches)
     std::vector<UVResult> uv_;

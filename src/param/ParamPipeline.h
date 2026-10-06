@@ -44,6 +44,10 @@ struct PatchParam {
     DistortionStats distortion;
     std::vector<float> perTriangleL2;      // per face of `patch.mesh`
     int         cuts = 0;
+
+    // Where a failed attempt overlapped itself: two faces (source mesh indices) next to a pair of crossing
+    // boundary edges that are far apart on the surface, or -1. The refinement seeds the split with them.
+    int         hintFaceA = -1, hintFaceB = -1;
 };
 
 PatchParam parameterizePatch(const TriMesh& source, const Patch& patch, const ParamOptions& options = {});
