@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -88,7 +89,9 @@ bool App::init(int width, int height, const char* title)
     }
     showTriangle_ = false;
     rotate_ = false;
-    openMesh("data/cube.obj");   // default file; on failure only a status message
+    const char* envMesh = std::getenv("VSA_MESH");   // testing hooks: VSA_MESH, VSA_K, VSA_AUTO_ATLAS
+    openMesh(envMesh ? envMesh : "data/cube.obj");   // default file; on failure only a status message
+    if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
 
     glEnable(GL_DEPTH_TEST);
     GL_CHECK();
@@ -97,8 +100,19 @@ bool App::init(int width, int height, const char* title)
 
 void App::run()
 {
+    // VSA_AUTO_ATLAS=1: press "Make atlas" by itself, print the outcome and quit (end-to-end check without clicks)
+    const bool autoAtlas = std::getenv("VSA_AUTO_ATLAS") != nullptr;
+    int autoFrame = 0;
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+        if (autoAtlas) {
+            if (autoFrame == 2) startMakeAtlas();
+            if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle) {
+                std::printf("AUTO ATLAS: %s\n", makeAtlasStatus_.c_str());
+                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            }
+            ++autoFrame;
+        }
 
         // Minimized window: do not spin frames needlessly
         if (glfwGetWindowAttrib(window_, GLFW_ICONIFIED)) {
@@ -373,6 +387,27 @@ void App::rebuildBoundaryLines()
     meshRenderer_.uploadLines(segs);
 }
 
+void App::extractPatchesNow()
+{
+    patches_ = extractPatches(mesh_, vsa_.label, patchOptions_);
+    const size_t n = patches_.patches.size();
+    linabf_.assign(n, LinABFResult());
+    linabfSolved_.assign(n, 0);
+    uv_.assign(n, UVResult());
+    uvStats_.assign(n, UVStats());
+    uvDone_.assign(n, 0);
+    params_.assign(n, PatchParam());
+    paramDone_.assign(n, 0);
+    atlasValid_ = false;
+    paramStatus_.clear();
+    patchesValid_ = true;
+    patchedLabels_ = vsa_.label;
+    patchesRefined_ = false;
+    selectedPatch_ = -1;
+    colorMode_ = 5;
+    uploadMesh();
+}
+
 void App::drawPatchPanel()
 {
     if (!ImGui::Begin("Patches")) { ImGui::End(); return; }
@@ -384,24 +419,7 @@ void App::drawPatchPanel()
     ImGui::InputInt("Merge regions smaller than", &patchOptions_.minFaces);
     patchOptions_.minFaces = std::max(1, patchOptions_.minFaces);
     ImGui::Checkbox("Cut multi-boundary patches into disks", &patchOptions_.cutMultiBoundary);
-    if (ImGui::Button("Extract patches")) {
-        patches_ = extractPatches(mesh_, vsa_.label, patchOptions_);
-        linabf_.assign(patches_.patches.size(), LinABFResult());
-        linabfSolved_.assign(patches_.patches.size(), 0);
-        uv_.assign(patches_.patches.size(), UVResult());
-        uvStats_.assign(patches_.patches.size(), UVStats());
-        uvDone_.assign(patches_.patches.size(), 0);
-        params_.assign(patches_.patches.size(), PatchParam());
-        paramDone_.assign(patches_.patches.size(), 0);
-        atlasValid_ = false;
-        paramStatus_.clear();
-        patchesValid_ = true;
-        patchedLabels_ = vsa_.label;
-        patchesRefined_ = false;
-        selectedPatch_ = -1;
-        colorMode_ = 5;
-        uploadMesh();
-    }
+    if (ImGui::Button("Extract patches")) extractPatchesNow();
     if (!patchesValid_) { ImGui::End(); return; }
 
     if (patchesRefined_)
@@ -766,7 +784,6 @@ void App::drawRefinePanel()
 
 void App::drawParamPanel()
 {
-    constexpr const char* kExportKey = "ExportObjDlg";
     if (!ImGui::Begin("Parameterize")) { ImGui::End(); return; }
     if (!patchesValid_ || params_.size() != patches_.patches.size()) {
         ImGui::TextUnformatted("Extract patches first (Patches panel)");
@@ -895,9 +912,9 @@ void App::drawParamPanel()
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!atlasValid_);
-    bool openExport = ImGui::Button("Export OBJ...");
+    if (ImGui::Button("Export OBJ...")) exportObjRequested_ = true;
     ImGui::SameLine();
-    const bool openMask = ImGui::Button("Export mask PNG...");
+    if (ImGui::Button("Export mask PNG...")) exportMaskRequested_ = true;
     ImGui::EndDisabled();
     if (atlasValid_) {
         ImGui::Text("Efficiency %.1f%%", 100.0 * atlas_.efficiency);
@@ -906,8 +923,175 @@ void App::drawParamPanel()
                         atlas_.texelsPerUnit, atlas_.gutter);
     }
 
+    ImGui::End();
+}
+
+void App::cancelMakeAtlas(const char* why)
+{
+    atlasJob_.reset();
+    if (atlasStage_ == AtlasStage::Refine) refiner_.reset();
+    atlasStage_ = AtlasStage::Idle;
+    makeAtlasStatus_ = why;
+}
+
+void App::startMakeAtlas()
+{
+    if (!meshRenderer_.hasMesh()) return;
+    job_.reset();
+    refiner_.reset();
+    atlasJob_.reset();
+
+    // a fresh partition with the settings of the VSA panel (the paint weights count)
+    vsa_ = VSAState();
+    vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+    vsa_.smooth = smoothParams_;
+    if (seedMethod_ == 0) initRandomSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
+    else                  initFarthestSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
+    vsaAdded_ = vsaSteps_ = 0;
+    lloydStatus_.clear();
+
+    patches_ = ExtractionResult();
+    patchesValid_ = false;
+    patchesRefined_ = false;
+    selectedPatch_ = -1;
+    linabf_.clear(); linabfSolved_.clear();
+    uv_.clear(); uvStats_.clear(); uvDone_.clear();
+    params_.clear(); paramDone_.clear();
+    atlasValid_ = false;
+    refineHasStats_ = false;
+    paramStatus_.clear();
+
+    atlasJob_ = std::make_unique<RefineJob>(makeAtlasTeleport_ ? RefineJob::Kind::Teleport : RefineJob::Kind::Lloyd,
+                                            lloydParams_, teleportParams_);
+    atlasStage_ = AtlasStage::Lloyd;
+    makeAtlasIter_ = 0;
+    makeAtlasStatus_ = "1/4 partition...";
+    colorMode_ = 2;
+    uploadMesh();
+}
+
+void App::makeAtlasTick()
+{
+    if (atlasStage_ == AtlasStage::Idle) return;
+    if (!meshRenderer_.hasMesh()) { cancelMakeAtlas("cancelled: no mesh"); return; }
+    char buf[256];
+
+    if (atlasStage_ == AtlasStage::Lloyd) {
+        if (!atlasJob_) { cancelMakeAtlas("cancelled"); return; }
+        const bool more = atlasJob_->step(vsaInput(), vsa_);
+        ++makeAtlasIter_;
+        ++vsaSteps_;
+        uploadMesh();
+        std::snprintf(buf, sizeof(buf), "1/4 partition into %d regions: iteration %d, energy %.5g", vsa_.k(),
+                      makeAtlasIter_, totalEnergy(vsa_));
+        makeAtlasStatus_ = buf;
+        if (more) return;
+
+        atlasJob_.reset();
+        extractPatchesNow();     // 2/4
+        startRefine();           // 3/4: refinement parameterizes every patch and splits the bad ones
+        atlasStage_ = AtlasStage::Refine;
+        makeAtlasStatus_ = "3/4 patches extracted, parameterizing...";
+        return;
+    }
+
+    // Refine: refineTick() (in the Refinement panel code) steps the refiner and applies its result
+    if (refiner_) {
+        std::snprintf(buf, sizeof(buf), "3/4 parameterizing and refining: round %d, %zu patches",
+                      refiner_->result().stats.rounds + 1, patches_.patches.size());
+        makeAtlasStatus_ = buf;
+        return;
+    }
+    if (!patchesRefined_) { cancelMakeAtlas("stopped"); return; }
+
+    makeAtlasStatus_ = "4/4 packing the atlas...";
+    atlasMethod_ = 0;   // the one-button pipeline always uses the horizon packer
+    packAtlasNow();
+    atlasStage_ = AtlasStage::Idle;
+    if (!atlasValid_) {
+        int notDisks = 0, unparameterized = 0;
+        for (size_t i = 0; i < patches_.patches.size(); ++i) {
+            notDisks += !patches_.patches[i].isDisk();
+            unparameterized += params_[i].method == ParamMethod::None;
+        }
+        std::snprintf(buf, sizeof(buf),
+                      "no patch could be flattened (%d of %zu patches are not disks, %d have no UV): %s. The mesh may be too small "
+                      "for the limits: raise k, or lower 'Min faces per part' in the Refinement panel.",
+                      notDisks, patches_.patches.size(), unparameterized, paramStatus_.c_str());
+        makeAtlasStatus_ = buf;
+        return;
+    }
+
+    size_t withUV = 0;
+    for (size_t i = 0; i < params_.size(); ++i)
+        if (i < atlas_.uv.size() && !atlas_.uv[i].empty()) withUV += params_[i].patch.faceToGlobal.size();
+    std::snprintf(buf, sizeof(buf),
+                  "done: %zu patches (%d still bad), %d x %d atlas, efficiency %.1f%%, gutter %d texels, %zu of %zu faces have UV",
+                  patches_.patches.size(), refineStats_.unresolved, atlas_.resolution, atlas_.resolution,
+                  100.0 * atlas_.efficiency, atlas_.gutter, withUV, mesh_.n_faces());
+    makeAtlasStatus_ = buf;
+}
+
+void App::drawMakeAtlasPanel()
+{
+    ImGui::SetNextWindowPos(ImVec2(12, 36), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Make atlas")) { ImGui::End(); return; }
+    if (!meshRenderer_.hasMesh()) {
+        ImGui::TextUnformatted("Open a mesh first (File > Open)");
+        ImGui::End();
+        return;
+    }
+    const bool running = atlasStage_ != AtlasStage::Idle;
+
+    ImGui::BeginDisabled(running);
+    ImGui::InputInt("Patches to start from (k)", &vsaK_);
+    vsaK_ = std::max(1, std::min(vsaK_, int(mesh_.n_faces())));
+    {
+        HorizonOptions& ho = horizonOptions_;
+        static const int kResolutions[] = {256, 512, 1024, 2048, 4096, 8192};
+        char label[24];
+        std::snprintf(label, sizeof(label), "%d x %d", ho.resolution, ho.resolution);
+        if (ImGui::BeginCombo("Texture size", label)) {
+            for (int r : kResolutions) {
+                std::snprintf(label, sizeof(label), "%d x %d", r, r);
+                if (ImGui::Selectable(label, r == ho.resolution)) ho.resolution = r;
+            }
+            ImGui::EndCombo();
+        }
+        int maxLevel = 0;
+        while ((1 << (maxLevel + 1)) <= ho.resolution) ++maxLevel;
+        maxLevel = std::max(0, maxLevel - 2);
+        ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
+        ImGui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
+        ImGui::TextDisabled("gap between charts: %d texels", chartGutter(ho.maxMipLevel, ho.extraTexels));
+    }
+    ImGui::Checkbox("Improve the partition with teleportation (slower)", &makeAtlasTeleport_);
+    ImGui::EndDisabled();
+
+    if (!running) {
+        if (ImGui::Button("Make atlas", ImVec2(-1, 40))) startMakeAtlas();
+    } else {
+        if (ImGui::Button("Cancel", ImVec2(-1, 40))) cancelMakeAtlas("cancelled");
+        const float stage = atlasStage_ == AtlasStage::Lloyd ? 0.15f : 0.55f;
+        ImGui::ProgressBar(stage, ImVec2(-1, 0), "");
+    }
+    if (!makeAtlasStatus_.empty()) ImGui::TextWrapped("%s", makeAtlasStatus_.c_str());
+
+    ImGui::BeginDisabled(!atlasValid_ || running);
+    if (ImGui::Button("Export OBJ...")) exportObjRequested_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Export mask PNG...")) exportMaskRequested_ = true;
+    ImGui::EndDisabled();
+    if (!paramStatus_.empty()) ImGui::TextWrapped("%s", paramStatus_.c_str());
+    ImGui::TextDisabled("Other settings come from the VSA, Patches, Parameterize and Refinement panels.");
+    ImGui::End();
+}
+
+void App::drawExportDialogs()
+{
     constexpr const char* kMaskKey = "ExportMaskDlg";
-    if (openMask) {
+    if (exportMaskRequested_) {
+        exportMaskRequested_ = false;
         IGFD::FileDialogConfig cfg;
         cfg.path = lastDir_;
         cfg.fileName = "atlas_mask.png";
@@ -938,7 +1122,9 @@ void App::drawParamPanel()
         }
     }
 
-    if (openExport) {
+    constexpr const char* kExportKey = "ExportObjDlg";
+    if (exportObjRequested_) {
+        exportObjRequested_ = false;
         IGFD::FileDialogConfig cfg;
         cfg.path = lastDir_;
         cfg.fileName = "atlas.obj";
@@ -969,7 +1155,6 @@ void App::drawParamPanel()
         }
         ImGuiFileDialog::Instance()->Close();
     }
-    ImGui::End();
 }
 
 void App::drawLinabfPanel()
@@ -1451,12 +1636,15 @@ void App::drawUI()
     }
     ImGui::End();
 
+    makeAtlasTick();
+    drawMakeAtlasPanel();
     drawVsaPanel();
     drawPatchPanel();
     drawLinabfPanel();
     drawParamPanel();
     drawRefinePanel();
     drawUvPanel();
+    drawExportDialogs();
 
     handleSceneInput();
 

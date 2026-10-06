@@ -18,6 +18,9 @@ cmake -G Xcode -B build-xcode
 open build-xcode/VSAParam.xcodeproj     # схема vsa_app → Run
 ```
 
+Release (в разы быстрее, нужен для больших моделей): `cmake --build build-xcode --config Release --target vsa_app`,
+бинарник `build-xcode/Release/vsa_app`.
+
 Без Xcode:
 
 ```bash

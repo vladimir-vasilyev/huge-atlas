@@ -55,6 +55,12 @@ private:
     void runParam(bool onlySelected);
     void packAtlasNow();
     void drawRefinePanel();
+    void extractPatchesNow();              // patches of vsa_.label (the Extract button)
+    void drawExportDialogs();              // OBJ / mask PNG dialogs, drawn every frame
+    void drawMakeAtlasPanel();
+    void startMakeAtlas();
+    void makeAtlasTick();                  // one step of the one-button pipeline (once per frame)
+    void cancelMakeAtlas(const char* why);
     void startRefine();
     void refineTick();                     // one round of a running refinement (once per frame)
     void applyRefineResult();
@@ -144,6 +150,15 @@ private:
     bool             uvShowAtlas_ = false;
     float            checkerCells_ = 32.0f;
     std::string      paramStatus_;
+
+    // One-button pipeline: VSA (Lloyd) -> patches -> refinement (parameterization of every patch) -> atlas
+    enum class AtlasStage { Idle, Lloyd, Refine };
+    AtlasStage       atlasStage_ = AtlasStage::Idle;
+    std::unique_ptr<RefineJob> atlasJob_;
+    bool             makeAtlasTeleport_ = false;
+    int              makeAtlasIter_ = 0;
+    std::string      makeAtlasStatus_;
+    bool             exportObjRequested_ = false, exportMaskRequested_ = false;
 
     // Stage 10: refinement loop
     RefineOptions    refineOptions_;
