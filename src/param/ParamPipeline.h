@@ -1,0 +1,49 @@
+#pragma once
+
+#include "param/AnglesToUV.h"
+#include "param/Distortion.h"
+#include "param/Injectivity.h"
+#include "param/LinABF.h"
+#include "param/PatchFix.h"
+
+#include <string>
+#include <vector>
+
+// Parameterization of one patch with fixes of increasing cost, stopping at the first injective map:
+//   1. LinABF + least squares UV
+//   2. LinABF with the active set (pinned angles, limited boundary fan sums), re-solved
+//   3. a slit from the vertex with the largest angular defect to the boundary, then 1-2 again
+//      (up to maxCuts times)
+//   4. Tutte embedding of the original patch: injective for every disk, but with a distorted boundary
+// A patch that stays non-injective, or whose result is too stretched, is marked needsSplit: it has
+// to be split by VSA again (the loop of stage 10).
+
+enum class ParamMethod { None, LinABF, ActiveSet, Cut, Tutte };
+const char* paramMethodName(ParamMethod method);
+
+struct ParamOptions {
+    LinABFParams    lin;
+    ActiveSetParams active;
+    bool   useActiveSet = true;
+    bool   allowCut = true;
+    int    maxCuts = 2;
+    double cutKappa = 1.0;
+    bool   allowTutte = true;
+    double maxStretch = 4.0;   // needsSplit when the largest L2 stretch is above this (0 = ignore)
+};
+
+struct PatchParam {
+    ParamMethod method = ParamMethod::None;
+    bool        injective = false;
+    bool        needsSplit = false;
+    std::string log;                       // what was tried and why it failed
+    Patch       patch;                     // the patch that was parameterized (cut copy if method == Cut)
+    std::vector<double> angles;            // final corner angles (empty for Tutte)
+    std::vector<Eigen::Vector2d> uv;       // per vertex of `patch.mesh`
+    InjectivityReport report;              // of the final result
+    DistortionStats distortion;
+    std::vector<float> perTriangleL2;      // per face of `patch.mesh`
+    int         cuts = 0;
+};
+
+PatchParam parameterizePatch(const TriMesh& source, const Patch& patch, const ParamOptions& options = {});

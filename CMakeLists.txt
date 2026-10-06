@@ -84,6 +84,18 @@ add_library(vsa_core STATIC
     src/param/LinABF.cpp
     src/param/AnglesToUV.h
     src/param/AnglesToUV.cpp
+    src/param/Predicates.h
+    src/param/Predicates.cpp
+    src/param/Injectivity.h
+    src/param/Injectivity.cpp
+    src/param/Distortion.h
+    src/param/Distortion.cpp
+    src/param/PatchFix.h
+    src/param/PatchFix.cpp
+    src/param/ParamPipeline.h
+    src/param/ParamPipeline.cpp
+    src/param/AtlasPacker.h
+    src/param/AtlasPacker.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
@@ -120,6 +132,18 @@ add_test(NAME linabf COMMAND test_linabf)
 add_executable(test_uv tests/test_uv.cpp)
 target_link_libraries(test_uv PRIVATE vsa_core)
 add_test(NAME uv COMMAND test_uv)
+
+add_executable(test_injectivity tests/test_injectivity.cpp)
+target_link_libraries(test_injectivity PRIVATE vsa_core)
+add_test(NAME injectivity COMMAND test_injectivity)
+
+add_executable(test_pipeline tests/test_pipeline.cpp)
+target_link_libraries(test_pipeline PRIVATE vsa_core)
+add_test(NAME pipeline COMMAND test_pipeline)
+
+add_executable(test_atlas tests/test_atlas.cpp)
+target_link_libraries(test_atlas PRIVATE vsa_core)
+add_test(NAME atlas COMMAND test_atlas)
 
 add_executable(test_patches tests/test_patches.cpp)
 target_link_libraries(test_patches PRIVATE vsa_core)

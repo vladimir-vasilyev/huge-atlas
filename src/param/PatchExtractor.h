@@ -15,7 +15,8 @@ struct Patch {
     int              region = -1;      // label after merging small regions and compaction
     PatchTopology    topology;         // of `mesh` (after the cuts)
     PatchKind        kindBeforeCuts = PatchKind::Other;
-    int              cuts = 0;         // paths cut to turn a multi-boundary patch into a disk
+    std::vector<int> cutEdges;         // slits: edge indices in the source mesh (buildPatch input)
+    int              cuts = 0;         // paths cut to turn a patch into a disk (or to relieve it)
     std::string      note;             // why the patch is not a disk (or what was done)
 
     bool isDisk() const { return topology.kind == PatchKind::Disk; }

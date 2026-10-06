@@ -120,6 +120,7 @@ int mergeSmallRegions(const TriMesh& mesh, std::vector<int>& label, int minFaces
 bool buildPatch(const TriMesh& mesh, const std::vector<int>& faces, const std::vector<int>& cutEdges, Patch& out)
 {
     out = Patch();
+    out.cutEdges = cutEdges;
     const int n = int(faces.size());
     if (n == 0) { out.note = "empty"; return false; }
 

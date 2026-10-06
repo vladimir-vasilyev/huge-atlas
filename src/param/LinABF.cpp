@@ -77,7 +77,7 @@ void angleResiduals(const TriMesh& m, const std::vector<double>& ang, double& tr
     }
 }
 
-LinABFResult solveLinABF(const TriMesh& m, const LinABFParams& p)
+LinABFResult solveLinABF(const TriMesh& m, const LinABFParams& p, const LinABFConstraints* extra)
 {
     LinABFResult res;
     const int nt = int(m.n_faces());
@@ -89,7 +89,9 @@ LinABFResult solveLinABF(const TriMesh& m, const LinABFParams& p)
         if (!m.is_boundary(v) && !m.is_isolated(v)) interior.push_back(v);
     const int ni = int(interior.size());
     res.interiorVertices = ni;
-    res.rows = nt + 2 * ni;
+    const int nFixed = extra ? int(extra->fixedAngles.size()) : 0;
+    const int nSums = extra ? int(extra->boundarySums.size()) : 0;
+    res.rows = nt + 2 * ni + nFixed + nSums;
     const int cols = 3 * nt;
     if (res.rows > cols) { res.message = "more constraints than angles"; return res; }
 
@@ -97,6 +99,8 @@ LinABFResult solveLinABF(const TriMesh& m, const LinABFParams& p)
     std::vector<Wheel> wheels;
     wheels.reserve(ni);
     for (auto v : interior) wheels.push_back(wheelOf(m, v));
+    std::vector<Wheel> sumVertices;   // only atVertex is used
+    for (int j = 0; j < nSums; ++j) sumVertices.push_back(wheelOf(m, TriMesh::VertexHandle(extra->boundarySums[j].first)));
 
     // ---- initial estimation (section 4.2): original angles, exponential-map fans where the deficit is large
     std::vector<double> alpha = original;
@@ -139,6 +143,20 @@ LinABFResult solveLinABF(const TriMesh& m, const LinABFParams& p)
             }
             b[rv] = 2.0 * kPi - sum;
             b[rw] = rhs;
+        }
+        const int rowFixed = nt + 2 * ni, rowSums = rowFixed + nFixed;
+        for (int j = 0; j < nFixed; ++j) {
+            const int c = extra->fixedAngles[j].first;
+            t.emplace_back(rowFixed + j, c, 1.0);
+            b[rowFixed + j] = extra->fixedAngles[j].second - alpha[c];
+        }
+        for (int j = 0; j < nSums; ++j) {
+            double sum = 0.0;
+            for (int c : sumVertices[j].atVertex) {
+                t.emplace_back(rowSums + j, c, 1.0);
+                sum += alpha[c];
+            }
+            b[rowSums + j] = extra->boundarySums[j].second - sum;
         }
         Eigen::SparseMatrix<double> A(res.rows, cols);
         A.setFromTriplets(t.begin(), t.end());
@@ -193,5 +211,45 @@ LinABFResult solveLinABF(const TriMesh& m, const LinABFParams& p)
     if (!res.anglesValid) res.wheelResidual = std::nan("");   // log sin is undefined outside (0, pi)
     res.ok = true;
     if (!res.anglesValid) res.message = "angles left (0, pi): use the active set / split the patch";
+    return res;
+}
+
+LinABFResult solveLinABFActiveSet(const TriMesh& m, const LinABFParams& p, const ActiveSetParams& a, ActiveSetInfo* info)
+{
+    ActiveSetInfo local;
+    ActiveSetInfo& inf = info ? *info : local;
+    inf = ActiveSetInfo();
+
+    LinABFConstraints cons;
+    std::vector<char> cornerFixed(3 * m.n_faces(), 0), vertexLimited(m.n_vertices(), 0);
+    LinABFResult res = solveLinABF(m, p, &cons);
+    for (int round = 0; res.ok; ++round) {
+        bool added = false;
+        for (size_t c = 0; c < res.angles.size(); ++c) {
+            const double ang = res.angles[c];
+            if (cornerFixed[c] || (ang >= a.angleMargin && ang <= kPi - a.angleMargin)) continue;
+            cons.fixedAngles.push_back({int(c), std::max(a.angleMargin, std::min(kPi - a.angleMargin, ang))});
+            cornerFixed[c] = 1;
+            added = true;
+        }
+        for (auto v : m.vertices()) {
+            if (!m.is_boundary(v) || vertexLimited[v.idx()]) continue;
+            double sum = 0.0;
+            for (auto h : m.vih_range(v)) if (cornerIndex(m, h) >= 0) sum += res.angles[cornerIndex(m, h)];
+            if (sum <= 2.0 * kPi - a.foldDelta) continue;
+            cons.boundarySums.push_back({v.idx(), 2.0 * kPi - a.foldDelta});
+            vertexLimited[v.idx()] = 1;
+            added = true;
+        }
+        if (!added) { inf.converged = true; break; }
+        if (round >= a.maxRounds) break;
+
+        LinABFResult next = solveLinABF(m, p, &cons);
+        if (!next.ok) { res.message = "active set: " + next.message; break; }
+        res = std::move(next);
+        ++inf.rounds;
+    }
+    inf.fixedCorners = int(cons.fixedAngles.size());
+    inf.constrainedVertices = int(cons.boundarySums.size());
     return res;
 }

@@ -3,6 +3,7 @@
 #include "core/MeshTypes.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 // Linear Angle Based Parameterization (Zayer, Levy, Seidel, SGP 2007).
@@ -54,11 +55,37 @@ struct LinABFResult {
     double angularError = 0.0;        // ||alpha* - alpha_original||_2 / (3 nt), the measure of the paper's table
 };
 
+// Extra equality rows (active set): angles pinned to given values and angle sums at boundary vertices.
+struct LinABFConstraints {
+    std::vector<std::pair<int, double>> fixedAngles;     // corner index -> required angle
+    std::vector<std::pair<int, double>> boundarySums;    // boundary vertex -> required sum of its fan angles
+    bool empty() const { return fixedAngles.empty() && boundarySums.empty(); }
+};
+
 // The mesh must be a manifold patch; the angles are meaningful for a topological disk.
 // A rank-deficient system (e.g. a closed mesh, where the constraints are dependent) is reported
 // as !ok with a message.
-LinABFResult solveLinABF(const TriMesh& mesh, const LinABFParams& params = {});
+LinABFResult solveLinABF(const TriMesh& mesh, const LinABFParams& params = {},
+                         const LinABFConstraints* extra = nullptr);
 
 // Residuals of the nonlinear constraints for arbitrary angles (indexed like the result).
 void angleResiduals(const TriMesh& mesh, const std::vector<double>& angles, double& triangle, double& vertex,
                     double& wheel);
+
+// Active set (section 6 of the paper): solve, find the angles that left (0, pi) or whose boundary
+// fan sums reach 2 pi - foldDelta, pin them with equality rows, solve again.
+struct ActiveSetParams {
+    double foldDelta = 0.05;     // boundary fan sums are limited to 2 pi - foldDelta
+    double angleMargin = 0.02;   // angles are kept inside [margin, pi - margin]
+    int    maxRounds = 4;
+};
+
+struct ActiveSetInfo {
+    int  rounds = 0;               // extra solves after the first one
+    int  fixedCorners = 0;
+    int  constrainedVertices = 0;
+    bool converged = false;        // no violation left
+};
+
+LinABFResult solveLinABFActiveSet(const TriMesh& mesh, const LinABFParams& params = {},
+                                  const ActiveSetParams& active = {}, ActiveSetInfo* info = nullptr);
