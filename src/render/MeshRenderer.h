@@ -23,6 +23,12 @@ public:
 
     bool hasMesh() const { return vertexCount_ > 0; }
 
+    // Line layer drawn over the mesh with a width in pixels (GL 4.1 core has no wide lines, so each
+    // segment is expanded into a screen-space quad). Segment = 2 points + rgb, 9 floats.
+    void uploadLines(const std::vector<float>& segments);
+    void drawLines(const float viewProj[16], int fbWidth, int fbHeight, float widthPx) const;
+    bool hasLines() const { return lineVertexCount_ > 0; }
+
     // Picking by an ID buffer: the mesh is rendered with the face index as color into an offscreen
     // target of the framebuffer size; the pixels in a disc are decoded.
     // (cx, cy) is the disc center in framebuffer pixels, origin at the bottom-left.
@@ -33,7 +39,10 @@ public:
 private:
     void ensurePickTarget(int w, int h);
 
-    ShaderProgram shader_, pickShader_;
+    ShaderProgram shader_, pickShader_, lineShader_;
+    GLuint lineVao_ = 0, lineVbo_ = 0;
+    GLsizei lineVertexCount_ = 0;
+    GLint uLineVP_ = -1, uLineViewport_ = -1, uLineWidth_ = -1;
     GLuint pickFbo_ = 0, pickColor_ = 0, pickDepth_ = 0;
     int pickW_ = 0, pickH_ = 0;
     GLint uPickVP_ = -1;

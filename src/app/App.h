@@ -1,4 +1,4 @@
-#pragma once
+ #pragma once
 
 #include "core/MeshPrep.h"
 #include "core/Operations.h"
@@ -36,6 +36,8 @@ private:
     void jobTick();                        // one step of the running job (once per frame)
     void paintWeights(int fbW, int fbH);
     void drawPatchPanel();
+    std::vector<Vec3> patchExplodeOffsets() const;   // per patch; empty if the view is not exploded
+    void rebuildBoundaryLines();
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
 
     GLFWwindow* window_ = nullptr;
@@ -94,6 +96,8 @@ private:
     std::vector<int> patchedLabels_;       // labels the patches were extracted from (to detect a stale result)
     int              selectedPatch_ = -1;
     float            explode_ = 0.0f;
+    bool             showBoundaries_ = true;
+    float            boundaryWidth_ = 3.0f;   // pixels
 
     bool             dragging_ = false;
     bool             panning_ = false;

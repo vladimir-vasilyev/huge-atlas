@@ -5,6 +5,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include <array>
+
 int main()
 {
     if (!glfwInit()) { std::printf("SKIP: no GLFW\n"); return 0; }
@@ -48,6 +50,32 @@ int main()
     mr.pickFaces(vp, fbW, fbH, 0, 0, fbW, ids);
     CHECK(!ids.empty());
     for (int f : ids) CHECK(f >= 0 && f < 12);
+
+    // thick line layer: a red horizontal segment through the window center, 6 px wide
+    {
+        const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        mr.uploadLines({-0.5f, 0.f, 0.f, 0.5f, 0.f, 0.f, 1.f, 0.f, 0.f});
+        CHECK(mr.hasLines());
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, fbW, fbH);
+        glClearColor(1.f, 1.f, 1.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        mr.drawLines(identity, fbW, fbH, 6.0f);
+        auto pixel = [&](int x, int y) {
+            unsigned char c[4] = {0, 0, 0, 0};
+            glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
+            return std::array<int, 3>{c[0], c[1], c[2]};
+        };
+        const auto center = pixel(fbW / 2, fbH / 2);
+        CHECK(center[0] > 200 && center[1] < 60 && center[2] < 60);          // on the line
+        const auto above = pixel(fbW / 2, fbH / 2 + 10);
+        CHECK(above[0] > 240 && above[1] > 240 && above[2] > 240);           // 10 px away: background
+        const auto outside = pixel(fbW / 2 + int(0.6f * fbW / 2), fbH / 2);
+        CHECK(outside[0] > 240 && outside[1] > 240);                          // beyond the segment end
+        mr.uploadLines({});
+        CHECK(!mr.hasLines());
+    }
 
     mr.destroy();
     glfwDestroyWindow(win);

@@ -228,24 +228,67 @@ void App::uploadMesh()
 
     // exploded view: every patch moves away from the mesh center
     std::vector<float> offsets;
-    if (explode_ > 0.0f && patchesValid_ && patches_.faceToPatch.size() == nF) {
-        std::vector<Vec3> center(patches_.patches.size(), Vec3(0, 0, 0));
-        std::vector<double> area(patches_.patches.size(), 0.0);
-        for (size_t i = 0; i < nF; ++i) {
-            const int pi = patches_.faceToPatch[i];
-            if (pi < 0) continue;
-            center[pi] += faceData_.centroid[i] * faceData_.area[i];
-            area[pi] += faceData_.area[i];
-        }
+    const std::vector<Vec3> po = patchExplodeOffsets();
+    if (!po.empty()) {
         offsets.assign(nF * 3, 0.0f);
         for (size_t i = 0; i < nF; ++i) {
             const int pi = patches_.faceToPatch[i];
-            if (pi < 0 || area[pi] <= 0.0) continue;
-            const Vec3 c = center[pi] / area[pi];
-            for (int k = 0; k < 3; ++k) offsets[i * 3 + k] = float(c[k]) * explode_;
+            if (pi < 0) continue;
+            for (int k = 0; k < 3; ++k) offsets[i * 3 + k] = float(po[pi][k]);
         }
     }
     meshRenderer_.upload(mesh_, colors, offsets);
+    rebuildBoundaryLines();
+}
+
+std::vector<Vec3> App::patchExplodeOffsets() const
+{
+    const size_t nF = mesh_.n_faces();
+    if (explode_ <= 0.0f || !patchesValid_ || patches_.faceToPatch.size() != nF) return {};
+    std::vector<Vec3> center(patches_.patches.size(), Vec3(0, 0, 0));
+    std::vector<double> area(patches_.patches.size(), 0.0);
+    for (size_t i = 0; i < nF; ++i) {
+        const int pi = patches_.faceToPatch[i];
+        if (pi < 0) continue;
+        center[pi] += faceData_.centroid[i] * faceData_.area[i];
+        area[pi] += faceData_.area[i];
+    }
+    for (size_t p = 0; p < center.size(); ++p)
+        center[p] = area[p] > 0.0 ? center[p] / area[p] * double(explode_) : Vec3(0, 0, 0);
+    return center;
+}
+
+// Boundary of every patch: seams between patches (black), slits cut into a patch (magenta).
+// The mesh border counts as a seam.
+void App::rebuildBoundaryLines()
+{
+    std::vector<float> segs;
+    if (showBoundaries_ && patchesValid_ && patches_.faceToPatch.size() == mesh_.n_faces()) {
+        const std::vector<Vec3> po = patchExplodeOffsets();
+        for (size_t pi = 0; pi < patches_.patches.size(); ++pi) {
+            const Patch& p = patches_.patches[pi];
+            const Vec3 off = po.empty() ? Vec3(0, 0, 0) : po[pi];
+            for (auto h : p.mesh.halfedges()) {
+                if (!p.mesh.is_boundary(h)) continue;
+                const auto u = p.mesh.from_vertex_handle(h), w = p.mesh.to_vertex_handle(h);
+
+                // a slit: the same edge of the source mesh has faces of this very patch on both sides
+                bool slit = false;
+                const auto gh = mesh_.find_halfedge(TriMesh::VertexHandle(p.vertexToGlobal[u.idx()]),
+                                                    TriMesh::VertexHandle(p.vertexToGlobal[w.idx()]));
+                if (gh.is_valid()) {
+                    const auto f1 = mesh_.face_handle(gh), f2 = mesh_.face_handle(mesh_.opposite_halfedge_handle(gh));
+                    slit = f1.is_valid() && f2.is_valid() &&
+                           patches_.faceToPatch[f1.idx()] == int(pi) && patches_.faceToPatch[f2.idx()] == int(pi);
+                }
+                const Vec3 a = p.mesh.point(u) + off, b = p.mesh.point(w) + off;
+                const float col[3] = {slit ? 0.95f : 0.02f, slit ? 0.1f : 0.02f, slit ? 0.85f : 0.02f};
+                segs.insert(segs.end(), {float(a[0]), float(a[1]), float(a[2]), float(b[0]), float(b[1]),
+                                         float(b[2]), col[0], col[1], col[2]});
+            }
+        }
+    }
+    meshRenderer_.uploadLines(segs);
 }
 
 void App::drawPatchPanel()
@@ -272,6 +315,10 @@ void App::drawPatchPanel()
     if (patchedLabels_ != vsa_.label)
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "stale: the partition changed since extraction");
     if (ImGui::SliderFloat("Explode", &explode_, 0.0f, 1.0f)) uploadMesh();
+    if (ImGui::Checkbox("Show patch boundaries", &showBoundaries_)) rebuildBoundaryLines();
+    if (showBoundaries_)
+        ImGui::SliderFloat("Boundary width (px)", &boundaryWidth_, 1.0f, 8.0f, "%.1f");
+    ImGui::TextDisabled("black: seams   magenta: cuts");
     if (ImGui::RadioButton("Patches", &colorMode_, 4)) uploadMesh();
     ImGui::SameLine();
     if (ImGui::RadioButton("Patch kind", &colorMode_, 5)) uploadMesh();
@@ -717,6 +764,8 @@ void App::renderScene(int fbWidth, int fbHeight)
         camera_.viewProj(float(fbWidth) / float(fbHeight), vp);
         camera_.view(v);
         meshRenderer_.draw(vp, v, wireframe_, 1.0f);
+        if (meshRenderer_.hasLines())
+            meshRenderer_.drawLines(vp, fbWidth, fbHeight, boundaryWidth_);
     }
 }
 

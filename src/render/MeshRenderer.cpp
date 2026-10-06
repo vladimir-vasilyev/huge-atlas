@@ -62,6 +62,39 @@ void main() {
 }
 )";
 
+const char* kLineVS = R"(#version 410 core
+layout(location = 0) in vec3 aA;
+layout(location = 1) in vec3 aB;
+layout(location = 2) in vec2 aCorner;   // x: 0 at A, 1 at B; y: side -1 / +1
+layout(location = 3) in vec3 aColor;
+uniform mat4 uVP;
+uniform vec2 uViewport;                 // framebuffer size in pixels
+uniform float uWidth;                   // line width in pixels
+out vec3 vColor;
+void main() {
+    vec4 a = uVP * vec4(aA, 1.0);
+    vec4 b = uVP * vec4(aB, 1.0);
+    vec2 sa = a.xy / a.w * uViewport * 0.5;
+    vec2 sb = b.xy / b.w * uViewport * 0.5;
+    vec2 d = sb - sa;
+    float len = length(d);
+    vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+    vec2 n = vec2(-dir.y, dir.x);
+    vec4 c = mix(a, b, aCorner.x);
+    vec2 offPx = n * aCorner.y * uWidth * 0.5 + dir * (aCorner.x * 2.0 - 1.0) * uWidth * 0.5;
+    c.xy += offPx / (uViewport * 0.5) * c.w;
+    c.z -= 2e-4 * c.w;                  // pull towards the camera so the lines win against the surface
+    gl_Position = c;
+    vColor = aColor;
+}
+)";
+
+const char* kLineFS = R"(#version 410 core
+in vec3 vColor;
+out vec4 fragColor;
+void main() { fragColor = vec4(vColor, 1.0); }
+)";
+
 } // namespace
 
 bool MeshRenderer::init(std::string* errorLog)
@@ -71,6 +104,12 @@ bool MeshRenderer::init(std::string* errorLog)
     uView_      = shader_.uniform("uView");
     uWire_      = shader_.uniform("uWire");
     uWireWidth_ = shader_.uniform("uWireWidth");
+    if (!lineShader_.build(kLineVS, kLineFS, errorLog)) return false;
+    uLineVP_       = lineShader_.uniform("uVP");
+    uLineViewport_ = lineShader_.uniform("uViewport");
+    uLineWidth_    = lineShader_.uniform("uWidth");
+    glGenVertexArrays(1, &lineVao_);
+    glGenBuffers(1, &lineVbo_);
     if (!pickShader_.build(kPickVS, kPickFS, errorLog)) return false;
     uPickVP_ = pickShader_.uniform("uVP");
     glGenVertexArrays(1, &vao_);
@@ -125,6 +164,50 @@ void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe
     glUniform1f(uWireWidth_, wireWidth);
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, vertexCount_);
+    glBindVertexArray(0);
+    GL_CHECK();
+}
+
+void MeshRenderer::uploadLines(const std::vector<float>& segs)
+{
+    // 6 vertices per segment: A(3) B(3) corner(2) color(3) = 11 floats
+    static const float corners[6][2] = {{0, -1}, {0, 1}, {1, 1}, {0, -1}, {1, 1}, {1, -1}};
+    std::vector<float> buf;
+    buf.reserve(segs.size() / 9 * 6 * 11);
+    for (size_t i = 0; i + 9 <= segs.size(); i += 9)
+        for (const auto& c : corners) {
+            buf.insert(buf.end(), segs.begin() + i, segs.begin() + i + 6);
+            buf.push_back(c[0]);
+            buf.push_back(c[1]);
+            buf.insert(buf.end(), segs.begin() + i + 6, segs.begin() + i + 9);
+        }
+    lineVertexCount_ = GLsizei(buf.size() / 11);
+
+    glBindVertexArray(lineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
+    glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(buf.size() * sizeof(float)), buf.data(), GL_DYNAMIC_DRAW);
+    const GLsizei stride = 11 * sizeof(float);
+    const int sizes[4] = {3, 3, 2, 3};
+    size_t offset = 0;
+    for (int a = 0; a < 4; ++a) {
+        glEnableVertexAttribArray(a);
+        glVertexAttribPointer(a, sizes[a], GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offset * sizeof(float)));
+        offset += sizes[a];
+    }
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    GL_CHECK();
+}
+
+void MeshRenderer::drawLines(const float vp[16], int fbW, int fbH, float widthPx) const
+{
+    if (!lineVertexCount_) return;
+    lineShader_.use();
+    glUniformMatrix4fv(uLineVP_, 1, GL_FALSE, vp);
+    glUniform2f(uLineViewport_, float(fbW), float(fbH));
+    glUniform1f(uLineWidth_, widthPx);
+    glBindVertexArray(lineVao_);
+    glDrawArrays(GL_TRIANGLES, 0, lineVertexCount_);
     glBindVertexArray(0);
     GL_CHECK();
 }
@@ -203,6 +286,10 @@ void MeshRenderer::pickFaces(const float vp[16], int fbW, int fbH, int cx, int c
 
 void MeshRenderer::destroy()
 {
+    if (lineVbo_) { glDeleteBuffers(1, &lineVbo_); lineVbo_ = 0; }
+    if (lineVao_) { glDeleteVertexArrays(1, &lineVao_); lineVao_ = 0; }
+    lineShader_.destroy();
+    lineVertexCount_ = 0;
     if (pickFbo_) { glDeleteFramebuffers(1, &pickFbo_); pickFbo_ = 0; }
     if (pickColor_) { glDeleteTextures(1, &pickColor_); pickColor_ = 0; }
     if (pickDepth_) { glDeleteRenderbuffers(1, &pickDepth_); pickDepth_ = 0; }
