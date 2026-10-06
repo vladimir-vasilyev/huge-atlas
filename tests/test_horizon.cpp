@@ -298,6 +298,221 @@ static void testBadInput()
     CHECK(packHorizon(noMesh, o).ok);
 }
 
+// ---- holes ----------------------------------------------------------------------------------------
+static void testHoleSearch()
+{
+    // columns 0..9: a floor block [0, 3), over columns 3..9 a roof [8, 12): the hole is [3, 8) under the roof
+    HorizonOccupancy occ(16, 0);
+    for (int x = 0; x < 10; ++x) occ.add(x, 0, 3);
+    for (int x = 3; x < 10; ++x) occ.add(x, 8, 12);
+    CHECK(occ.top(5) == 12 && occ.top(1) == 3 && occ.top(12) == 0);
+
+    HorizonProfile small;                       // 4 wide, 4 high
+    small.lo.assign(4, 0);
+    small.hi.assign(4, 4);
+    Placement pl = bestHolePlacement(small, occ, 0, 16);
+    CHECK(pl.ok && pl.v == 3 && pl.u == 3 && pl.top == 7 && pl.waste == 0);   // the lowest, leftmost spot under the roof
+
+    HorizonProfile tall = small;                // 6 high: the hole is only 5 rows
+    tall.hi.assign(4, 6);
+    CHECK(!bestHolePlacement(tall, occ, 0, 16).ok);
+
+    HorizonProfile wide;                        // 8 wide: the hole is 7 columns
+    wide.lo.assign(8, 0);
+    wide.hi.assign(8, 2);
+    CHECK(!bestHolePlacement(wide, occ, 0, 16).ok);
+
+    // a hole that is not a rectangle: the profile follows it
+    HorizonProfile slope;
+    slope.lo = {0, 1, 2, 3};
+    slope.hi = {2, 3, 4, 5};
+    pl = bestHolePlacement(slope, occ, 0, 16);
+    CHECK(pl.ok && pl.v >= 3 && pl.v + 5 <= 8);
+
+    // restricted to the available columns
+    CHECK(!bestHolePlacement(small, occ, 0, 6).ok);
+    CHECK(bestHolePlacement(small, occ, 3, 7).ok);
+    // nothing below the horizon: no hole
+    HorizonOccupancy flat(8, 0);
+    for (int x = 0; x < 8; ++x) flat.add(x, 0, 5);
+    CHECK(!bestHolePlacement(small, flat, 0, 8).ok);
+}
+
+// A "T": a cap of 10 x 2 on a stem of 2 x 6; the two cavities under the cap are free space for other charts.
+static StarChart makeT()
+{
+    StarChart c;
+    auto V = [&](double x, double y) { c.uv.push_back({x, y}); return c.mesh.add_vertex(Vec3(x, y, 0)); };
+    const auto a = V(0, 8), b = V(0, 6), d = V(4, 6), e = V(6, 6), f = V(10, 6), g = V(10, 8), h = V(4, 0), i = V(6, 0);
+    c.mesh.add_face(a, b, d);
+    c.mesh.add_face(a, d, e);
+    c.mesh.add_face(a, e, f);
+    c.mesh.add_face(a, f, g);
+    c.mesh.add_face(h, i, e);
+    c.mesh.add_face(h, e, d);
+    for (auto fh : c.mesh.faces()) {
+        Eigen::Vector2d q[3];
+        int k = 0;
+        for (auto v : c.mesh.fv_range(fh)) q[k++] = c.uv[v.idx()];
+        c.uvArea += 0.5 * ((q[1] - q[0]).x() * (q[2] - q[0]).y() - (q[1] - q[0]).y() * (q[2] - q[0]).x());
+    }
+    return c;
+}
+
+static StarChart makeSquare(double side)
+{
+    StarChart c;
+    const auto a = c.mesh.add_vertex(Vec3(0, 0, 0)), b = c.mesh.add_vertex(Vec3(side, 0, 0)),
+               d = c.mesh.add_vertex(Vec3(side, side, 0)), e = c.mesh.add_vertex(Vec3(0, side, 0));
+    c.uv = {{0, 0}, {side, 0}, {side, side}, {0, side}};
+    c.mesh.add_face(a, b, d);
+    c.mesh.add_face(a, d, e);
+    c.uvArea = side * side;
+    return c;
+}
+
+static void testHolesGainSpace()
+{
+    // T-shapes leave cavities; small squares are the right size to fill them
+    std::vector<StarChart> charts;
+    for (int i = 0; i < 6; ++i) charts.push_back(makeT());
+    for (int i = 0; i < 24; ++i) charts.push_back(makeSquare(1.6));
+    const std::vector<AtlasInput> in = inputsOf(charts);
+
+    HorizonOptions off;
+    off.resolution = 512;
+    off.maxMipLevel = 0;
+    off.fillHoles = false;
+    HorizonOptions on = off;
+    on.fillHoles = true;
+    const AtlasResult a = packHorizon(in, off), b = packHorizon(in, on);
+    CHECK(a.ok && b.ok);
+    std::printf("  T shapes + squares: holes off %.1f%%, on %.1f%%\n", 100 * a.efficiency, 100 * b.efficiency);
+    CHECK(b.efficiency > a.efficiency * 1.03);
+
+    // the same atlas still honors the gutter at every level, with wrapping
+    for (int level = 0; level <= 3; ++level) {
+        HorizonOptions o = on;
+        o.resolution = 256;
+        o.maxMipLevel = level;
+        const AtlasResult r = packHorizon(in, o);
+        CHECK(r.ok);
+        if (!r.ok) continue;
+        std::vector<std::vector<unsigned char>> bodies;
+        for (size_t i = 0; i < charts.size(); ++i) bodies.push_back(atlascheck::bodyMask(charts[i].mesh, r.uv[i], o.resolution));
+        CHECK(atlascheck::checkMipGuarantee(bodies, o.resolution, level, true).conflicts == 0);
+    }
+}
+
+static void testHolesOnRandomCharts()
+{
+    double sumOff = 0.0, sumOn = 0.0;
+    int better = 0, worse = 0;
+    for (unsigned seed = 1; seed <= 6; ++seed) {
+        const std::vector<StarChart> charts = makeCharts(40, seed * 17, 0.15, 1.4);
+        const std::vector<AtlasInput> in = inputsOf(charts);
+        HorizonOptions off;
+        off.resolution = 512;
+        off.maxMipLevel = 1;
+        off.fillHoles = false;
+        HorizonOptions on = off;
+        on.fillHoles = true;
+        const AtlasResult a = packHorizon(in, off), b = packHorizon(in, on);
+        CHECK(a.ok && b.ok);
+        sumOff += a.efficiency;
+        sumOn += b.efficiency;
+        better += b.efficiency > a.efficiency + 1e-9;
+        worse += b.efficiency < a.efficiency - 0.02;   // greedy search: a small loss can happen, a big one should not
+
+        if (seed <= 2) {   // the guarantee, independently
+            std::vector<std::vector<unsigned char>> bodies;
+            HorizonOptions chk = on;
+            chk.resolution = 256;
+            const AtlasResult r = packHorizon(in, chk);
+            CHECK(r.ok);
+            if (!r.ok) continue;
+            for (size_t i = 0; i < charts.size(); ++i) bodies.push_back(atlascheck::bodyMask(charts[i].mesh, r.uv[i], 256));
+            CHECK(atlascheck::checkMipGuarantee(bodies, 256, chk.maxMipLevel, true).conflicts == 0);
+        }
+    }
+    std::printf("  random charts: mean efficiency holes off %.1f%%, on %.1f%% (better in %d of 6, clearly worse in %d)\n",
+                100 * sumOff / 6, 100 * sumOn / 6, better, worse);
+    CHECK(sumOn >= sumOff);
+    CHECK(worse == 0);
+}
+
+// ---- threads --------------------------------------------------------------------------------------
+static void testThreadPool()
+{
+    for (int threads : {1, 2, 5, 16}) {
+        ThreadPool pool(threads);
+        CHECK(pool.size() == threads);
+        for (int round = 0; round < 200; ++round) {          // many small jobs back to back
+            const int n = 1 + (round * 7) % 50;
+            std::vector<int> out(n, 0);
+            pool.parallelFor(n, [&](int i) { out[i] = i * i + round; });
+            for (int i = 0; i < n; ++i) CHECK(out[i] == i * i + round);
+        }
+        pool.parallelFor(0, [](int) { CHECK(false); });      // nothing to do
+        long long total = 0;
+        std::vector<long long> part(1000, 0);
+        pool.parallelFor(1000, [&](int i) { part[i] = i; });
+        for (long long v : part) total += v;
+        CHECK(total == 999LL * 1000 / 2);
+    }
+    CHECK(ThreadPool::shared().size() >= 1);
+}
+
+static void testParallelHoleSearchMatchesSequential()
+{
+    // a random occupancy with many holes
+    std::mt19937 rng(9);
+    std::uniform_int_distribution<int> U(0, 99);
+    const int R = 1200;
+    HorizonOccupancy occ(R, 0);
+    for (int x = 0; x < R; ++x) {
+        int y = 0;
+        for (int layer = 0; layer < 4; ++layer) {
+            y += 6 + U(rng) % 10;                     // a gap
+            const int h = 4 + U(rng) % 12;
+            occ.add(x, y, y + h);
+            y += h;
+        }
+    }
+    ThreadPool pool(6);
+    for (int trial = 0; trial < 40; ++trial) {
+        HorizonProfile p;
+        const int W = 3 + U(rng) % 20;
+        for (int k = 0; k < W; ++k) {
+            const int lo = U(rng) % 4, h = 2 + U(rng) % 8;
+            p.lo.push_back(lo);
+            p.hi.push_back(lo + h);
+        }
+        const Placement a = bestHolePlacement(p, occ, 0, R), b = bestHolePlacement(p, occ, 0, R, &pool);
+        CHECK(a.ok == b.ok);
+        if (a.ok && b.ok) CHECK(a.u == b.u && a.v == b.v && a.top == b.top);
+    }
+}
+
+static void testThreadCountDoesNotChangeTheResult()
+{
+    const std::vector<StarChart> charts = makeCharts(40, 77, 0.15, 1.3);
+    const std::vector<AtlasInput> in = inputsOf(charts);
+    AtlasResult reference;
+    for (int threads : {1, 2, 7, 0}) {
+        HorizonOptions o;
+        o.resolution = 512;
+        o.maxMipLevel = 1;
+        o.threads = threads;
+        const AtlasResult r = packHorizon(in, o);
+        CHECK(r.ok);
+        if (threads == 1) { reference = r; continue; }
+        CHECK(r.texelsPerUnit == reference.texelsPerUnit);
+        for (size_t i = 0; i < r.uv.size(); ++i)
+            for (size_t k = 0; k < r.uv[i].size(); ++k) CHECK(r.uv[i][k] == reference.uv[i][k]);   // bit identical
+    }
+}
+
 // ---- mask and PNG ---------------------------------------------------------------------------------
 static uint32_t be32(const unsigned char* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 
@@ -374,6 +589,12 @@ int main(int argc, char** argv)
     run("checker", testGuaranteeCheckerDetectsLeaks);
     run("guarantee", testPackingGuarantee);
     run("efficiency", testEfficiencyAndSearch);
+    run("holesearch", testHoleSearch);
+    run("holes", testHolesGainSpace);
+    run("holesrandom", testHolesOnRandomCharts);
+    run("threadpool", testThreadPool);
+    run("parallelholes", testParallelHoleSearchMatchesSequential);
+    run("threads", testThreadCountDoesNotChangeTheResult);
     run("bad", testBadInput);
     run("mask", testMaskAndPNG);
     std::printf(failures ? "FAILED (%d)\n" : "OK\n", failures);

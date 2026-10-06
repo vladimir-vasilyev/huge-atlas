@@ -896,6 +896,11 @@ void App::drawParamPanel()
         ImGui::SliderInt("Extra margin (texels)", &ho.extraTexels, 0, 16);
         ImGui::SliderInt("Atlas border (texels)", &ho.atlasBorder, 0, 32);
         ImGui::SliderInt("Rotations tried per chart", &ho.rotations, 1, 16);
+        ImGui::Checkbox("Fill holes under overhangs", &ho.fillHoles);
+        if (ho.fillHoles) {
+            ImGui::SliderInt("Rotations tried per hole", &ho.holeRotations, 1, 16);
+            ImGui::SliderInt("Threads (0 = all cores)", &ho.threads, 0, 16);
+        }
         ImGui::Checkbox("Longest first by diameter (else by area)", &ho.sortByDiameter);
         const int gutter = chartGutter(ho.maxMipLevel, ho.extraTexels);
         ImGui::Text("Gap between charts: %d texels (%.2f%% of the side); each chart reaches %d texels into it", gutter,

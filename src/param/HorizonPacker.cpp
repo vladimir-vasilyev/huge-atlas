@@ -4,6 +4,7 @@
 #include <cmath>
 #include <deque>
 #include <limits>
+#include <memory>
 #include <numeric>
 
 namespace {
@@ -60,6 +61,15 @@ std::vector<Segment2> boundaryOf(const AtlasInput& a, double s)
     return segs;
 }
 
+// The pool for the hole search: the shared one, or a private one of the requested size.
+ThreadPool* poolFor(const HorizonOptions& o, std::unique_ptr<ThreadPool>& own)
+{
+    if (!o.fillHoles || o.threads == 1) return nullptr;
+    if (o.threads <= 0) return &ThreadPool::shared();
+    own = std::make_unique<ThreadPool>(o.threads);
+    return own.get();
+}
+
 std::vector<Chart> prepare(const std::vector<AtlasInput>& in, const HorizonOptions& opt)
 {
     std::vector<Chart> charts;
@@ -105,39 +115,6 @@ std::vector<Segment2> toTexels(const Chart& c, double tau, double theta)
     std::vector<Segment2> out;
     out.reserve(c.boundary.size());
     for (const auto& s : c.boundary) out.push_back({tau * rotated(s.first, theta), tau * rotated(s.second, theta)});
-    return out;
-}
-
-Outcome packAt(const std::vector<Chart>& order, double tau, const HorizonOptions& o, int margin)
-{
-    Outcome out;
-    const int R = o.resolution, B = o.atlasBorder;
-    const int xBegin = B, xEnd = R - B, yLimit = R - B;
-    out.horizon.assign(R, B);
-    out.placed.resize(order.size());
-
-    const int rotations = std::max(1, o.rotations);
-    for (size_t i = 0; i < order.size(); ++i) {
-        Placement bestPl;
-        HorizonProfile bestProf;
-        double bestTheta = 0.0;
-        for (int k = 0; k < rotations; ++k) {
-            const double theta = order[i].baseAngle + 2.0 * kPi * k / rotations;
-            const HorizonProfile prof = computeProfile(toTexels(order[i], tau, theta), margin);
-            if (prof.width() == 0 || prof.width() > xEnd - xBegin) continue;
-            const Placement pl = bestPlacement(prof, out.horizon, xBegin, xEnd, yLimit);
-            if (!pl.ok) continue;
-            if (!bestPl.ok || pl.waste < bestPl.waste || (pl.waste == bestPl.waste && pl.top < bestPl.top)) {
-                bestPl = pl;
-                bestProf = prof;
-                bestTheta = theta;
-            }
-        }
-        if (!bestPl.ok) return out;   // does not fit at this density
-        for (int k = 0; k < bestProf.width(); ++k) out.horizon[bestPl.u + k] = bestPl.v + bestProf.hi[k];
-        out.placed[i] = {bestTheta, bestPl.u - bestProf.firstColumn, bestPl.v};
-    }
-    out.fits = true;
     return out;
 }
 
@@ -252,10 +229,262 @@ Placement bestPlacement(const HorizonProfile& p, const std::vector<int>& h, int 
     return best;
 }
 
+void HorizonOccupancy::add(int x, int lo, int hi)
+{
+    auto& c = cols_[x];
+    auto it = std::lower_bound(c.begin(), c.end(), std::make_pair(lo, hi));
+    c.insert(it, {lo, hi});
+    int prev = floor_, gap = 0;   // the tallest gap under the horizon
+    for (const auto& iv : c) {
+        gap = std::max(gap, iv.first - prev);
+        prev = std::max(prev, iv.second);
+    }
+    maxGap_[x] = gap;
+}
+
+namespace {
+
+using Range = std::pair<int, int>;   // closed range of feasible vertical shifts
+
+// feasible shifts v of one profile column (rows [lo, hi)) in the gaps of an atlas column
+void feasibleShifts(const std::vector<std::pair<int, int>>& occupied, int floor, int lo, int hi, std::vector<Range>& out)
+{
+    out.clear();
+    const int height = hi - lo;
+    int prev = floor;
+    auto gap = [&](int a, int b) {
+        if (b - a >= height) out.push_back({a - lo, b - hi});   // lo + v >= a and hi + v <= b
+    };
+    for (const auto& iv : occupied) {
+        if (iv.first > prev) gap(prev, iv.first);
+        prev = std::max(prev, iv.second);
+    }
+    // above the last interval is the open space over the horizon: not a hole
+}
+
+// out = a intersect b (both sorted, disjoint)
+void intersect(const std::vector<Range>& a, const std::vector<Range>& b, std::vector<Range>& out)
+{
+    out.clear();
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        const int lo = std::max(a[i].first, b[j].first), hi = std::min(a[i].second, b[j].second);
+        if (lo <= hi) out.push_back({lo, hi});
+        if (a[i].second < b[j].second) ++i; else ++j;
+    }
+}
+
+} // namespace
+
+namespace {
+
+struct HoleScratch { std::vector<Range> feasible, column, next; };
+
+// The best hole position among u in [uBegin, uEnd] (inclusive); lowest v, then lowest u.
+Placement searchHoles(const HorizonProfile& p, const HorizonOccupancy& occ, int uBegin, int uEnd, int tallest,
+                      int tallestHeight, int maxHi, HoleScratch& sc)
+{
+    Placement best;
+    const int W = p.width();
+    for (int u = uBegin; u <= uEnd; ++u) {
+        if (occ.maxGap(u + tallest) < tallestHeight || occ.maxGap(u) < p.hi[0] - p.lo[0] ||
+            occ.maxGap(u + W - 1) < p.hi[W - 1] - p.lo[W - 1])
+            continue;
+        feasibleShifts(occ.column(u), occ.floor(), p.lo[0], p.hi[0], sc.feasible);
+        for (int k = 1; k < W && !sc.feasible.empty(); ++k) {
+            feasibleShifts(occ.column(u + k), occ.floor(), p.lo[k], p.hi[k], sc.column);
+            intersect(sc.feasible, sc.column, sc.next);
+            sc.feasible.swap(sc.next);
+        }
+        if (sc.feasible.empty()) continue;
+        const int v = sc.feasible.front().first;                  // the lowest feasible shift
+        if (!best.ok || v < best.v) {                             // u ascends: ties keep the smaller u
+            best.ok = true;
+            best.u = u;
+            best.v = v;
+            best.top = v + maxHi;
+            best.waste = 0;
+        }
+    }
+    return best;
+}
+
+} // namespace
+
+namespace {
+
+// Everything about a profile that the hole search needs, and whether a search can succeed at all.
+struct HoleQuery {
+    const HorizonProfile* profile = nullptr;
+    int tallest = 0, tallestHeight = 0, maxHi = 0;
+    int uBegin = 0, uLast = -1;
+    bool viable = false;
+};
+
+HoleQuery makeHoleQuery(const HorizonProfile& p, const HorizonOccupancy& occ, int xBegin, int xEnd)
+{
+    HoleQuery q;
+    const int W = p.width();
+    if (W == 0 || xEnd - xBegin < W) return q;
+    q.profile = &p;
+    q.maxHi = *std::max_element(p.hi.begin(), p.hi.end());
+    for (int k = 0; k < W; ++k)
+        if (p.hi[k] - p.lo[k] > q.tallestHeight) { q.tallestHeight = p.hi[k] - p.lo[k]; q.tallest = k; }
+    // cheap rejection: the tallest column of the chart needs a gap at least as tall, somewhere
+    bool anyGap = false;
+    for (int x = xBegin; x < xEnd && !anyGap; ++x) anyGap = occ.maxGap(x) >= q.tallestHeight;
+    q.uBegin = xBegin;
+    q.uLast = xEnd - W;
+    q.viable = anyGap;
+    return q;
+}
+
+// Splits [uBegin, uLast] into ranges for the threads; one range when the work is small.
+int holeChunks(const HoleQuery& q, int threads)
+{
+    const int positions = q.uLast - q.uBegin + 1;
+    if (threads <= 1 || positions < 256) return 1;
+    return std::min(positions / 64, threads * 4);
+}
+
+void chunkRange(const HoleQuery& q, int chunks, int c, int& b, int& e)
+{
+    const int positions = q.uLast - q.uBegin + 1;
+    b = q.uBegin + int(int64_t(positions) * c / chunks);
+    e = q.uBegin + int(int64_t(positions) * (c + 1) / chunks) - 1;
+}
+
+// (v, u) order; the earlier of two equal candidates wins
+bool betterHole(const Placement& a, const Placement& b) { return a.ok && (!b.ok || a.v < b.v || (a.v == b.v && a.u < b.u)); }
+
+} // namespace
+
+Placement bestHolePlacement(const HorizonProfile& p, const HorizonOccupancy& occ, int xBegin, int xEnd, ThreadPool* pool)
+{
+    const HoleQuery q = makeHoleQuery(p, occ, xBegin, xEnd);
+    if (!q.viable) return Placement();
+    const int chunks = holeChunks(q, pool ? pool->size() : 1);
+    if (chunks == 1) {
+        HoleScratch sc;
+        return searchHoles(p, occ, q.uBegin, q.uLast, q.tallest, q.tallestHeight, q.maxHi, sc);
+    }
+    // each range of positions is a different set of holes: search them concurrently, merge by (v, u)
+    std::vector<Placement> found(chunks);
+    pool->parallelFor(chunks, [&](int c) {
+        int b, e;
+        chunkRange(q, chunks, c, b, e);
+        HoleScratch sc;
+        found[c] = searchHoles(p, occ, b, e, q.tallest, q.tallestHeight, q.maxHi, sc);
+    });
+    Placement best;
+    for (const Placement& f : found)
+        if (betterHole(f, best)) best = f;
+    return best;
+}
+
+namespace {
+
+Outcome packAt(const std::vector<Chart>& order, double tau, const HorizonOptions& o, int margin, ThreadPool* pool = nullptr)
+{
+    Outcome out;
+    const int R = o.resolution, B = o.atlasBorder;
+    const int xBegin = B, xEnd = R - B, yLimit = R - B;
+    out.horizon.assign(R, B);
+    out.placed.resize(order.size());
+    HorizonOccupancy occ(R, B);
+
+    const int rotations = std::max(1, o.rotations);
+    const int holeRotations = o.fillHoles ? std::max(0, o.holeRotations) : 0;
+    const int candidates = std::max(rotations, holeRotations);
+    const int threads = pool ? pool->size() : 1;
+
+    struct Candidate {
+        HorizonProfile horizonProfile, holeProfile;
+        double thetaH = 0.0, thetaO = 0.0;
+        Placement horizonPlacement;
+        HoleQuery query;
+    };
+    for (size_t i = 0; i < order.size(); ++i) {
+        // stage 1, per orientation (independent): the profiles and the horizon placement
+        std::vector<Candidate> cand(candidates);
+        auto stage1 = [&](int k) {
+            Candidate& c = cand[k];
+            c.thetaH = order[i].baseAngle + 2.0 * kPi * k / rotations;
+            c.thetaO = order[i].baseAngle + 2.0 * kPi * k / std::max(1, holeRotations);
+            const bool wantHorizon = k < rotations, wantHole = k < holeRotations;
+            if (wantHorizon) {
+                c.horizonProfile = computeProfile(toTexels(order[i], tau, c.thetaH), margin);
+                if (c.horizonProfile.width() > 0 && c.horizonProfile.width() <= xEnd - xBegin)
+                    c.horizonPlacement = bestPlacement(c.horizonProfile, out.horizon, xBegin, xEnd, yLimit);
+            }
+            if (wantHole) {
+                // the same orientation: reuse the profile
+                c.holeProfile = (wantHorizon && c.thetaH == c.thetaO) ? c.horizonProfile
+                                                                       : computeProfile(toTexels(order[i], tau, c.thetaO), margin);
+                if (c.holeProfile.width() > 0 && c.holeProfile.width() <= xEnd - xBegin)
+                    c.query = makeHoleQuery(c.holeProfile, occ, xBegin, xEnd);
+            }
+        };
+        if (pool && candidates > 1) pool->parallelFor(candidates, stage1);
+        else for (int k = 0; k < candidates; ++k) stage1(k);
+
+        // the horizon placement: least lost space, then lowest top, earliest orientation
+        int bestK = -1;
+        for (int k = 0; k < rotations; ++k) {
+            const Placement& pl = cand[k].horizonPlacement;
+            if (!pl.ok) continue;
+            if (bestK < 0 || pl.waste < cand[bestK].horizonPlacement.waste ||
+                (pl.waste == cand[bestK].horizonPlacement.waste && pl.top < cand[bestK].horizonPlacement.top))
+                bestK = k;
+        }
+
+        // stage 2: the holes. Every (orientation, range of positions) is a task: different threads look into different holes
+        struct Task { int k, c, chunks; };
+        std::vector<Task> tasks;
+        for (int k = 0; k < holeRotations; ++k)
+            if (cand[k].query.viable) {
+                const int chunks = holeChunks(cand[k].query, threads);
+                for (int c = 0; c < chunks; ++c) tasks.push_back({k, c, chunks});
+            }
+        std::vector<Placement> found(tasks.size());
+        auto stage2 = [&](int t) {
+            const Task& task = tasks[t];
+            const HoleQuery& q = cand[task.k].query;
+            int b, e;
+            chunkRange(q, task.chunks, task.c, b, e);
+            HoleScratch sc;
+            found[t] = searchHoles(*q.profile, occ, b, e, q.tallest, q.tallestHeight, q.maxHi, sc);
+        };
+        if (pool && tasks.size() > 1) pool->parallelFor(int(tasks.size()), stage2);
+        else for (size_t t = 0; t < tasks.size(); ++t) stage2(int(t));
+
+        Placement bestHole;
+        int holeK = -1;
+        for (size_t t = 0; t < tasks.size(); ++t)    // tasks ascend in (orientation, position): ties keep the earlier
+            if (betterHole(found[t], bestHole)) { bestHole = found[t]; holeK = tasks[t].k; }
+
+        // a hole is free space already lost to the horizon: using it never raises the horizon
+        const bool useHole = bestHole.ok;
+        if (!useHole && bestK < 0) return out;   // does not fit at this density
+        const Placement& pl = useHole ? bestHole : cand[bestK].horizonPlacement;
+        const HorizonProfile& prof = useHole ? cand[holeK].holeProfile : cand[bestK].horizonProfile;
+        for (int k = 0; k < prof.width(); ++k) {
+            occ.add(pl.u + k, prof.lo[k] + pl.v, prof.hi[k] + pl.v);
+            out.horizon[pl.u + k] = std::max(out.horizon[pl.u + k], pl.v + prof.hi[k]);
+        }
+        out.placed[i] = {useHole ? cand[holeK].thetaO : cand[bestK].thetaH, pl.u - prof.firstColumn, pl.v};
+    }
+    out.fits = true;
+    return out;
+}
+
+} // namespace
+
 bool horizonFits(const std::vector<AtlasInput>& inputs, const HorizonOptions& o, double tau)
 {
     const std::vector<Chart> order = prepare(inputs, o);
-    return packAt(order, tau, o, chartMargin(o.maxMipLevel, o.extraTexels)).fits;
+    std::unique_ptr<ThreadPool> own;
+    return packAt(order, tau, o, chartMargin(o.maxMipLevel, o.extraTexels), poolFor(o, own)).fits;
 }
 
 AtlasResult packHorizon(const std::vector<AtlasInput>& in, const HorizonOptions& o)
@@ -282,24 +511,43 @@ AtlasResult packHorizon(const std::vector<AtlasInput>& in, const HorizonOptions&
     const double usable = double(o.resolution - 2 * o.atlasBorder);
     const double tauHi = usable / std::sqrt(totalArea);   // 100% fill: no density can be higher
 
-    // largest feasible density: halve until the charts fit, then bisect
+    // largest feasible density. Without holes first (fast, and it is a lower bound): halve until the charts
+    // fit, then bisect. With holes the density can only go up, so that search is confined to a narrow interval.
+    HorizonOptions plain = o;
+    plain.fillHoles = false;
     double lo = tauHi, hi = tauHi;
-    bool feasible = packAt(order, lo, o, margin).fits;
+    bool feasible = packAt(order, lo, plain, margin).fits;
     for (int i = 0; !feasible && i < 12; ++i) {
         hi = lo;
         lo *= 0.5;
-        feasible = packAt(order, lo, o, margin).fits;
+        feasible = packAt(order, lo, plain, margin).fits;
     }
     if (!feasible) return fail("the charts do not fit: the gutter is too large for this resolution");
     if (lo < hi) {
         for (int i = 0; i < o.searchIterations; ++i) {
             const double mid = 0.5 * (lo + hi);
-            if (packAt(order, mid, o, margin).fits) lo = mid;
+            if (packAt(order, mid, plain, margin).fits) lo = mid;
             else hi = mid;
         }
     }
+    std::unique_ptr<ThreadPool> ownPool;
+    ThreadPool* pool = poolFor(o, ownPool);
+    bool useHoles = false;
+    if (o.fillHoles && o.holeRotations > 0 && packAt(order, lo, o, margin, pool).fits) {   // never worse than without holes
+        useHoles = true;
+        double up = std::min(tauHi, lo * 1.6);
+        if (up > lo && packAt(order, up, o, margin, pool).fits) {
+            lo = up;
+        } else {
+            for (int i = 0; i < std::max(4, o.searchIterations - 5) && up > lo; ++i) {
+                const double mid = 0.5 * (lo + up);
+                if (packAt(order, mid, o, margin, pool).fits) lo = mid;
+                else up = mid;
+            }
+        }
+    }
     const double tau = lo;
-    const Outcome fin = packAt(order, tau, o, margin);
+    const Outcome fin = packAt(order, tau, useHoles ? o : plain, margin, useHoles ? pool : nullptr);
 
     const double R = double(o.resolution);
     double used = 0.0;

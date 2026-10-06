@@ -96,6 +96,8 @@ add_library(vsa_core STATIC
     src/param/ParamPipeline.cpp
     src/param/AtlasPacker.h
     src/param/AtlasPacker.cpp
+    src/param/ThreadPool.h
+    src/param/ThreadPool.cpp
     src/param/HorizonPacker.h
     src/param/HorizonPacker.cpp
     src/param/AtlasMask.h
@@ -105,7 +107,8 @@ add_library(vsa_core STATIC
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 find_package(ZLIB REQUIRED)
-target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen ZLIB::ZLIB)
+find_package(Threads REQUIRED)
+target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen ZLIB::ZLIB Threads::Threads)
 # OM_STATIC_BUILD: explicit registration of OpenMesh readers (otherwise the linker drops them from the static library)
 target_compile_definitions(vsa_core PUBLIC _USE_MATH_DEFINES OM_STATIC_BUILD)
 target_compile_options(vsa_core PRIVATE -Wall -Wextra -Wno-unused-parameter)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "param/AtlasPacker.h"
+#include "param/ThreadPool.h"
 
 // Horizon packing ("Tetris"), Levy et al. 2002 (LSCM), section 4, made texel exact and mip aware.
 //
@@ -36,6 +37,9 @@ struct HorizonOptions {
     int  rotations = 1;           // 1: longest diameter vertical (the paper); N > 1: N equally spaced orientations, best wins
     bool sortByDiameter = true;   // otherwise by area (both decreasing)
     int  searchIterations = 16;   // bisection steps for the texel density
+    bool fillHoles = true;        // put charts into the free space under the horizon (overhangs, gaps between charts)
+    int  holeRotations = 4;       // orientations tried when looking for a hole (equally spaced, starting at the base one)
+    int  threads = 0;             // hole search threads: 0 = all cores, 1 = none. The result does not depend on it.
 };
 
 // One chart's per-column occupancy: columns firstColumn .. firstColumn + size - 1, rows [lo, hi) in each.
@@ -63,6 +67,31 @@ struct Placement {
 // The best position of a profile against the horizon (indexed by atlas column): columns [xBegin, xEnd)
 // are available, rows up to yLimit. Minimizes the lost space, then the top, then u.
 Placement bestPlacement(const HorizonProfile& profile, const std::vector<int>& horizon, int xBegin, int xEnd, int yLimit);
+
+// Occupied rows of every atlas column: sorted, disjoint intervals [lo, hi). The free space below the
+// horizon (the top interval of a column) is the set of gaps between the intervals and under the first one.
+class HorizonOccupancy {
+public:
+    HorizonOccupancy(int columns, int floor) : floor_(floor), cols_(columns), maxGap_(columns, 0) {}
+    void add(int column, int lo, int hi);                 // the interval must not overlap an existing one
+    int  top(int column) const { return cols_[column].empty() ? floor_ : cols_[column].back().second; }
+    const std::vector<std::pair<int, int>>& column(int x) const { return cols_[x]; }
+    int  floor() const { return floor_; }
+    int  maxGap(int column) const { return maxGap_[column]; }   // the tallest free gap below the horizon of the column
+
+private:
+    int floor_;
+    std::vector<std::vector<std::pair<int, int>>> cols_;
+    std::vector<int> maxGap_;
+};
+
+// The lowest position (then the leftmost) where the whole profile lies in free space below the horizon,
+// i.e. in a hole that the horizon packing would waste. columns [xBegin, xEnd) are available.
+// Placement::waste is 0 for a hole placement, top is the highest row used + 1.
+// With a pool the candidate columns are split into ranges, each searched by a different thread (they
+// look into different holes); the ranges are merged by the same rule, so the answer is the same.
+Placement bestHolePlacement(const HorizonProfile& profile, const HorizonOccupancy& occupancy, int xBegin, int xEnd,
+                            ThreadPool* pool = nullptr);
 
 AtlasResult packHorizon(const std::vector<AtlasInput>& inputs, const HorizonOptions& options = {});
 
