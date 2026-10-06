@@ -2,6 +2,7 @@
 
 #include "render/GL.h"   // strictly before GLFW (GLFW_INCLUDE_NONE is set in CMake)
 #include "param/AtlasMask.h"   // writePNG
+#include "param/MeshWriters.h"
 #include "render/ImageFile.h"
 
 #include <GLFW/glfw3.h>
@@ -107,7 +108,8 @@ void App::run()
 {
     // VSA_AUTO_ATLAS=1: press "Make atlas" by itself, print the outcome and quit (end-to-end check without clicks)
     const bool autoAtlas = std::getenv("VSA_AUTO_ATLAS") != nullptr;
-    int autoFrame = 0;
+    int autoFrame = 0, autoDoneFrame = 0;
+    bool autoDone = false;
     // VSA_BENCH_FRAMES=N: render N frames, print the average frame time and quit
     const char* benchEnv = std::getenv("VSA_BENCH_FRAMES");
     const int benchFrames = benchEnv ? std::atoi(benchEnv) : 0;
@@ -129,10 +131,29 @@ void App::run()
         }
         if (autoAtlas) {
             if (autoFrame == 2) startMakeAtlas();
-            if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle) {
+            if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle && !autoDone) {
                 std::printf("AUTO ATLAS: %s\n", makeAtlasStatus_.c_str());
-                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+                if (std::getenv("VSA_AUTO_BAKE") && atlasValid_) {   // bake the atlas texture, compare with the original layout
+                    measureLayouts();
+                    const UVLayoutStats &o = layoutOriginal_, &n = layoutOurs_;
+                    std::printf("AUTO LAYOUT original: charts %d seams %.2f%% flipped %d L2 mean %.3f p95 %.3f conformal p95 %.3f density [%.2f, %.2f] covered %.1f%%\n",
+                                o.charts, 100 * o.seamRatio(), o.flipped, o.l2Mean, o.l2P95, o.conformalP95, o.densityP05, o.densityP95, 100 * o.covered);
+                    std::printf("AUTO LAYOUT new     : charts %d seams %.2f%% flipped %d L2 mean %.3f p95 %.3f conformal p95 %.3f density [%.2f, %.2f] covered %.1f%%\n",
+                                n.charts, 100 * n.seamRatio(), n.flipped, n.l2Mean, n.l2P95, n.conformalP95, n.densityP05, n.densityP95, 100 * n.covered);
+                    std::printf("AUTO RETEXTURE: PSNR %.1f dB (%.1f dB against the full resolution source), %zu samples\n", retexture_.psnr,
+                                retexture_.psnrFull, retexture_.samples);
+                    colorMode_ = 11;
+                    uploadMesh();
+                }
+                if (const char* save = std::getenv("VSA_AUTO_SAVE")) {   // then File > Save As to that path
+                    performSave(save);
+                    std::printf("AUTO SAVE: %s\n", status_.c_str());
+                }
+                autoDone = true;
+                autoDoneFrame = autoFrame;
             }
+            // with a screenshot requested the window stays for a few frames after the pipeline, then it is taken and we quit
+            if (autoDone && !std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
             ++autoFrame;
         }
 
@@ -157,7 +178,7 @@ void App::run()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         if (const char* shot = std::getenv("VSA_SCREENSHOT")) {   // testing hook: write the 8th frame to a PNG and quit
             static int frame = 0;
-            if (++frame == 8) {
+            if ((!autoAtlas || autoDone) && ++frame == 8) {
                 std::vector<unsigned char> px(size_t(fbW) * fbH * 4), flipped(px.size());
                 glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
                 for (int y = 0; y < fbH; ++y)
@@ -225,6 +246,14 @@ void App::openMesh(const std::string& path)
     hasSourceTexture_ = false;
     textureMaterial_ = -1;
     textureNote_.clear();
+    sourcePixels_.clear();
+    sourceW_ = sourceH_ = 0;
+    bakedRgba_.clear();
+    bakedVersion_ = ~0u;
+    textureOwner_ = 0;
+    layoutMeasured_ = false;
+    meshPath_ = path;
+    savePath_.clear();
     if (objExtras_.hasUV()) {
         for (size_t i = 0; i < objExtras_.materials.size(); ++i) {
             if (objExtras_.materials[i].diffuseMap.empty()) continue;
@@ -234,6 +263,10 @@ void App::openMesh(const std::string& path)
             const std::string image = objExtras_.directory + "/" + objExtras_.materials[i].diffuseMap;
             if (loadImageRGBA(image, w, h, pixels, &imageError) && meshRenderer_.setTexture(w, h, pixels.data())) {
                 hasSourceTexture_ = true;
+                textureOwner_ = 1;
+                sourcePixels_ = std::move(pixels);
+                sourceW_ = w;
+                sourceH_ = h;
                 textureMaterial_ = int(i);
                 char note[256];
                 std::snprintf(note, sizeof(note), "texture %s (%d x %d)", objExtras_.materials[i].diffuseMap.c_str(), w, h);
@@ -352,6 +385,16 @@ void App::uploadMesh()
     }
 
     std::vector<float> faceUV;
+    if (colorMode_ == 11 && bakedVersion_ == atlasVersion_ && bakedCornerUV_.size() == nF * 6) {
+        faceUV = bakedCornerUV_;   // the atlas uv; faces without a chart get u = -1 (no texture)
+        for (size_t f = 0; f < nF; ++f)
+            if (std::isnan(faceUV[f * 6])) for (int k = 0; k < 6; ++k) faceUV[f * 6 + k] = -1.0f;
+        if (textureOwner_ != 2) { meshRenderer_.setTexture(bakedResolution_, bakedResolution_, bakedRgba_.data()); textureOwner_ = 2; }
+    }
+    if (colorMode_ == 10 && hasSourceTexture_ && textureOwner_ != 1 && !sourcePixels_.empty()) {
+        meshRenderer_.setTexture(sourceW_, sourceH_, sourcePixels_.data());
+        textureOwner_ = 1;
+    }
     if (colorMode_ == 10 && hasSourceTexture_ && objExtras_.cornerUV.size() == nF * 6) {
         // the uv of the file; faces of other materials get u = -1 (no texture)
         faceUV = objExtras_.cornerUV;
@@ -723,14 +766,21 @@ void App::drawUvPanel()
 void App::runParam(bool onlySelected)
 {
     const auto t0 = std::chrono::steady_clock::now();
-    int done = 0;
+    std::vector<int> work;
     for (size_t i = 0; i < patches_.patches.size(); ++i) {
         if (onlySelected && int(i) != selectedPatch_) continue;
         if (!patches_.patches[i].isDisk()) continue;
+        work.push_back(int(i));
+    }
+    std::sort(work.begin(), work.end(), [&](int a, int b) {   // the biggest first, so that the threads finish together
+        return patches_.patches[a].faceToGlobal.size() > patches_.patches[b].faceToGlobal.size();
+    });
+    ThreadPool::shared().parallelFor(int(work.size()), [&](int t) {
+        const int i = work[t];
         params_[i] = parameterizePatch(mesh_, patches_.patches[i], paramOptions_);
         paramDone_[i] = 1;
-        ++done;
-    }
+    });
+    const int done = int(work.size());
     paramSeconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     atlasValid_ = false;
     char buf[96];
@@ -767,6 +817,8 @@ void App::packAtlasNow()
         return;
     }
     atlasValid_ = true;
+    ++atlasVersion_;
+    layoutMeasured_ = false;
     uvShowAtlas_ = true;
     colorMode_ = 8;
     uploadMesh();
@@ -1168,6 +1220,63 @@ void App::drawMakeAtlasPanel()
     }
     if (!makeAtlasStatus_.empty()) ImGui::TextWrapped("%s", makeAtlasStatus_.c_str());
 
+    if (atlasValid_ && !running) {
+        ImGui::SeparatorText("Retexture and compare");
+        if (ImGui::Button("Bake atlas texture")) bakeAtlasPreview();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!objExtras_.hasUV());
+        if (ImGui::Button("Compare with the original layout")) measureLayouts();
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Save bakes the source texture into the new atlas by itself.");
+        if (layoutMeasured_ && bakedVersion_ == atlasVersion_) {
+            const UVLayoutStats& o = layoutOriginal_;
+            const UVLayoutStats& n = layoutOurs_;
+            if (ImGui::BeginTable("layouts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+                ImGui::TableSetupColumn("");
+                ImGui::TableSetupColumn("original");
+                ImGui::TableSetupColumn("new atlas");
+                ImGui::TableHeadersRow();
+                auto row = [&](const char* name, const char* a, const char* b) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(name);
+                    ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(a);
+                    ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(b);
+                };
+                char a[64], b[64];
+                auto num = [&](const char* name, const char* fmt, double x, double y) {
+                    std::snprintf(a, sizeof(a), fmt, x);
+                    std::snprintf(b, sizeof(b), fmt, y);
+                    row(name, a, b);
+                };
+                num("charts", "%.0f", o.charts, n.charts);
+                num("seams, % of edge length", "%.2f", 100 * o.seamRatio(), 100 * n.seamRatio());
+                num("flipped faces", "%.0f", o.flipped, n.flipped);
+                num("faces without uv", "%.0f", double(o.facesWithoutUV), double(n.facesWithoutUV));
+                num("L2 stretch, mean", "%.3f", o.l2Mean, n.l2Mean);
+                num("L2 stretch, p95", "%.3f", o.l2P95, n.l2P95);
+                num("L2 stretch, p99", "%.3f", o.l2P99, n.l2P99);
+                num("conformal, p95", "%.3f", o.conformalP95, n.conformalP95);
+                num("texel density, p05", "%.3f", o.densityP05, n.densityP05);
+                num("texel density, p95", "%.3f", o.densityP95, n.densityP95);
+                num("texture covered, %", "%.1f", 100 * o.covered, 100 * n.covered);
+                num("texels used twice, %", "%.3f", 100 * o.overlap, 100 * n.overlap);
+                ImGui::EndTable();
+            }
+            if (retexture_.samples > 0)
+                ImGui::Text("Retexturing: PSNR %.1f dB (%.1f dB against the full resolution source), %zu samples", retexture_.psnr,
+                            retexture_.psnrFull, retexture_.samples);
+            ImGui::TextDisabled("Distortion is measured after scaling the uv to the 3D area: 1 is ideal. Lower stretch, a tighter density, fewer seams are better.");
+        }
+        if (bakedVersion_ == atlasVersion_ && ImGui::RadioButton("View the baked atlas texture", &colorMode_, 11)) uploadMesh();
+    }
+
+    ImGui::BeginDisabled(running);
+    if (ImGui::Button("Save")) requestSave();
+    ImGui::SameLine();
+    if (ImGui::Button("Save As...")) saveAsRequested_ = true;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", atlasValid_ ? "OBJ / PLY with atlas UV and texture" : "make an atlas to save UV and texture");
     ImGui::BeginDisabled(!atlasValid_ || running);
     if (ImGui::Button("Export OBJ...")) exportObjRequested_ = true;
     ImGui::SameLine();
@@ -1178,8 +1287,184 @@ void App::drawMakeAtlasPanel()
     ImGui::End();
 }
 
+std::vector<BakeChart> App::bakeCharts() const
+{
+    std::vector<BakeChart> charts;
+    for (size_t i = 0; i < params_.size(); ++i)
+        if (paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty()) charts.push_back({&params_[i].patch, &atlas_.uv[i]});
+    return charts;
+}
+
+// Retexturing: the source texture, looked up through the old uv, baked into the layout of the new atlas.
+void App::bakeAtlasPreview()
+{
+    if (!atlasValid_) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<BakeChart> charts = bakeCharts();
+    BakeOptions bo;
+    bo.resolution = atlas_.resolution > 0 ? atlas_.resolution : 2048;
+    bo.margin = atlas_.resolution > 0 ? atlas_.margin : chartMargin(3, 0);
+    BakeSource src{sourceW_, sourceH_, sourcePixels_.empty() ? nullptr : sourcePixels_.data()};
+    const bool haveSource = hasSourceTexture_ && src.rgba;
+    bakedRgba_ = bakeAtlasTexture(mesh_, charts, haveSource ? &src : nullptr, objExtras_.cornerUV, objExtras_.faceMaterial,
+                                  textureMaterial_, bo);
+    bakedResolution_ = bo.resolution;
+    bakedCornerUV_ = cornerUVFromAtlas(mesh_, charts);
+    bakedVersion_ = atlasVersion_;
+    textureOwner_ = 0;   // the renderer still holds another texture: uploadMesh() puts the baked one there
+    colorMode_ = 11;
+    uploadMesh();
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "baked the atlas texture %d x %d%s in %.1f s", bo.resolution, bo.resolution,
+                  haveSource ? " from the source texture" : " (no source texture: chart colors)",
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    status_ = buf;
+}
+
+void App::measureLayouts()
+{
+    if (!atlasValid_) return;
+    if (bakedVersion_ != atlasVersion_) bakeAtlasPreview();
+    const int R = std::max(256, bakedResolution_);
+    // compare the faces that carry the source texture (other materials have no layout to compare)
+    std::vector<float> original = objExtras_.cornerUV, ours = bakedCornerUV_;
+    if (original.size() == mesh_.n_faces() * 6 && objExtras_.faceMaterial.size() == mesh_.n_faces())
+        for (size_t f = 0; f < mesh_.n_faces(); ++f)
+            if (objExtras_.faceMaterial[f] != textureMaterial_)
+                for (int k = 0; k < 6; ++k) { original[f * 6 + k] = std::nanf(""); ours[f * 6 + k] = std::nanf(""); }
+    layoutOriginal_ = objExtras_.hasUV() ? analyzeUVLayout(mesh_, original, R) : UVLayoutStats();
+    layoutOurs_ = analyzeUVLayout(mesh_, ours, R);
+    retexture_ = RetextureReport();
+    if (hasSourceTexture_ && !sourcePixels_.empty()) {
+        BakeSource src{sourceW_, sourceH_, sourcePixels_.data()};
+        retexture_ = measureRetexture(mesh_, objExtras_.cornerUV, src, objExtras_.faceMaterial, textureMaterial_, bakedCornerUV_,
+                                      bakedRgba_, bakedResolution_, std::max<size_t>(1, mesh_.n_faces() / 300000));
+    }
+    layoutMeasured_ = true;
+}
+
+void App::requestSave()
+{
+    if (savePath_.empty()) saveAsRequested_ = true;
+    else performSave(savePath_);
+}
+
+// Writes the mesh as OBJ or PLY (by the extension). With an atlas: the atlas UV in the mesh and the atlas texture
+// `<name>_atlas.png` next to it, baked from the source texture (or a per-chart colour mask if the mesh has none).
+bool App::performSave(const std::string& requested)
+{
+    std::string path = requested;
+    std::string lower = path;
+    for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
+    const bool endsObj = lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".obj") == 0;
+    const bool endsPly = lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".ply") == 0;
+    if (!endsObj && !endsPly) path += ".obj";
+    const bool ply = endsPly;
+    const auto t0 = std::chrono::steady_clock::now();
+    char buf[400];
+
+    if (!atlasValid_ || params_.empty()) {   // no atlas: the geometry alone
+        const bool ok = ply ? writePlyMesh(path, mesh_, binaryPly_) : writeObjMesh(path, mesh_);
+        std::snprintf(buf, sizeof(buf), ok ? "saved the mesh without UV (make an atlas first to save UV and texture): %s"
+                                           : "save failed: %s", path.c_str());
+        status_ = buf;
+        if (ok) savePath_ = path;
+        return ok;
+    }
+
+    const size_t slash = path.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? "." : path.substr(0, slash);
+    std::string stem = path.substr(slash == std::string::npos ? 0 : slash + 1);
+    stem.resize(stem.size() - 4);
+    const std::string textureName = stem + "_atlas.png";
+
+    std::vector<BakeChart> charts;
+    std::vector<const Patch*> pv;
+    std::vector<const std::vector<Eigen::Vector2d>*> uvv;
+    size_t withUV = 0;
+    for (size_t i = 0; i < params_.size(); ++i) {
+        const bool has = paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty();
+        pv.push_back(&params_[i].patch);
+        uvv.push_back(has ? &atlas_.uv[i] : nullptr);
+        if (has) {
+            charts.push_back({&params_[i].patch, &atlas_.uv[i]});
+            withUV += params_[i].patch.faceToGlobal.size();
+        }
+    }
+
+    BakeOptions bo;
+    bo.resolution = atlas_.resolution > 0 ? atlas_.resolution : 2048;   // the shelf packer has no texel grid
+    bo.margin = atlas_.resolution > 0 ? atlas_.margin : chartMargin(3, 0);
+    const bool haveSource = hasSourceTexture_ && !sourcePixels_.empty();
+    if (bakedVersion_ != atlasVersion_) {   // the texture of the current atlas is not baked yet
+        BakeSource src{sourceW_, sourceH_, sourcePixels_.empty() ? nullptr : sourcePixels_.data()};
+        bakedRgba_ = bakeAtlasTexture(mesh_, charts, haveSource ? &src : nullptr, objExtras_.cornerUV, objExtras_.faceMaterial,
+                                      textureMaterial_, bo);
+        bakedResolution_ = bo.resolution;
+        bakedCornerUV_ = cornerUVFromAtlas(mesh_, charts);
+        bakedVersion_ = atlasVersion_;
+        textureOwner_ = textureOwner_ == 2 ? 0 : textureOwner_;
+    }
+    const std::vector<unsigned char>& rgba = bakedRgba_;
+    std::vector<unsigned char> flipped(rgba.size());   // image row 0 is v = 1
+    const size_t row = size_t(bo.resolution) * 4;
+    for (int y = 0; y < bo.resolution; ++y)
+        std::copy(rgba.begin() + size_t(bo.resolution - 1 - y) * row, rgba.begin() + size_t(bo.resolution - y) * row,
+                  flipped.begin() + size_t(y) * row);
+    std::string err;
+    if (!writePNG(dir + "/" + textureName, bo.resolution, bo.resolution, flipped, &err)) {
+        status_ = "texture save failed: " + err;
+        return false;
+    }
+
+    char meta[200];
+    std::snprintf(meta, sizeof(meta), "atlas resolution=%d maxMipLevel=%d gutter=%d margin=%d texelsPerUnit=%.6g",
+                  bo.resolution, atlas_.maxMipLevel, atlas_.gutter, bo.margin, atlas_.texelsPerUnit);
+    const int faces = ply ? writePlyAtlas(path, pv, uvv, textureName, binaryPly_, meta)
+                          : exportAtlasOBJ(path, mesh_, pv, uvv, meta, textureName);
+    if (faces < 0) {
+        status_ = "save failed: " + path;
+        return false;
+    }
+    savePath_ = path;
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::snprintf(buf, sizeof(buf), "saved %s with %d of %zu faces and the %s atlas texture %s (%d x %d) in %.1f s",
+                  path.c_str(), faces, mesh_.n_faces(), haveSource ? "baked" : "mask", textureName.c_str(), bo.resolution,
+                  bo.resolution, seconds);
+    status_ = buf;
+    std::printf("%s\n", buf);
+    (void)withUV;
+    return true;
+}
+
 void App::drawExportDialogs()
 {
+    constexpr const char* kSaveKey = "SaveAsDlg";
+    if (saveAsRequested_) {
+        saveAsRequested_ = false;
+        std::string name = meshPath_;
+        const size_t slash = name.find_last_of('/');
+        if (slash != std::string::npos) name = name.substr(slash + 1);
+        const size_t dot = name.find_last_of('.');
+        if (dot != std::string::npos) name.resize(dot);
+        IGFD::FileDialogConfig cfg;
+        cfg.path = lastDir_;
+        cfg.fileName = (name.empty() ? std::string("mesh") : name) + "_atlas.obj";
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
+        ImGuiFileDialog::Instance()->OpenDialog(kSaveKey, "Save mesh (OBJ or PLY)", "Meshes{.obj,.ply}", cfg);
+    }
+    {
+        const ImVec2 vpSize = ImGui::GetMainViewport()->Size;
+        if (ImGuiFileDialog::Instance()->Display(kSaveKey, ImGuiWindowFlags_NoCollapse, ImVec2(vpSize.x * 0.5f, vpSize.y * 0.5f))) {
+            if (ImGuiFileDialog::Instance()->IsOk()) {
+                lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
+                performSave(ImGuiFileDialog::Instance()->GetFilePathName());
+            }
+            ImGuiFileDialog::Instance()->Close();
+        }
+    }
+
     constexpr const char* kMaskKey = "ExportMaskDlg";
     if (exportMaskRequested_) {
         exportMaskRequested_ = false;
@@ -1611,6 +1896,10 @@ void App::drawMainMenu()
             if (ImGui::MenuItem("Open...", "Cmd+O"))
                 openRequested = true;
             ImGui::Separator();
+            if (ImGui::MenuItem("Save", "Cmd+S", false, meshRenderer_.hasMesh())) requestSave();
+            if (ImGui::MenuItem("Save As...", "Cmd+Shift+S", false, meshRenderer_.hasMesh())) saveAsRequested_ = true;
+            ImGui::MenuItem("Binary PLY", nullptr, &binaryPly_);
+            ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Cmd+Q"))
                 glfwSetWindowShouldClose(window_, GLFW_TRUE);
             ImGui::EndMenu();
@@ -1629,6 +1918,9 @@ void App::drawMainMenu()
     // Cmd+O on macOS (ImGui maps Super to Cmd)
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O) || ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_O))
         openRequested = true;
+
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_S) && meshRenderer_.hasMesh()) requestSave();
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiMod_Shift | ImGuiKey_S) && meshRenderer_.hasMesh()) saveAsRequested_ = true;
 
     if (openRequested) {
         IGFD::FileDialogConfig cfg;
@@ -1789,7 +2081,7 @@ void App::renderScene(int fbWidth, int fbHeight)
             }
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
-        meshRenderer_.draw(vp, v, wireframe_, colorMode_ == 8 ? checkerCells_ : 0.0f, colorMode_ == 10,
+        meshRenderer_.draw(vp, v, wireframe_, colorMode_ == 8 ? checkerCells_ : 0.0f, colorMode_ == 10 || colorMode_ == 11,
                          cullBackFaces_);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;

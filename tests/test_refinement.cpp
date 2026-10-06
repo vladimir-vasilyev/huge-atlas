@@ -93,7 +93,7 @@ static void testConeStripIsSplit()
     CHECK(r.extraction.patches.size() >= 2);
     CHECK(r.stats.splits >= 1 && r.stats.initialBad == 1);
     CHECK(r.stats.splitsByCrossingHint >= 1);   // the overlap tells where to cut
-    for (const PatchParam& p : r.params) CHECK(p.distortion.l2Max <= 4.0);
+    for (const PatchParam& p : r.params) CHECK(p.badAreaFraction <= 0.005);
 
     // policy: split right away, no repair ladder: every final patch is flattened by plain LinABF
     RefineOptions imm;

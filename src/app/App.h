@@ -7,7 +7,9 @@
 #include "core/Partition.h"
 #include "core/Proxy.h"
 #include "param/AnglesToUV.h"
+#include "param/AtlasBake.h"
 #include "param/AtlasMask.h"
+#include "param/UVMetrics.h"
 #include "param/AtlasPacker.h"
 #include "param/HorizonPacker.h"
 #include "param/LinABF.h"
@@ -58,7 +60,12 @@ private:
     void packAtlasNow();
     void drawRefinePanel();
     void extractPatchesNow();              // patches of vsa_.label (the Extract button)
-    void drawExportDialogs();              // OBJ / mask PNG dialogs, drawn every frame
+    void drawExportDialogs();
+    void bakeAtlasPreview();               // retexture: the source texture baked into the atlas layout
+    void measureLayouts();                 // original layout vs ours, and the quality of the retexturing
+    std::vector<BakeChart> bakeCharts() const;
+    void requestSave();                    // File > Save: to the last path, or Save As if there is none
+    bool performSave(const std::string& path);              // OBJ / mask PNG dialogs, drawn every frame
     void drawMakeAtlasPanel();
     void startMakeAtlas();
     void makeAtlasTick();                  // one step of the one-button pipeline (once per frame)
@@ -103,12 +110,27 @@ private:
     int              textureMaterial_ = -1;     // the material whose map is shown (-1: no texture)
     bool             hasSourceTexture_ = false;
     std::string      textureNote_;
+    std::vector<unsigned char> sourcePixels_;   // the decoded source texture (RGBA, row 0 = v = 0), kept for baking
+    int              sourceW_ = 0, sourceH_ = 0;
+    std::string      meshPath_, savePath_;
+
+    // Retexturing: the source texture baked into the atlas, and how well the new layout compares to the old one
+    std::vector<unsigned char> bakedRgba_;      // resolution x resolution RGBA, row 0 = v = 0
+    int              bakedResolution_ = 0;
+    std::vector<float> bakedCornerUV_;           // the atlas as corner uv of the source faces (NaN: no uv)
+    unsigned         atlasVersion_ = 0, bakedVersion_ = ~0u;
+    int              textureOwner_ = 0;          // what the renderer holds: 0 nothing, 1 the source, 2 the baked atlas texture
+    bool             layoutMeasured_ = false;
+    UVLayoutStats    layoutOriginal_, layoutOurs_;
+    RetextureReport  retexture_;
+    bool             saveAsRequested_ = false;
+    bool             binaryPly_ = true;
     Camera           camera_;
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
     int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error, 10 - source texture,
-                                       // 7 - stretch, 8 - UV checker, 9 - injectivity problems
+                                       // 7 - stretch, 8 - UV checker, 9 - injectivity problems, 11 - baked atlas texture
     // Stage 3: VSA
     VSAState         vsa_;
     int              vsaK_ = 6;

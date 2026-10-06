@@ -157,12 +157,24 @@ AtlasResult packAtlas(const std::vector<AtlasInput>& in, const AtlasOptions& opt
 }
 
 int exportAtlasOBJ(const std::string& path, const TriMesh& source, const std::vector<const Patch*>& patches,
-                   const std::vector<const std::vector<Eigen::Vector2d>*>& atlasUV, const std::string& comment)
+                   const std::vector<const std::vector<Eigen::Vector2d>*>& atlasUV, const std::string& comment,
+                   const std::string& textureFile)
 {
     std::ofstream f(path);
     if (!f) return -1;
     f << "# VSA + LinABF atlas\n";
     if (!comment.empty()) f << "# " << comment << "\n";
+    if (!textureFile.empty()) {
+        std::string mtl = path;
+        const size_t dot = mtl.find_last_of('.');
+        if (dot != std::string::npos) mtl.resize(dot);
+        mtl += ".mtl";
+        const size_t slash = mtl.find_last_of('/');
+        std::ofstream m(mtl);
+        if (!m) return -1;
+        m << "# VSA + LinABF atlas\nnewmtl atlas\nKa 1 1 1\nKd 1 1 1\nKs 0 0 0\nmap_Kd " << textureFile << "\n";
+        f << "mtllib " << (slash == std::string::npos ? mtl : mtl.substr(slash + 1)) << "\nusemtl atlas\n";
+    }
     char buf[128];
     for (auto v : source.vertices()) {
         const Vec3 p = source.point(v);

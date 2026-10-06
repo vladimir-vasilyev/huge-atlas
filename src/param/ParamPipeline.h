@@ -15,7 +15,7 @@
 //   3. a slit from the vertex with the largest angular defect to the boundary, then 1-2 again
 //      (up to maxCuts times)
 //   4. Tutte embedding of the original patch: injective for every disk, but with a distorted boundary
-// A patch that stays non-injective, or whose result is too stretched, is marked needsSplit: it has
+// A patch that stays non-injective, comes from the Tutte fallback, or is too stretched, is marked needsSplit: it has
 // to be split by VSA again (the loop of stage 10).
 
 enum class ParamMethod { None, LinABF, ActiveSet, Cut, Tutte };
@@ -29,7 +29,8 @@ struct ParamOptions {
     int    maxCuts = 2;
     double cutKappa = 1.0;
     bool   allowTutte = true;
-    double maxStretch = 4.0;   // needsSplit when the largest L2 stretch is above this (0 = ignore)
+    double maxStretch = 4.0;   // a triangle with a larger L2 stretch (or a flipped one) is "too distorted" (0 = ignore)
+    double maxBadAreaFraction = 0.005;   // needsSplit when the too distorted triangles cover more than this share of the area
 };
 
 struct PatchParam {
@@ -42,6 +43,7 @@ struct PatchParam {
     std::vector<Eigen::Vector2d> uv;       // per vertex of `patch.mesh`
     InjectivityReport report;              // of the final result
     DistortionStats distortion;
+    double      badAreaFraction = 0.0;     // share of the area in triangles with L2 stretch above maxStretch (or flipped)
     std::vector<float> perTriangleL2;      // per face of `patch.mesh`
     int         cuts = 0;
 

@@ -104,6 +104,12 @@ add_library(vsa_core STATIC
     src/param/HorizonPacker.cpp
     src/param/AtlasMask.h
     src/param/AtlasMask.cpp
+    src/param/AtlasBake.h
+    src/param/AtlasBake.cpp
+    src/param/UVMetrics.h
+    src/param/UVMetrics.cpp
+    src/param/MeshWriters.h
+    src/param/MeshWriters.cpp
     src/param/Refinement.h
     src/param/Refinement.cpp
 )
@@ -167,6 +173,10 @@ set_tests_properties(refinement_bunny PROPERTIES LABELS slow)
 add_executable(test_objloader tests/test_objloader.cpp)
 target_link_libraries(test_objloader PRIVATE vsa_core)
 add_test(NAME objloader COMMAND test_objloader ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
+
+add_executable(test_save tests/test_save.cpp)
+target_link_libraries(test_save PRIVATE vsa_core)
+add_test(NAME save COMMAND test_save)
 
 add_executable(test_horizon tests/test_horizon.cpp)
 target_link_libraries(test_horizon PRIVATE vsa_core)

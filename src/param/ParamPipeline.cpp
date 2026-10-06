@@ -151,7 +151,18 @@ PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const
     }
     if (out.method != ParamMethod::None) {
         out.distortion = computeDistortion(out.patch.mesh, out.uv, &out.perTriangleL2);
-        out.needsSplit = !out.injective || (opt.maxStretch > 0.0 && out.distortion.l2Max > opt.maxStretch);
+        double total = 0.0, bad = 0.0;
+        for (auto f : out.patch.mesh.faces()) {
+            const double a = out.patch.mesh.calc_face_area(f);
+            total += a;
+            const float l2 = out.perTriangleL2[f.idx()];
+            if (l2 < 0.0f || (opt.maxStretch > 0.0 && l2 > opt.maxStretch)) bad += a;
+        }
+        out.badAreaFraction = total > 0.0 ? bad / total : 0.0;
+        // a few slivers must not condemn the patch: it is the share of the area that decides
+        // Tutte is injective but distorts angles and areas by large factors: it is the last resort, never a good result
+        out.needsSplit = !out.injective || out.method == ParamMethod::Tutte ||
+                         (opt.maxStretch > 0.0 && out.badAreaFraction > opt.maxBadAreaFraction);
     } else {
         out.needsSplit = true;
     }

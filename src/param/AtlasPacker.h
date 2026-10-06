@@ -52,5 +52,8 @@ double minAreaRectangleAngle(const std::vector<Eigen::Vector2d>& hull);   // rot
 // Writes `source` with texture coordinates: one vt per patch vertex, so seams get distinct vt.
 // Only the faces of the given patches are written (a patch without UV is skipped).
 // atlasUV[i] belongs to patches[i]. Returns the number of written faces, -1 on I/O error.
+// With a non-empty textureFile the OBJ gets `mtllib` / `usemtl atlas` and a material file next to it
+// (same name, extension .mtl) whose map_Kd is textureFile.
 int exportAtlasOBJ(const std::string& path, const TriMesh& source, const std::vector<const Patch*>& patches,
-                   const std::vector<const std::vector<Eigen::Vector2d>*>& atlasUV, const std::string& comment = "");
+                   const std::vector<const std::vector<Eigen::Vector2d>*>& atlasUV, const std::string& comment = "",
+                   const std::string& textureFile = "");

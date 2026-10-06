@@ -2,6 +2,7 @@
 
 #include "core/MeshPrep.h"
 #include "core/Operations.h"
+#include "param/ThreadPool.h"
 
 #include <algorithm>
 #include <chrono>
@@ -94,20 +95,33 @@ void Refiner::evaluate()
     std::vector<PatchParam> params(ex.patches.size());
     std::vector<char> bad(ex.patches.size(), 0);
     std::unordered_map<uint64_t, PatchParam> fresh;
+    // the patches that are not in the cache and are disks need the parameterization ladder: independent jobs,
+    // the biggest first so that the threads finish together
+    std::vector<uint64_t> keys(ex.patches.size());
+    std::vector<int> work;
     for (size_t i = 0; i < ex.patches.size(); ++i) {
-        const uint64_t key = hashFaces(ex.patches[i].faceToGlobal);
-        auto it = cache_.find(key);
+        keys[i] = hashFaces(ex.patches[i].faceToGlobal);
+        auto it = cache_.find(keys[i]);
         if (it != cache_.end() && it->second.patch.faceToGlobal == ex.patches[i].faceToGlobal) {
             params[i] = it->second;
         } else if (ex.patches[i].isDisk()) {
-            params[i] = parameterizePatch(mesh_, ex.patches[i], ladder);
+            work.push_back(int(i));
         } else {
             params[i].patch = ex.patches[i];
             params[i].needsSplit = true;
             params[i].log = std::string("not a disk: ") + patchKindName(ex.patches[i].topology.kind);
         }
+    }
+    std::sort(work.begin(), work.end(), [&](int a, int b) {
+        return ex.patches[a].faceToGlobal.size() > ex.patches[b].faceToGlobal.size();
+    });
+    ThreadPool::shared().parallelFor(int(work.size()), [&](int t) {
+        const int i = work[t];
+        params[i] = parameterizePatch(mesh_, ex.patches[i], ladder);
+    });
+    for (size_t i = 0; i < ex.patches.size(); ++i) {
         bad[i] = params[i].needsSplit;
-        fresh[key] = params[i];
+        fresh[keys[i]] = params[i];
     }
     cache_ = std::move(fresh);
 
@@ -144,6 +158,37 @@ bool Refiner::splitPatch(int pi)
     const std::vector<Moments> fm = computeFaceMoments(sub.mesh, fd);
     const VSAInput in{sub.mesh, fd, fm};
 
+    // A patch with handles: bisecting it needs many rounds (the handle stays in one half). Several parts at once
+    // cut the handles apart: k = 2 + 2 genus parts (at most 8) from farthest-point seeds, one local VSA.
+    const int genus = patch.topology.genus;
+    if (genus > 0 && (patch.topology.kind == PatchKind::Handles || patch.topology.kind == PatchKind::Closed)) {
+        const int k = std::min(8, 2 + 2 * genus);
+        if (int(faces.size()) >= k * opt_.minFaces) {
+            VSAState s;
+            s.metric = opt_.metric;
+            s.smooth = opt_.smooth;
+            initFarthestSeeds(in, s, k, 12345);
+            runLloyd(in, s, opt_.lloyd);
+            std::vector<int> count(std::max(1, s.k()), 0);
+            for (int l : s.label) if (l >= 0) ++count[l];
+            bool ok = s.k() >= 2;
+            for (int c : count) ok = ok && c >= opt_.minFaces;
+            if (ok) {
+                std::vector<int> label(s.k());
+                label[0] = labels_[sub.faceToGlobal[0]];   // part 0 keeps the label of the patch
+                for (int j = 1; j < s.k(); ++j) label[j] = nextLabel_++;
+                for (size_t i = 0; i < s.label.size(); ++i) {
+                    const int g = sub.faceToGlobal[i];
+                    labels_[g] = label[s.label[i]];
+                    faceDepth_[g] = depth + 1;
+                }
+                ++result_.stats.splits;
+                ++result_.stats.splitsByFarthest;
+                return true;
+            }
+        }
+    }
+
     std::unordered_map<int, int> local;
     for (size_t i = 0; i < sub.faceToGlobal.size(); ++i) local[sub.faceToGlobal[i]] = int(i);
 
@@ -164,10 +209,15 @@ bool Refiner::splitPatch(int pi)
         for (int l : lab) if (l == 0 || l == 1) ++n[l];
         return std::pair<int, int>(n[0], n[1]);
     };
-    auto acceptable = [&](const std::vector<int>& lab, int k) {
+    // Both parts need minFaces; for a big patch also a real share of it. Peeling a few triangles off a huge patch
+    // again and again never gets anywhere (the patch stays as it is), so such a split is rejected and the more
+    // balanced fallbacks are tried. `balanced` is false for the last fallback, which only needs minFaces.
+    const int total = int(faces.size());
+    auto acceptable = [&](const std::vector<int>& lab, int k, bool balanced = true) {
         if (k != 2) return false;
         const auto [n0, n1] = sizes(lab);
-        return n0 >= opt_.minFaces && n1 >= opt_.minFaces;
+        const int share = (balanced && total >= 2000) ? std::max(opt_.minFaces, total / 10) : opt_.minFaces;
+        return n0 >= share && n1 >= share;
     };
 
     std::vector<int> split;
@@ -190,7 +240,7 @@ bool Refiner::splitPatch(int pi)
     if (split.empty()) {
         std::vector<int> nearest;
         dualDistances(sub.mesh, fd, {seedA, seedB}, &nearest);
-        if (acceptable(nearest, 2)) { split = nearest; kind = 2; }
+        if (acceptable(nearest, 2, false)) { split = nearest; kind = 2; }
     }
     if (split.empty()) return false;
 

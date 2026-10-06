@@ -174,6 +174,15 @@ bool MeshRenderer::init(std::string* errorLog)
     glGenBuffers(1, &ibo_);
     glGenBuffers(1, &colorBuffer_);
     glGenTextures(1, &colorTexture_);
+    {   // a valid texture buffer even before any colors exist (the driver warns about an empty one)
+        const unsigned char white[4] = {255, 255, 255, 255};
+        glBindBuffer(GL_TEXTURE_BUFFER, colorBuffer_);
+        glBufferData(GL_TEXTURE_BUFFER, 4, white, GL_DYNAMIC_DRAW);
+        glBindTexture(GL_TEXTURE_BUFFER, colorTexture_);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, colorBuffer_);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        glBindBuffer(GL_TEXTURE_BUFFER, 0);
+    }
     return true;
 }
 
