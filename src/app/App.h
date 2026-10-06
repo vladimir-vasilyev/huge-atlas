@@ -6,11 +6,14 @@
 #include "core/Smoothing.h"
 #include "core/Partition.h"
 #include "core/Proxy.h"
+#include "param/AnglesToUV.h"
 #include "param/LinABF.h"
 #include "param/PatchExtractor.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
 #include "render/MeshRenderer.h"
+
+#include <imgui.h>
 
 #include <memory>
 #include <string>
@@ -41,6 +44,8 @@ private:
     void drawPatchPanel();
     void drawLinabfPanel();
     void solvePatches(bool onlySelected);
+    void computeUV(bool onlySelected);
+    void drawUvPanel();
     std::vector<Vec3> patchExplodeOffsets() const;   // per patch; empty if the view is not exploded
     void rebuildBoundaryLines();
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
@@ -112,6 +117,15 @@ private:
     std::vector<LinABFResult> linabf_;
     std::vector<char> linabfSolved_;
     double           linabfSeconds_ = 0.0;
+
+    // Stage 8: UV per patch (parallel to patches_.patches)
+    std::vector<UVResult> uv_;
+    std::vector<UVStats>  uvStats_;
+    std::vector<char>     uvDone_;
+    bool             uvGreedy_ = false;       // debug: depth-first reconstruction instead of least squares
+    bool             uvShowEdges_ = true;
+    float            uvZoom_ = 1.0f;
+    ImVec2           uvPan_{0.0f, 0.0f};
     bool             showBoundaries_ = true;
     float            boundaryWidth_ = 3.0f;   // pixels
 

@@ -82,6 +82,8 @@ add_library(vsa_core STATIC
     src/param/PatchExtractor.cpp
     src/param/LinABF.h
     src/param/LinABF.cpp
+    src/param/AnglesToUV.h
+    src/param/AnglesToUV.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen)
@@ -114,6 +116,10 @@ add_test(NAME smoothing COMMAND test_smoothing ${CMAKE_SOURCE_DIR}/data/hemisphe
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
 add_test(NAME linabf COMMAND test_linabf)
+
+add_executable(test_uv tests/test_uv.cpp)
+target_link_libraries(test_uv PRIVATE vsa_core)
+add_test(NAME uv COMMAND test_uv)
 
 add_executable(test_patches tests/test_patches.cpp)
 target_link_libraries(test_patches PRIVATE vsa_core)

@@ -151,6 +151,9 @@ void App::openMesh(const std::string& path)
     selectedPatch_ = -1;
     linabf_.clear();
     linabfSolved_.clear();
+    uv_.clear();
+    uvStats_.clear();
+    uvDone_.clear();
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -330,6 +333,9 @@ void App::drawPatchPanel()
         patches_ = extractPatches(mesh_, vsa_.label, patchOptions_);
         linabf_.assign(patches_.patches.size(), LinABFResult());
         linabfSolved_.assign(patches_.patches.size(), 0);
+        uv_.assign(patches_.patches.size(), UVResult());
+        uvStats_.assign(patches_.patches.size(), UVStats());
+        uvDone_.assign(patches_.patches.size(), 0);
         patchesValid_ = true;
         patchedLabels_ = vsa_.label;
         selectedPatch_ = -1;
@@ -394,10 +400,100 @@ void App::solvePatches(bool onlySelected)
         if (!patches_.patches[i].isDisk()) continue;
         linabf_[i] = solveLinABF(patches_.patches[i].mesh, linabfParams_);
         linabfSolved_[i] = 1;
+        uvDone_[i] = 0;
     }
     linabfSeconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     colorMode_ = 6;
     uploadMesh();
+}
+
+void App::computeUV(bool onlySelected)
+{
+    for (size_t i = 0; i < patches_.patches.size(); ++i) {
+        if (onlySelected && int(i) != selectedPatch_) continue;
+        if (!linabfSolved_[i] || !linabf_[i].ok) continue;
+        const TriMesh& m = patches_.patches[i].mesh;
+        uv_[i] = uvGreedy_ ? anglesToUVGreedy(m, linabf_[i].angles) : anglesToUV(m, linabf_[i].angles);
+        uvStats_[i] = uv_[i].ok ? analyzeUV(m, uv_[i].uv, linabf_[i].angles) : UVStats();
+        uvDone_[i] = 1;
+    }
+}
+
+void App::drawUvPanel()
+{
+    ImGui::SetNextWindowSize(ImVec2(520, 520), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("UV view")) { ImGui::End(); return; }
+    const int sel = selectedPatch_;
+    if (!patchesValid_ || sel < 0 || sel >= int(uv_.size()) || !uvDone_[sel]) {
+        ImGui::TextUnformatted("Select a patch, solve LinABF and compute its UV");
+        ImGui::End();
+        return;
+    }
+    const UVResult& r = uv_[sel];
+    if (!r.ok) {
+        ImGui::TextWrapped("failed: %s", r.message.c_str());
+        ImGui::End();
+        return;
+    }
+    const UVStats& st = uvStats_[sel];
+    ImGui::Text("Patch %d: %d triangles, %d flipped, min area %.3g, total area %.4g", sel, st.triangles, st.flipped,
+                st.minArea, st.totalArea);
+    ImGui::Text("LS residual rms %.1e / max %.1e, angle deviation max %.1e / rms %.1e", r.rmsResidual, r.maxResidual,
+                st.maxAngleDeviation, st.rmsAngleDeviation);
+    ImGui::Checkbox("Edges", &uvShowEdges_);
+    ImGui::SameLine();
+    if (ImGui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
+
+    const TriMesh& m = patches_.patches[sel].mesh;
+    Eigen::Vector2d lo = r.uv[0], hi = r.uv[0];
+    for (const auto& p : r.uv) { lo = lo.cwiseMin(p); hi = hi.cwiseMax(p); }
+    const Eigen::Vector2d size = (hi - lo).cwiseMax(1e-12);
+
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 canvas(std::max(avail.x, 64.0f), std::max(avail.y, 64.0f));
+    ImGui::InvisibleButton("uvcanvas", canvas, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    if (ImGui::IsItemHovered()) {
+        const ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseWheel != 0.0f) uvZoom_ = std::max(0.05f, uvZoom_ * std::pow(1.15f, io.MouseWheel));
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+            uvPan_.x += io.MouseDelta.x;
+            uvPan_.y += io.MouseDelta.y;
+        }
+    }
+    const float base = float(0.92 * std::min(canvas.x / size.x(), canvas.y / size.y()));
+    const float scale = base * uvZoom_;
+    const Eigen::Vector2d mid = 0.5 * (lo + hi);
+    auto toScreen = [&](const Eigen::Vector2d& p) {   // v points up on the screen
+        return ImVec2(origin.x + canvas.x * 0.5f + uvPan_.x + float(p.x() - mid.x()) * scale,
+                      origin.y + canvas.y * 0.5f + uvPan_.y - float(p.y() - mid.y()) * scale);
+    };
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(origin, ImVec2(origin.x + canvas.x, origin.y + canvas.y), true);
+    dl->AddRectFilled(origin, ImVec2(origin.x + canvas.x, origin.y + canvas.y), IM_COL32(24, 26, 32, 255));
+    for (auto f : m.faces()) {
+        Eigen::Vector2d p[3];
+        for (auto h : m.fh_range(f)) p[cornerIndex(m, h) % 3] = r.uv[m.to_vertex_handle(h).idx()];
+        const ImVec2 a = toScreen(p[0]), b = toScreen(p[1]), c = toScreen(p[2]);
+        const bool flipped = signedArea(p[0], p[1], p[2]) <= 0.0;
+        dl->AddTriangleFilled(a, b, c, flipped ? IM_COL32(220, 50, 40, 255) : IM_COL32(70, 110, 150, 255));
+        if (uvShowEdges_) {
+            const ImU32 col = IM_COL32(15, 20, 28, 200);
+            dl->AddLine(a, b, col);
+            dl->AddLine(b, c, col);
+            dl->AddLine(c, a, col);
+        }
+    }
+    for (auto h : m.halfedges()) {   // patch boundary on top
+        if (!m.is_boundary(h)) continue;
+        dl->AddLine(toScreen(r.uv[m.from_vertex_handle(h).idx()]), toScreen(r.uv[m.to_vertex_handle(h).idx()]),
+                    IM_COL32(250, 220, 90, 255), 2.0f);
+    }
+    for (int v : {r.pinnedA, r.pinnedB})
+        if (v >= 0) dl->AddCircleFilled(toScreen(r.uv[v]), 4.0f, IM_COL32(255, 255, 255, 255));
+    dl->PopClipRect();
+    ImGui::End();
 }
 
 void App::drawLinabfPanel()
@@ -422,6 +518,20 @@ void App::drawLinabfPanel()
     if (ImGui::Button("Solve all disks")) solvePatches(false);
     ImGui::SameLine();
     if (ImGui::RadioButton("Angle error", &colorMode_, 6)) uploadMesh();
+
+    ImGui::Checkbox("Greedy (debug) instead of least squares", &uvGreedy_);
+    ImGui::BeginDisabled(selectedPatch_ < 0);
+    if (ImGui::Button("UV selected")) computeUV(true);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("UV all solved")) computeUV(false);
+    {
+        int done = 0, withFlips = 0, flipped = 0;
+        for (size_t i = 0; i < uvDone_.size(); ++i)
+            if (uvDone_[i] && uv_[i].ok) { ++done; flipped += uvStats_[i].flipped; withFlips += uvStats_[i].flipped > 0; }
+        if (done > 0)
+            ImGui::Text("UV for %d patches: %d have flipped triangles (%d in total)", done, withFlips, flipped);
+    }
 
     int solved = 0, valid = 0, failed = 0, rescaled = 0;
     double tri = 0, vert = 0, wheel = 0, err = 0;
@@ -868,6 +978,7 @@ void App::drawUI()
     drawVsaPanel();
     drawPatchPanel();
     drawLinabfPanel();
+    drawUvPanel();
 
     handleSceneInput();
 
