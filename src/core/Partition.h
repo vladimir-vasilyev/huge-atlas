@@ -5,13 +5,26 @@
 #include "core/Proxy.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+class ThreadPool;
+
+// Faces grouped by color such that two faces sharing a vertex never have the same color (greedy, by face
+// index). Faces of one color can be processed concurrently when a decision only reads the faces around
+// a vertex of its own face. Depends on the mesh topology only.
+struct FaceColoring {
+    std::vector<std::vector<int>> byColor;   // faces of every color in increasing index order
+};
 
 // Immutable per-mesh inputs of the algorithm (not owned).
 struct VSAInput {
     const TriMesh&              mesh;
     const FaceData&             faces;
     const std::vector<Moments>& moments;   // per face, see computeFaceMoments
+
+    // Lazily built by smoothLabels; valid while the mesh topology is unchanged (checked by face count).
+    mutable std::shared_ptr<const FaceColoring> coloring;
 };
 
 // Regularization of the borders between regions (see Smoothing.h).
@@ -30,6 +43,12 @@ struct VSAState {
     std::vector<int>    label;       // per face: proxy index, -1 = unassigned (empty before the first partition)
     std::vector<double> energyHistory;   // E after every Lloyd step (lloydStep)
     std::vector<int>   seedFace;     // initial seed face per proxy; used by the first partition only
+
+    // Parallelism. Results never depend on the thread count, only on `parallelMinFaces`.
+    ThreadPool* pool = nullptr;      // nullptr = ThreadPool::shared()
+    // Meshes with at least this many faces are flooded by the parallel bucket queue (error quantized to powers
+    // of two, one bucket claimed at once; same quality as the exact sequential priority queue used below it).
+    size_t      parallelMinFaces = 100000;
 
     int k() const { return int(proxies.size()); }
 };

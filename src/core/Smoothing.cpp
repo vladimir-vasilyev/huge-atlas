@@ -1,5 +1,7 @@
 #include "core/Smoothing.h"
 
+#include "core/ParallelUtil.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -49,35 +51,98 @@ int cyclicRuns(const std::vector<int>& ring, int value)
     return runs;
 }
 
+constexpr size_t kChunk = 1 << 15;
+
+ThreadPool& poolOrShared(ThreadPool* pool) { return pool ? *pool : ThreadPool::shared(); }
+
+// Fast path: a bitmask of the colors used around every vertex (up to 256 colors, i.e. vertex valence 256).
+// Returns null when the colors run out.
+std::shared_ptr<const FaceColoring> buildColoringMasks(const TriMesh& m)
+{
+    struct Mask { uint64_t w[4] = {0, 0, 0, 0}; };
+    std::vector<Mask> used(m.n_vertices());
+    auto out = std::make_shared<FaceColoring>();
+    for (size_t f = 0; f < m.n_faces(); ++f) {
+        int v[3], n = 0;
+        for (auto fv : m.fv_range(TriMesh::FaceHandle(int(f)))) v[n++] = fv.idx();
+        int c = -1;
+        for (int w = 0; w < 4 && c < 0; ++w) {
+            const uint64_t taken = used[v[0]].w[w] | used[v[1]].w[w] | used[v[2]].w[w];
+            if (taken != ~uint64_t(0)) c = w * 64 + __builtin_ctzll(~taken);
+        }
+        if (c < 0) return nullptr;
+        for (int i = 0; i < 3; ++i) used[v[i]].w[c >> 6] |= uint64_t(1) << (c & 63);
+        if (size_t(c) >= out->byColor.size()) out->byColor.resize(size_t(c) + 1);
+        out->byColor[c].push_back(int(f));
+    }
+    return out;
+}
+
+std::shared_ptr<const FaceColoring> buildColoring(const TriMesh& m)
+{
+    if (auto fast = buildColoringMasks(m)) return fast;
+    const size_t nF = m.n_faces();
+    std::vector<uint16_t> color(nF, 0xffff);
+    std::vector<size_t> usedBy;   // usedBy[c] == f + 1: color c is taken around face f
+    auto out = std::make_shared<FaceColoring>();
+    for (size_t f = 0; f < nF; ++f) {
+        for (auto v : m.fv_range(TriMesh::FaceHandle(int(f))))
+            for (auto g : m.vf_range(v)) {
+                const uint16_t c = color[g.idx()];
+                if (c == 0xffff) continue;
+                if (c >= usedBy.size()) usedBy.resize(size_t(c) + 1, 0);
+                usedBy[c] = f + 1;
+            }
+        size_t c = 0;
+        while (c < usedBy.size() && usedBy[c] == f + 1) ++c;
+        color[f] = uint16_t(c);
+        if (c >= out->byColor.size()) out->byColor.resize(c + 1);
+        out->byColor[c].push_back(int(f));
+    }
+    return out;
+}
+
 } // namespace
 
-double weightedPerimeter(const TriMesh& mesh, const std::vector<int>& label, const std::vector<double>& w)
+double weightedPerimeter(const TriMesh& mesh, const std::vector<int>& label, const std::vector<double>& w,
+                         ThreadPool* pool)
 {
+    const size_t nE = mesh.n_edges();
+    std::vector<double> part((nE + kChunk - 1) / kChunk + 1, 0.0);
+    forChunks(poolOrShared(pool), nE, kChunk, [&](size_t c, size_t b, size_t e) {
+        double p = 0.0;
+        for (size_t i = b; i < e; ++i) {
+            const TriMesh::EdgeHandle eh{int(i)};
+            if (mesh.is_boundary(eh)) continue;
+            const auto h = mesh.halfedge_handle(eh, 0);
+            if (label[mesh.face_handle(h).idx()] != label[mesh.face_handle(mesh.opposite_halfedge_handle(h)).idx()])
+                p += w[i];
+        }
+        part[c] = p;
+    });
     double p = 0.0;
-    for (auto e : mesh.edges()) {
-        if (mesh.is_boundary(e)) continue;
-        const auto h = mesh.halfedge_handle(e, 0);
-        if (label[mesh.face_handle(h).idx()] != label[mesh.face_handle(mesh.opposite_halfedge_handle(h)).idx()])
-            p += w[e.idx()];
-    }
+    for (double x : part) p += x;   // chunk order: independent of the thread count
     return p;
 }
 
-std::vector<double> computeEdgeWeights(const VSAInput& in, double kappa)
+std::vector<double> computeEdgeWeights(const VSAInput& in, double kappa, ThreadPool* pool)
 {
     const TriMesh& m = in.mesh;
     std::vector<double> w(m.n_edges(), 0.0);
-    for (auto e : m.edges()) {
-        double len = m.calc_edge_length(e);
-        if (kappa > 0.0 && !m.is_boundary(e)) {
-            const auto h = m.halfedge_handle(e, 0);
-            const Vec3& n1 = in.faces.normal[m.face_handle(h).idx()];
-            const Vec3& n2 = in.faces.normal[m.face_handle(m.opposite_halfedge_handle(h)).idx()];
-            const double ang = std::acos(std::max(-1.0, std::min(1.0, n1 | n2)));   // 0 for a degenerate face
-            len *= std::exp(-kappa * ang);
+    forChunks(poolOrShared(pool), w.size(), kChunk, [&](size_t, size_t b, size_t en) {
+        for (size_t i = b; i < en; ++i) {
+            const TriMesh::EdgeHandle e{int(i)};
+            double len = m.calc_edge_length(e);
+            if (kappa > 0.0 && !m.is_boundary(e)) {
+                const auto h = m.halfedge_handle(e, 0);
+                const Vec3& n1 = in.faces.normal[m.face_handle(h).idx()];
+                const Vec3& n2 = in.faces.normal[m.face_handle(m.opposite_halfedge_handle(h)).idx()];
+                const double ang = std::acos(std::max(-1.0, std::min(1.0, n1 | n2)));   // 0 for a degenerate face
+                len *= std::exp(-kappa * ang);
+            }
+            w[i] = len;
         }
-        w[e.idx()] = len;
-    }
+    });
     return w;
 }
 
@@ -86,66 +151,91 @@ SmoothStats smoothLabels(const VSAInput& in, VSAState& s)
     SmoothStats st;
     const TriMesh& m = in.mesh;
     if (s.smooth.lambda <= 0.0 || s.label.size() != m.n_faces() || s.k() < 2) return st;
+    ThreadPool& pool = poolOf(s);
 
     recomputeRegions(in, s);
-    const std::vector<double> w = computeEdgeWeights(in, s.smooth.kappa);
+    const std::vector<double> w = computeEdgeWeights(in, s.smooth.kappa, &pool);
     const double eRef = totalEnergy(s);
-    st.perimeterBefore = st.perimeterAfter = weightedPerimeter(m, s.label, w);
+    st.perimeterBefore = st.perimeterAfter = weightedPerimeter(m, s.label, w, &pool);
     if (eRef <= 1e-13 || st.perimeterBefore <= 0.0) return st;   // nothing to trade
     const double lambda = s.smooth.lambda * eRef / st.perimeterBefore;
+
+    size_t colored = 0;
+    if (in.coloring)
+        for (const auto& c : in.coloring->byColor) colored += c.size();
+    if (colored != m.n_faces()) in.coloring = buildColoring(m);
 
     std::vector<int> size(s.k(), 0);
     for (int l : s.label) if (l >= 0) ++size[l];
 
-    std::vector<int> ring;
+    struct Flip { int face, to; };
     for (int sweep = 0; sweep < s.smooth.maxSweeps; ++sweep) {
         int flips = 0;
-        for (auto f : m.faces()) {
-            const int a = s.label[f.idx()];
-            if (a < 0) continue;
+        // Faces of one color share no vertex, so a decision (which reads the faces around its own face)
+        // never sees another decision of the same color: they are made concurrently, then applied in
+        // face order. The result depends neither on the thread count nor on scheduling.
+        for (const std::vector<int>& faces : in.coloring->byColor) {
+            const size_t chunks = (faces.size() + 4095) / 4096;
+            std::vector<std::vector<Flip>> found(chunks);
+            forChunks(pool, faces.size(), 4096, [&](size_t c, size_t b, size_t e) {
+                std::vector<int> ring;
+                for (size_t i = b; i < e; ++i) {
+                    const TriMesh::FaceHandle f(faces[i]);
+                    const int a = s.label[f.idx()];
+                    if (a < 0) continue;
 
-            int nbLabel[3], nbCount = 0;
-            double nbW[3];
-            for (auto h : m.fh_range(f)) {
-                const auto o = m.opposite_halfedge_handle(h);
-                if (m.is_boundary(o)) continue;
-                nbLabel[nbCount] = s.label[m.face_handle(o).idx()];
-                nbW[nbCount] = w[m.edge_handle(h).idx()];
-                ++nbCount;
-            }
-            auto cost = [&](int c) {
-                double e = metricError(s.metric, in.moments[f.idx()], s.proxies[c]);
-                for (int i = 0; i < nbCount; ++i)
-                    if (nbLabel[i] != c) e += lambda * nbW[i];
-                return e;
-            };
+                    int nbLabel[3], nbCount = 0;
+                    double nbW[3];
+                    bool differs = false;
+                    for (auto h : m.fh_range(f)) {
+                        const auto o = m.opposite_halfedge_handle(h);
+                        if (m.is_boundary(o)) continue;
+                        nbLabel[nbCount] = s.label[m.face_handle(o).idx()];
+                        nbW[nbCount] = w[m.edge_handle(h).idx()];
+                        differs = differs || (nbLabel[nbCount] != a && nbLabel[nbCount] >= 0);
+                        ++nbCount;
+                    }
+                    if (!differs) continue;   // no neighboring region to move to
+                    auto cost = [&](int l) {
+                        double err = metricError(s.metric, in.moments[f.idx()], s.proxies[l]);
+                        for (int j = 0; j < nbCount; ++j)
+                            if (nbLabel[j] != l) err += lambda * nbW[j];
+                        return err;
+                    };
 
-            int best = a;
-            double bestCost = cost(a);
-            for (int i = 0; i < nbCount; ++i) {
-                const int c = nbLabel[i];
-                if (c == a || c < 0) continue;
-                const double cc = cost(c);
-                if (cc < bestCost - 1e-12 * std::abs(bestCost)) { bestCost = cc; best = c; }
-            }
-            if (best == a || size[a] <= 1) continue;
+                    int best = a;
+                    double bestCost = cost(a);
+                    for (int j = 0; j < nbCount; ++j) {
+                        const int l = nbLabel[j];
+                        if (l == a || l < 0) continue;
+                        const double cc = cost(l);
+                        if (cc < bestCost - 1e-12 * std::abs(bestCost)) { bestCost = cc; best = l; }
+                    }
+                    if (best == a) continue;
 
-            // topology guard: at most one run of `a` and exactly one run of `best` in the ring around
-            // the face. Zero runs of `a` means the face is an isolated island of its region: removing
-            // it only drops a stray component.
-            ringLabels(m, s.label, f, ring);
-            if (cyclicRuns(ring, a) > 1 || cyclicRuns(ring, best) != 1) continue;
-
-            s.label[f.idx()] = best;
-            --size[a];
-            ++size[best];
-            ++flips;
+                    // topology guard: at most one run of `a` and exactly one run of `best` in the ring around
+                    // the face. Zero runs of `a` means the face is an isolated island of its region: removing
+                    // it only drops a stray component.
+                    ringLabels(m, s.label, f, ring);
+                    if (cyclicRuns(ring, a) > 1 || cyclicRuns(ring, best) != 1) continue;
+                    found[c].push_back({f.idx(), best});
+                }
+            });
+            for (const auto& list : found)
+                for (const Flip& fl : list) {
+                    const int a = s.label[fl.face];
+                    if (size[a] <= 1) continue;   // never empty a region
+                    s.label[fl.face] = fl.to;
+                    --size[a];
+                    ++size[fl.to];
+                    ++flips;
+                }
         }
         st.flips += flips;
         ++st.sweeps;
         if (flips == 0) break;
     }
     recomputeRegions(in, s);
-    st.perimeterAfter = weightedPerimeter(m, s.label, w);
+    st.perimeterAfter = weightedPerimeter(m, s.label, w, &pool);
     return st;
 }

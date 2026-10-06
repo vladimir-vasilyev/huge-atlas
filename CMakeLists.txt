@@ -143,6 +143,10 @@ add_executable(test_smoothing tests/test_smoothing.cpp)
 target_link_libraries(test_smoothing PRIVATE vsa_core)
 add_test(NAME smoothing COMMAND test_smoothing ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
 
+add_executable(test_parallel tests/test_parallel.cpp)
+target_link_libraries(test_parallel PRIVATE vsa_core)
+add_test(NAME parallel COMMAND test_parallel ${CMAKE_SOURCE_DIR}/data/bunny.ply)
+
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
 add_test(NAME linabf COMMAND test_linabf)

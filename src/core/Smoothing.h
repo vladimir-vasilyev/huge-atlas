@@ -10,11 +10,12 @@ struct SmoothStats {
 };
 
 // Weighted length of the region borders: sum of w_e over interior edges with different labels.
-double weightedPerimeter(const TriMesh& mesh, const std::vector<int>& label, const std::vector<double>& edgeWeight);
+double weightedPerimeter(const TriMesh& mesh, const std::vector<int>& label, const std::vector<double>& edgeWeight,
+                         ThreadPool* pool = nullptr);
 
 // w_e = |e| * exp(-kappa * angle between the normals of the two faces), indexed by edge index.
 // kappa = 0 gives plain lengths; kappa > 0 makes cutting along creases cheaper.
-std::vector<double> computeEdgeWeights(const VSAInput& in, double kappa);
+std::vector<double> computeEdgeWeights(const VSAInput& in, double kappa, ThreadPool* pool = nullptr);
 
 // Regularized label refinement for fixed proxies (iterated conditional modes):
 //   E(label) = sum_f err(f, label_f) + lambda_eff * sum_e w_e [label differs across e]
