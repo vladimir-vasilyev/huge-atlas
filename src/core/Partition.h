@@ -61,7 +61,7 @@ double totalEnergy(const VSAState& s);
 // ---- Lloyd iterations (partition -> fit). Greedy flooding does not guarantee a monotone energy,
 // so convergence is judged by a fixed point or by a small relative change, never by monotonicity.
 struct LloydParams {
-    int    maxIterations = 100;
+    int    maxIterations = 30;
     double relTolerance  = 1e-4;   // |E_{i-1} - E_i| / max(E_{i-1}, E_i) below this ...
     int    patience      = 3;      // ... for this many consecutive iterations
 };
