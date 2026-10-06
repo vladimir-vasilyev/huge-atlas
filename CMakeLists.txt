@@ -64,6 +64,8 @@ add_library(vsa_core STATIC
     src/core/MeshTypes.h
     src/core/MeshPrep.h
     src/core/MeshPrep.cpp
+    src/core/ObjLoader.h
+    src/core/ObjLoader.cpp
     src/core/Metrics.h
     src/core/Metrics.cpp
     src/core/Proxy.h
@@ -161,6 +163,10 @@ add_test(NAME refinement COMMAND test_refinement)
 # the bunny run takes minutes in a Debug build: label it slow (ctest -LE slow skips it)
 add_test(NAME refinement_bunny COMMAND test_refinement ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 set_tests_properties(refinement_bunny PROPERTIES LABELS slow)
+
+add_executable(test_objloader tests/test_objloader.cpp)
+target_link_libraries(test_objloader PRIVATE vsa_core)
+add_test(NAME objloader COMMAND test_objloader ${CMAKE_SOURCE_DIR}/data/hemisphere.obj)
 
 add_executable(test_horizon tests/test_horizon.cpp)
 target_link_libraries(test_horizon PRIVATE vsa_core)

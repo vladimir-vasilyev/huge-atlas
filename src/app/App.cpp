@@ -42,7 +42,10 @@ bool App::init(int width, int height, const char* title)
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
-    glfwWindowHint(GLFW_SAMPLES, 4);
+    {   // testing hook: VSA_MSAA=0|2|4|8
+        const char* e = std::getenv("VSA_MSAA");
+        glfwWindowHint(GLFW_SAMPLES, e ? std::atoi(e) : 4);
+    }
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
 
     window_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
@@ -92,6 +95,7 @@ bool App::init(int width, int height, const char* title)
     const char* envMesh = std::getenv("VSA_MESH");   // testing hooks: VSA_MESH, VSA_K, VSA_AUTO_ATLAS
     openMesh(envMesh ? envMesh : "data/cube.obj");   // default file; on failure only a status message
     if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
+    if (const char* envW = std::getenv("VSA_WIREFRAME")) wireframe_ = std::atoi(envW) != 0;
 
     glEnable(GL_DEPTH_TEST);
     GL_CHECK();
@@ -103,8 +107,22 @@ void App::run()
     // VSA_AUTO_ATLAS=1: press "Make atlas" by itself, print the outcome and quit (end-to-end check without clicks)
     const bool autoAtlas = std::getenv("VSA_AUTO_ATLAS") != nullptr;
     int autoFrame = 0;
+    // VSA_BENCH_FRAMES=N: render N frames, print the average frame time and quit
+    const char* benchEnv = std::getenv("VSA_BENCH_FRAMES");
+    const int benchFrames = benchEnv ? std::atoi(benchEnv) : 0;
+    int benchDone = 0;
+    std::chrono::steady_clock::time_point benchStart;
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+        if (benchFrames > 0) {
+            if (benchDone == 5) benchStart = std::chrono::steady_clock::now();   // skip the first frames
+            if (benchDone == 5 + benchFrames) {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - benchStart).count();
+                std::printf("FRAMES: %d frames, %.2f ms per frame (%.1f fps)\n", benchFrames, ms / benchFrames, 1000.0 * benchFrames / ms);
+                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            }
+            ++benchDone;
+        }
         if (autoAtlas) {
             if (autoFrame == 2) startMakeAtlas();
             if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle) {

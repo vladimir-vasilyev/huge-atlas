@@ -1,14 +1,22 @@
 #include "core/MeshPrep.h"
 
+#include "core/ObjLoader.h"
+
 #include <OpenMesh/Core/IO/MeshIO.hh>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <queue>
 
 bool loadMesh(const std::string& path, TriMesh& mesh, std::string* error)
 {
     mesh.clean();
+    if (path.size() > 4) {   // OBJ: the fast reader
+        std::string ext = path.substr(path.size() - 4);
+        for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == ".obj") return loadObj(path, mesh, nullptr, error);
+    }
     OpenMesh::IO::Options opt;
     if (!OpenMesh::IO::read_mesh(mesh, path, opt)) {
         if (error) *error = "failed to read file: " + path;
