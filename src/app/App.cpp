@@ -154,6 +154,10 @@ void App::openMesh(const std::string& path)
     uv_.clear();
     uvStats_.clear();
     uvDone_.clear();
+    params_.clear();
+    paramDone_.clear();
+    atlasValid_ = false;
+    paramStatus_.clear();
     camera_.reset();
     uploadMesh();
     status_ = "loaded: " + path;
@@ -251,6 +255,54 @@ void App::uploadMesh()
         }
     }
 
+    std::vector<float> faceUV;
+    if ((colorMode_ == 7 || colorMode_ == 8 || colorMode_ == 9) && patchesValid_ && params_.size() == patches_.patches.size() &&
+        patches_.faceToPatch.size() == nF) {
+        colors.assign(nF * 3, 0.3f);
+        if (colorMode_ == 8) faceUV.assign(nF * 6, 0.0f);
+        for (size_t pi = 0; pi < params_.size(); ++pi) {
+            if (!paramDone_[pi] || params_[pi].method == ParamMethod::None) continue;
+            const PatchParam& pp = params_[pi];
+            const TriMesh& pm = pp.patch.mesh;
+            std::vector<char> flagged;
+            if (colorMode_ == 9) {
+                flagged.assign(pm.n_faces(), 0);
+                for (int f : pp.report.uv.flippedFaces) flagged[f] = 1;
+                for (const auto& cr : pp.report.uv.crossings)
+                    for (int he : {cr.first, cr.second}) {
+                        const auto f = pm.face_handle(pm.opposite_halfedge_handle(TriMesh::HalfedgeHandle(he)));
+                        if (f.is_valid()) flagged[f.idx()] = 1;
+                    }
+                for (int v : pp.report.angles.foldVertices)
+                    for (auto f : pm.vf_range(TriMesh::VertexHandle(v))) flagged[f.idx()] = 1;
+            }
+            for (auto lf : pm.faces()) {
+                const size_t g = size_t(pp.patch.faceToGlobal[lf.idx()]);
+                float* c = &colors[g * 3];
+                if (colorMode_ == 7) {
+                    const float v = pp.perTriangleL2[lf.idx()];
+                    if (v < 0.0f) { c[0] = 0.9f; c[1] = 0.1f; c[2] = 0.1f; continue; }
+                    const float t = std::max(0.0f, std::min(1.0f, (v - 1.0f) / 2.0f));   // 1 = isometric, 3 = red
+                    c[0] = 0.2f + 0.75f * t; c[1] = 0.55f - 0.3f * t; c[2] = 0.9f - 0.75f * t;
+                } else if (colorMode_ == 8) {
+                    c[0] = c[1] = c[2] = 0.8f;
+                    if (atlasValid_ && pi < atlas_.uv.size() && !atlas_.uv[pi].empty()) {
+                        int k = 0;
+                        for (auto fv : pm.fv_range(lf)) {
+                            faceUV[g * 6 + k * 2] = float(atlas_.uv[pi][fv.idx()].x());
+                            faceUV[g * 6 + k * 2 + 1] = float(atlas_.uv[pi][fv.idx()].y());
+                            ++k;
+                        }
+                    }
+                } else {
+                    if (flagged[lf.idx()]) { c[0] = 0.95f; c[1] = 0.1f; c[2] = 0.1f; }
+                    else if (pp.needsSplit) { c[0] = 0.95f; c[1] = 0.6f; c[2] = 0.15f; }
+                    else { c[0] = 0.3f; c[1] = 0.75f; c[2] = 0.4f; }
+                }
+            }
+        }
+    }
+
     // exploded view: every patch moves away from the mesh center
     std::vector<float> offsets;
     const std::vector<Vec3> po = patchExplodeOffsets();
@@ -262,7 +314,7 @@ void App::uploadMesh()
             for (int k = 0; k < 3; ++k) offsets[i * 3 + k] = float(po[pi][k]);
         }
     }
-    meshRenderer_.upload(mesh_, colors, offsets);
+    meshRenderer_.upload(mesh_, colors, offsets, faceUV);
     rebuildBoundaryLines();
     boundaryStatsValid_ = vsa_.label.size() == nF;
     if (boundaryStatsValid_) boundaryStats_ = computeBoundaryStats(mesh_, vsa_.label);
@@ -336,6 +388,10 @@ void App::drawPatchPanel()
         uv_.assign(patches_.patches.size(), UVResult());
         uvStats_.assign(patches_.patches.size(), UVStats());
         uvDone_.assign(patches_.patches.size(), 0);
+        params_.assign(patches_.patches.size(), PatchParam());
+        paramDone_.assign(patches_.patches.size(), 0);
+        atlasValid_ = false;
+        paramStatus_.clear();
         patchesValid_ = true;
         patchedLabels_ = vsa_.label;
         selectedPatch_ = -1;
@@ -423,30 +479,60 @@ void App::drawUvPanel()
 {
     ImGui::SetNextWindowSize(ImVec2(520, 520), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("UV view")) { ImGui::End(); return; }
+
     const int sel = selectedPatch_;
-    if (!patchesValid_ || sel < 0 || sel >= int(uv_.size()) || !uvDone_[sel]) {
-        ImGui::TextUnformatted("Select a patch, solve LinABF and compute its UV");
-        ImGui::End();
-        return;
+    const bool haveParam = patchesValid_ && sel >= 0 && sel < int(params_.size()) && paramDone_[sel] &&
+                           params_[sel].method != ParamMethod::None;
+    const bool haveStage8 = patchesValid_ && sel >= 0 && sel < int(uv_.size()) && uvDone_[sel] && uv_[sel].ok;
+    const bool canAtlas = atlasValid_ && !atlas_.uv.empty();
+    if (canAtlas) {
+        ImGui::Checkbox("Atlas", &uvShowAtlas_);
+        ImGui::SameLine();
+    } else {
+        uvShowAtlas_ = false;
     }
-    const UVResult& r = uv_[sel];
-    if (!r.ok) {
-        ImGui::TextWrapped("failed: %s", r.message.c_str());
-        ImGui::End();
-        return;
-    }
-    const UVStats& st = uvStats_[sel];
-    ImGui::Text("Patch %d: %d triangles, %d flipped, min area %.3g, total area %.4g", sel, st.triangles, st.flipped,
-                st.minArea, st.totalArea);
-    ImGui::Text("LS residual rms %.1e / max %.1e, angle deviation max %.1e / rms %.1e", r.rmsResidual, r.maxResidual,
-                st.maxAngleDeviation, st.rmsAngleDeviation);
     ImGui::Checkbox("Edges", &uvShowEdges_);
     ImGui::SameLine();
     if (ImGui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
 
-    const TriMesh& m = patches_.patches[sel].mesh;
-    Eigen::Vector2d lo = r.uv[0], hi = r.uv[0];
-    for (const auto& p : r.uv) { lo = lo.cwiseMin(p); hi = hi.cwiseMax(p); }
+    // What to draw: list of (mesh, uv, color index) plus bounds
+    struct Layer { const TriMesh* mesh; const std::vector<Eigen::Vector2d>* uv; int colorIndex; const PatchParam* pp; };
+    std::vector<Layer> layers;
+    if (uvShowAtlas_) {
+        for (size_t i = 0; i < params_.size(); ++i)
+            if (paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty())
+                layers.push_back({&params_[i].patch.mesh, &atlas_.uv[i], int(i), &params_[i]});
+    } else if (haveParam) {
+        layers.push_back({&params_[sel].patch.mesh, &params_[sel].uv, sel, &params_[sel]});
+    } else if (haveStage8) {
+        layers.push_back({&patches_.patches[sel].mesh, &uv_[sel].uv, sel, nullptr});
+    }
+    if (layers.empty()) {
+        ImGui::TextUnformatted("Select a patch and parameterize it (Parameterize panel)");
+        ImGui::End();
+        return;
+    }
+
+    if (!uvShowAtlas_ && haveParam) {
+        const PatchParam& pp = params_[sel];
+        ImGui::Text("Patch %d: %s%s, %d flipped, %zu crossings, %zu folds, %d cuts", sel, paramMethodName(pp.method),
+                    pp.injective ? "" : " (NOT injective)", pp.distortion.flipped, pp.report.uv.crossings.size(),
+                    pp.report.angles.foldVertices.size(), pp.cuts);
+        ImGui::Text("L2 stretch: mean %.3f max %.3f   conformal max %.2f   area ratio [%.2f, %.2f]%s",
+                    pp.distortion.l2Mean, pp.distortion.l2Max, pp.distortion.conformalMax, pp.distortion.areaRatioMin,
+                    pp.distortion.areaRatioMax, pp.needsSplit ? "   NEEDS SPLIT" : "");
+    } else if (uvShowAtlas_) {
+        ImGui::Text("Atlas: %zu patches, efficiency %.1f%%", layers.size(), 100.0 * atlas_.efficiency);
+    } else if (haveStage8) {
+        const UVStats& st = uvStats_[sel];
+        ImGui::Text("Patch %d: %d triangles, %d flipped, angle deviation max %.1e", sel, st.triangles, st.flipped,
+                    st.maxAngleDeviation);
+    }
+
+    Eigen::Vector2d lo(1e300, 1e300), hi(-1e300, -1e300);
+    for (const Layer& l : layers)
+        for (const auto& p : *l.uv) { lo = lo.cwiseMin(p); hi = hi.cwiseMax(p); }
+    if (uvShowAtlas_) { lo = Eigen::Vector2d(0, 0); hi = Eigen::Vector2d(1, 1); }
     const Eigen::Vector2d size = (hi - lo).cwiseMax(1e-12);
 
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -461,8 +547,7 @@ void App::drawUvPanel()
             uvPan_.y += io.MouseDelta.y;
         }
     }
-    const float base = float(0.92 * std::min(canvas.x / size.x(), canvas.y / size.y()));
-    const float scale = base * uvZoom_;
+    const float scale = float(0.92 * std::min(canvas.x / size.x(), canvas.y / size.y())) * uvZoom_;
     const Eigen::Vector2d mid = 0.5 * (lo + hi);
     auto toScreen = [&](const Eigen::Vector2d& p) {   // v points up on the screen
         return ImVec2(origin.x + canvas.x * 0.5f + uvPan_.x + float(p.x() - mid.x()) * scale,
@@ -472,27 +557,229 @@ void App::drawUvPanel()
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(origin, ImVec2(origin.x + canvas.x, origin.y + canvas.y), true);
     dl->AddRectFilled(origin, ImVec2(origin.x + canvas.x, origin.y + canvas.y), IM_COL32(24, 26, 32, 255));
-    for (auto f : m.faces()) {
-        Eigen::Vector2d p[3];
-        for (auto h : m.fh_range(f)) p[cornerIndex(m, h) % 3] = r.uv[m.to_vertex_handle(h).idx()];
-        const ImVec2 a = toScreen(p[0]), b = toScreen(p[1]), c = toScreen(p[2]);
-        const bool flipped = signedArea(p[0], p[1], p[2]) <= 0.0;
-        dl->AddTriangleFilled(a, b, c, flipped ? IM_COL32(220, 50, 40, 255) : IM_COL32(70, 110, 150, 255));
-        if (uvShowEdges_) {
-            const ImU32 col = IM_COL32(15, 20, 28, 200);
-            dl->AddLine(a, b, col);
-            dl->AddLine(b, c, col);
-            dl->AddLine(c, a, col);
+    if (uvShowAtlas_)   // the unit square
+        dl->AddRect(toScreen({0, 1}), toScreen({1, 0}), IM_COL32(120, 120, 130, 255));
+
+    for (const Layer& l : layers) {
+        const TriMesh& m = *l.mesh;
+        const std::vector<Eigen::Vector2d>& uv = *l.uv;
+        float rgb[3];
+        hueColor(l.colorIndex, rgb);
+        const ImU32 fill = uvShowAtlas_ ? IM_COL32(int(rgb[0] * 200), int(rgb[1] * 200), int(rgb[2] * 200), 255)
+                                         : IM_COL32(70, 110, 150, 255);
+        for (auto f : m.faces()) {
+            Eigen::Vector2d p[3];
+            for (auto h : m.fh_range(f)) p[cornerIndex(m, h) % 3] = uv[m.to_vertex_handle(h).idx()];
+            const ImVec2 a = toScreen(p[0]), b = toScreen(p[1]), c = toScreen(p[2]);
+            const bool flipped = signedArea(p[0], p[1], p[2]) <= 0.0;
+            dl->AddTriangleFilled(a, b, c, flipped ? IM_COL32(220, 50, 40, 255) : fill);
+            if (uvShowEdges_) {
+                const ImU32 col = IM_COL32(15, 20, 28, 200);
+                dl->AddLine(a, b, col);
+                dl->AddLine(b, c, col);
+                dl->AddLine(c, a, col);
+            }
+        }
+        for (auto h : m.halfedges()) {   // patch boundary on top
+            if (!m.is_boundary(h)) continue;
+            dl->AddLine(toScreen(uv[m.from_vertex_handle(h).idx()]), toScreen(uv[m.to_vertex_handle(h).idx()]),
+                        IM_COL32(250, 220, 90, 255), uvShowAtlas_ ? 1.0f : 2.0f);
+        }
+        if (l.pp && !uvShowAtlas_) {   // problems of the shown patch
+            for (const auto& cr : l.pp->report.uv.crossings)
+                for (int he : {cr.first, cr.second}) {
+                    const auto h = TriMesh::HalfedgeHandle(he);
+                    dl->AddLine(toScreen(uv[m.from_vertex_handle(h).idx()]), toScreen(uv[m.to_vertex_handle(h).idx()]),
+                                IM_COL32(255, 60, 220, 255), 3.5f);
+                }
+            for (int v : l.pp->report.angles.foldVertices)
+                dl->AddCircle(toScreen(uv[v]), 8.0f, IM_COL32(255, 150, 30, 255), 16, 2.5f);
         }
     }
-    for (auto h : m.halfedges()) {   // patch boundary on top
-        if (!m.is_boundary(h)) continue;
-        dl->AddLine(toScreen(r.uv[m.from_vertex_handle(h).idx()]), toScreen(r.uv[m.to_vertex_handle(h).idx()]),
-                    IM_COL32(250, 220, 90, 255), 2.0f);
-    }
-    for (int v : {r.pinnedA, r.pinnedB})
-        if (v >= 0) dl->AddCircleFilled(toScreen(r.uv[v]), 4.0f, IM_COL32(255, 255, 255, 255));
     dl->PopClipRect();
+    ImGui::End();
+}
+
+void App::runParam(bool onlySelected)
+{
+    const auto t0 = std::chrono::steady_clock::now();
+    int done = 0;
+    for (size_t i = 0; i < patches_.patches.size(); ++i) {
+        if (onlySelected && int(i) != selectedPatch_) continue;
+        if (!patches_.patches[i].isDisk()) continue;
+        params_[i] = parameterizePatch(mesh_, patches_.patches[i], paramOptions_);
+        paramDone_[i] = 1;
+        ++done;
+    }
+    paramSeconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    atlasValid_ = false;
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "parameterized %d patches in %.2f s", done, paramSeconds_);
+    paramStatus_ = buf;
+    colorMode_ = 9;
+    uploadMesh();
+}
+
+void App::packAtlasNow()
+{
+    std::vector<AtlasInput> in(params_.size());
+    for (size_t i = 0; i < params_.size(); ++i) {
+        if (!paramDone_[i] || params_[i].method == ParamMethod::None) continue;
+        const TriMesh& m = params_[i].patch.mesh;
+        double uvArea = 0.0, area3 = 0.0;
+        for (auto f : m.faces()) {
+            Eigen::Vector2d q[3];
+            Vec3 p[3];
+            for (auto h : m.fh_range(f)) {
+                const int k = cornerIndex(m, h) % 3;
+                q[k] = params_[i].uv[m.to_vertex_handle(h).idx()];
+                p[k] = m.point(m.to_vertex_handle(h));
+            }
+            uvArea += std::abs(signedArea(q[0], q[1], q[2]));
+            area3 += 0.5 * ((p[1] - p[0]) % (p[2] - p[0])).norm();
+        }
+        in[i] = {&params_[i].uv, uvArea, area3};
+    }
+    atlas_ = packAtlas(in, atlasOptions_);
+    atlasValid_ = true;
+    uvShowAtlas_ = true;
+    colorMode_ = 8;
+    uploadMesh();
+}
+
+void App::drawParamPanel()
+{
+    constexpr const char* kExportKey = "ExportObjDlg";
+    if (!ImGui::Begin("Parameterize")) { ImGui::End(); return; }
+    if (!patchesValid_ || params_.size() != patches_.patches.size()) {
+        ImGui::TextUnformatted("Extract patches first (Patches panel)");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::SeparatorText("Repair ladder");
+    ImGui::Checkbox("Active set (pin angles, limit boundary fans)", &paramOptions_.useActiveSet);
+    {
+        float d = float(paramOptions_.active.foldDelta), mg = float(paramOptions_.active.angleMargin);
+        if (ImGui::SliderFloat("Fold delta (rad)", &d, 0.0f, 0.5f)) paramOptions_.active.foldDelta = d;
+        if (ImGui::SliderFloat("Angle margin (rad)", &mg, 0.001f, 0.2f)) paramOptions_.active.angleMargin = mg;
+    }
+    ImGui::Checkbox("Slits from the worst vertex", &paramOptions_.allowCut);
+    ImGui::SliderInt("Max slits", &paramOptions_.maxCuts, 0, 6);
+    ImGui::Checkbox("Tutte fallback (always injective)", &paramOptions_.allowTutte);
+    {
+        float ms = float(paramOptions_.maxStretch);
+        if (ImGui::SliderFloat("Split above L2 stretch", &ms, 0.0f, 20.0f)) paramOptions_.maxStretch = ms;
+    }
+
+    ImGui::BeginDisabled(selectedPatch_ < 0);
+    if (ImGui::Button("Parameterize selected")) runParam(true);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Parameterize all disks")) runParam(false);
+
+    // summary
+    int done = 0, injective = 0, split = 0, byMethod[5] = {0, 0, 0, 0, 0};
+    double worst = 0.0, sumL2 = 0.0;
+    for (size_t i = 0; i < params_.size(); ++i) {
+        if (!paramDone_[i]) continue;
+        const PatchParam& pp = params_[i];
+        ++done;
+        injective += pp.injective;
+        split += pp.needsSplit;
+        ++byMethod[int(pp.method)];
+        if (pp.method != ParamMethod::None) { worst = std::max(worst, pp.distortion.l2Max); sumL2 += pp.distortion.l2Mean; }
+    }
+    ImGui::Separator();
+    if (!paramStatus_.empty()) ImGui::TextUnformatted(paramStatus_.c_str());
+    if (done > 0) {
+        ImGui::Text("%d patches: %d injective, %d need a split", done, injective, split);
+        ImGui::Text("LinABF %d, active set %d, slit %d, Tutte %d, failed %d", byMethod[int(ParamMethod::LinABF)],
+                    byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Tutte)],
+                    byMethod[int(ParamMethod::None)]);
+        ImGui::Text("L2 stretch: mean of patches %.3f, worst triangle %.2f", sumL2 / std::max(1, done), worst);
+        if (ImGui::RadioButton("Stretch", &colorMode_, 7)) uploadMesh();
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Problems", &colorMode_, 9)) uploadMesh();
+        ImGui::SameLine();
+        if (ImGui::RadioButton("UV checker", &colorMode_, 8)) uploadMesh();
+    }
+
+    if (done > 0 && ImGui::BeginTable("params", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+                                      ImVec2(0, 180))) {
+        const char* heads[] = {"#", "Method", "Inj.", "Flips", "Cross", "L2 mean", "L2 max"};
+        for (const char* h : heads) ImGui::TableSetupColumn(h);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+        for (int i = 0; i < int(params_.size()); ++i) {
+            if (!paramDone_[i]) continue;
+            const PatchParam& pp = params_[i];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            char id[16];
+            std::snprintf(id, sizeof(id), "%d", i);
+            if (ImGui::Selectable(id, selectedPatch_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                selectedPatch_ = selectedPatch_ == i ? -1 : i;
+                uploadMesh();
+            }
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(paramMethodName(pp.method));
+            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(pp.injective ? (pp.needsSplit ? "split" : "yes") : "NO");
+            ImGui::TableSetColumnIndex(3); ImGui::Text("%d", pp.distortion.flipped);
+            ImGui::TableSetColumnIndex(4); ImGui::Text("%zu", pp.report.uv.crossings.size());
+            ImGui::TableSetColumnIndex(5); ImGui::Text("%.3f", pp.distortion.l2Mean);
+            ImGui::TableSetColumnIndex(6); ImGui::Text("%.2f", pp.distortion.l2Max);
+        }
+        ImGui::EndTable();
+    }
+    if (selectedPatch_ >= 0 && selectedPatch_ < int(params_.size()) && paramDone_[selectedPatch_] &&
+        !params_[selectedPatch_].log.empty()) {
+        ImGui::SeparatorText("Log of the selected patch");
+        ImGui::TextWrapped("%s", params_[selectedPatch_].log.c_str());
+    }
+
+    ImGui::SeparatorText("Atlas");
+    {
+        float g = float(atlasOptions_.gutter);
+        if (ImGui::SliderFloat("Gutter", &g, 0.0f, 0.05f, "%.3f")) atlasOptions_.gutter = g;
+        ImGui::Checkbox("Rotate to minimum rectangle", &atlasOptions_.rotate);
+        ImGui::SliderFloat("Checker cells", &checkerCells_, 4.0f, 128.0f, "%.0f");
+    }
+    ImGui::BeginDisabled(done == 0);
+    if (ImGui::Button("Pack atlas")) packAtlasNow();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!atlasValid_);
+    bool openExport = ImGui::Button("Export OBJ...");
+    ImGui::EndDisabled();
+    if (atlasValid_) ImGui::Text("Efficiency %.1f%%", 100.0 * atlas_.efficiency);
+
+    if (openExport) {
+        IGFD::FileDialogConfig cfg;
+        cfg.path = lastDir_;
+        cfg.fileName = "atlas.obj";
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
+        ImGuiFileDialog::Instance()->OpenDialog(kExportKey, "Export OBJ with UV", ".obj", cfg);
+    }
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    if (ImGuiFileDialog::Instance()->Display(kExportKey, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
+            std::vector<const Patch*> pv;
+            std::vector<const std::vector<Eigen::Vector2d>*> uvv;
+            for (size_t i = 0; i < params_.size(); ++i) {
+                pv.push_back(&params_[i].patch);
+                uvv.push_back(paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty() ? &atlas_.uv[i] : nullptr);
+            }
+            const std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
+            const int faces = exportAtlasOBJ(path, mesh_, pv, uvv);
+            char buf[256];
+            if (faces < 0) std::snprintf(buf, sizeof(buf), "export failed: %s", path.c_str());
+            else std::snprintf(buf, sizeof(buf), "exported %d of %d faces to %s", faces, int(mesh_.n_faces()), path.c_str());
+            paramStatus_ = buf;
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
     ImGui::End();
 }
 
@@ -978,6 +1265,7 @@ void App::drawUI()
     drawVsaPanel();
     drawPatchPanel();
     drawLinabfPanel();
+    drawParamPanel();
     drawUvPanel();
 
     handleSceneInput();
@@ -1002,7 +1290,7 @@ void App::renderScene(int fbWidth, int fbHeight)
         float vp[16], v[16];
         camera_.viewProj(float(fbWidth) / float(fbHeight), vp);
         camera_.view(v);
-        meshRenderer_.draw(vp, v, wireframe_, 1.0f);
+        meshRenderer_.draw(vp, v, wireframe_, 1.0f, colorMode_ == 8 ? checkerCells_ : 0.0f);
         if (meshRenderer_.hasLines())
             meshRenderer_.drawLines(vp, fbWidth, fbHeight, boundaryWidth_);
     }

@@ -16,10 +16,13 @@ public:
 
     // faceColors: rgb per face (indexed by face.idx()); an empty array means gray.
     // faceOffsets: xyz per face, added to its three vertices (used to explode patches); may be empty.
+    // faceUV: u, v of the three corners of every face (6 floats, corners in face-loop order); may be
+    // empty. With checkerCells > 0 in draw() it is shown as a checkerboard.
     void upload(const TriMesh& mesh, const std::vector<float>& faceColors = {},
-                const std::vector<float>& faceOffsets = {});
+                const std::vector<float>& faceOffsets = {}, const std::vector<float>& faceUV = {});
 
-    void draw(const float viewProj[16], const float view[16], bool wireframe, float wireWidth) const;
+    void draw(const float viewProj[16], const float view[16], bool wireframe, float wireWidth,
+              float checkerCells = 0.0f) const;
 
     bool hasMesh() const { return vertexCount_ > 0; }
 
@@ -48,5 +51,5 @@ private:
     GLint uPickVP_ = -1;
     GLuint vao_ = 0, vbo_ = 0;
     GLsizei vertexCount_ = 0;
-    GLint uVP_ = -1, uView_ = -1, uWire_ = -1, uWireWidth_ = -1;
+    GLint uVP_ = -1, uView_ = -1, uWire_ = -1, uWireWidth_ = -1, uChecker_ = -1;
 };

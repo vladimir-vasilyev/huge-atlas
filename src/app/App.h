@@ -7,7 +7,9 @@
 #include "core/Partition.h"
 #include "core/Proxy.h"
 #include "param/AnglesToUV.h"
+#include "param/AtlasPacker.h"
 #include "param/LinABF.h"
+#include "param/ParamPipeline.h"
 #include "param/PatchExtractor.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
@@ -46,6 +48,9 @@ private:
     void solvePatches(bool onlySelected);
     void computeUV(bool onlySelected);
     void drawUvPanel();
+    void drawParamPanel();
+    void runParam(bool onlySelected);
+    void packAtlasNow();
     std::vector<Vec3> patchExplodeOffsets() const;   // per patch; empty if the view is not exploded
     void rebuildBoundaryLines();
     VSAInput vsaInput() const { return {mesh_, faceData_, faceMoments_}; }
@@ -76,7 +81,8 @@ private:
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
-    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error
+    int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error,
+                                       // 7 - stretch, 8 - UV checker, 9 - injectivity problems
     // Stage 3: VSA
     VSAState         vsa_;
     int              vsaK_ = 6;
@@ -117,6 +123,18 @@ private:
     std::vector<LinABFResult> linabf_;
     std::vector<char> linabfSolved_;
     double           linabfSeconds_ = 0.0;
+
+    // Stage 9: parameterization ladder, distortion, atlas
+    ParamOptions     paramOptions_;
+    std::vector<PatchParam> params_;      // parallel to patches_.patches
+    std::vector<char> paramDone_;
+    double           paramSeconds_ = 0.0;
+    AtlasOptions     atlasOptions_;
+    AtlasResult      atlas_;              // parallel to params_
+    bool             atlasValid_ = false;
+    bool             uvShowAtlas_ = false;
+    float            checkerCells_ = 32.0f;
+    std::string      paramStatus_;
 
     // Stage 8: UV per patch (parallel to patches_.patches)
     std::vector<UVResult> uv_;

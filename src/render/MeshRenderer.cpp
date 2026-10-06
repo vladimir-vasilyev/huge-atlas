@@ -8,13 +8,16 @@ const char* kVS = R"(#version 410 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aBary;
 layout(location = 2) in vec3 aColor;
+layout(location = 3) in vec2 aUV;
 uniform mat4 uVP;
 uniform mat4 uView;
 out vec3 vBary;
 out vec3 vColor;
 out vec3 vViewPos;
+out vec2 vUV;
 void main() {
     vBary = aBary;
+    vUV = aUV;
     vColor = aColor;
     vViewPos = (uView * vec4(aPos, 1.0)).xyz;
     gl_Position = uVP * vec4(aPos, 1.0);
@@ -25,6 +28,8 @@ const char* kFS = R"(#version 410 core
 in vec3 vBary;
 in vec3 vColor;
 in vec3 vViewPos;
+in vec2 vUV;
+uniform float uChecker;    // number of checker cells across the unit square; 0 = off
 uniform float uWire;       // 0 or 1
 uniform float uWireWidth;  // in pixels
 out vec4 fragColor;
@@ -33,6 +38,11 @@ void main() {
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     float diff = abs(n.z) * 0.75 + 0.25;       // headlight, two-sided
     vec3 col = vColor * diff;
+    if (uChecker > 0.5) {
+        vec2 c = floor(vUV * uChecker);
+        float k = mod(c.x + c.y, 2.0);
+        col = col * mix(0.45, 1.1, k);
+    }
     if (uWire > 0.5) {
         vec3 d = fwidth(vBary);
         vec3 a = smoothstep(vec3(0.0), d * uWireWidth, vBary);
@@ -104,6 +114,7 @@ bool MeshRenderer::init(std::string* errorLog)
     uView_      = shader_.uniform("uView");
     uWire_      = shader_.uniform("uWire");
     uWireWidth_ = shader_.uniform("uWireWidth");
+    uChecker_   = shader_.uniform("uChecker");
     if (!lineShader_.build(kLineVS, kLineFS, errorLog)) return false;
     uLineVP_       = lineShader_.uniform("uVP");
     uLineViewport_ = lineShader_.uniform("uViewport");
@@ -118,10 +129,10 @@ bool MeshRenderer::init(std::string* errorLog)
 }
 
 void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceColors,
-                          const std::vector<float>& faceOffsets)
+                          const std::vector<float>& faceOffsets, const std::vector<float>& faceUV)
 {
     std::vector<float> buf;
-    buf.reserve(mesh.n_faces() * 3 * 9);
+    buf.reserve(mesh.n_faces() * 3 * 11);
     static const float bary[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     for (auto f : mesh.faces()) {
         float c[3] = {0.72f, 0.74f, 0.78f};
@@ -133,28 +144,34 @@ void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceCol
         int i = 0;
         for (auto v : mesh.fv_range(f)) {
             const auto p = mesh.point(v);
+            float uv[2] = {0.f, 0.f};
+            if (faceUV.size() >= size_t(f.idx() + 1) * 6)
+                for (int k = 0; k < 2; ++k) uv[k] = faceUV[f.idx() * 6 + i * 2 + k];
             buf.insert(buf.end(), {float(p[0]) + o[0], float(p[1]) + o[1], float(p[2]) + o[2],
-                                   bary[i][0], bary[i][1], bary[i][2], c[0], c[1], c[2]});
+                                   bary[i][0], bary[i][1], bary[i][2], c[0], c[1], c[2], uv[0], uv[1]});
             ++i;
         }
     }
-    vertexCount_ = GLsizei(buf.size() / 9);
+    vertexCount_ = GLsizei(buf.size() / 11);
 
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(buf.size() * sizeof(float)), buf.data(), GL_STATIC_DRAW);
-    const GLsizei stride = 9 * sizeof(float);
+    const GLsizei stride = 11 * sizeof(float);
     for (int a = 0; a < 3; ++a) {
         glEnableVertexAttribArray(a);
         glVertexAttribPointer(a, 3, GL_FLOAT, GL_FALSE, stride,
                               reinterpret_cast<void*>(a * 3 * sizeof(float)));
     }
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(9 * sizeof(float)));
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     GL_CHECK();
 }
 
-void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe, float wireWidth) const
+void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe, float wireWidth,
+                        float checkerCells) const
 {
     if (!vertexCount_) return;
     shader_.use();
@@ -162,6 +179,7 @@ void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe
     glUniformMatrix4fv(uView_, 1, GL_FALSE, view);
     glUniform1f(uWire_, wireframe ? 1.0f : 0.0f);
     glUniform1f(uWireWidth_, wireWidth);
+    glUniform1f(uChecker_, checkerCells);
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, vertexCount_);
     glBindVertexArray(0);
