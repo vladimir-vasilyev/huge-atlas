@@ -53,6 +53,8 @@ void splitComponents(const TriMesh& m, std::vector<int>& label)
 CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, CoarseStats& st)
 {
     CoarseStage cs;
+    auto say = [&](const char* m) { if (opt.onStage) opt.onStage(m); };
+    say("simplifying the mesh...");
     auto t = Clock::now();
     const SimplifyResult simp = simplifyMesh(fineFlat, opt.simplify);
     st.simplifySeconds = since(t);
@@ -61,6 +63,7 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
     // the faces OpenMesh refused (complex edges) are dropped: index the flat mesh like the TriMesh from here on
     cs.flat = flatFromTriMesh(cs.mesh);
 
+    say("segmenting the simplified mesh (VSA)...");
     t = Clock::now();
     const FaceData cfd = computeFaceData(cs.mesh);
     const std::vector<Moments> cfm = computeFaceMoments(cs.mesh, cfd);
@@ -72,6 +75,7 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
     runLloyd(cin, vs, opt.lloyd);
     st.coarseVsaSeconds = since(t);
 
+    say("parameterizing the patches of the simplified mesh...");
     t = Clock::now();
     cs.result = refinePatches(cs.mesh, vs.label, opt.refine);
     st.coarseRefineSeconds = since(t);

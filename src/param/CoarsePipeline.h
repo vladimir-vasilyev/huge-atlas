@@ -1,6 +1,9 @@
 #pragma once
 
 #include "core/Partition.h"
+
+#include <functional>
+#include <string>
 #include "param/LiftParam.h"
 #include "param/MeshSimplify.h"
 #include "param/Refinement.h"
@@ -20,6 +23,7 @@ struct CoarseOptions {
     double       fineSmoothing = 0.1;    // border smoothing of the transferred labels on the fine mesh (0 = off)
     RefineOptions refine;                // coarse refinement, extraction and the fine fallback
     LiftOptions  lift;
+    std::function<void(const std::string&)> onStage;   // progress messages (called from the working thread)
 };
 
 struct CoarseStats {

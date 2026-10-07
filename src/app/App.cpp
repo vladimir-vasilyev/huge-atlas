@@ -13,7 +13,10 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <atomic>
 #include <chrono>
+#include <mutex>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -104,6 +107,26 @@ bool App::init(int width, int height, const char* title)
     return true;
 }
 
+struct App::HugeJob {
+    std::string path;
+    CoarseOptions options;
+    HorizonOptions horizon;
+    std::thread worker;
+    std::atomic<bool> done{false};
+    std::mutex mutex;
+    std::string stage = "starting...";   // guarded by mutex
+    std::string error;                   // guarded by mutex; set when the run failed
+    FlatMesh mesh;
+    FlatTransform transform;
+    FlatResult result;
+    AtlasResult atlas;
+    FlatLoadInfo loadInfo;
+    double loadSeconds = 0, pipelineSeconds = 0, packSeconds = 0;
+    bool saved = false;
+    ~HugeJob() { if (worker.joinable()) worker.join(); }
+    void say(const std::string& s) { std::lock_guard<std::mutex> lock(mutex); stage = s; }
+};
+
 void App::run()
 {
     // VSA_AUTO_ATLAS=1: press "Make atlas" by itself, print the outcome and quit (end-to-end check without clicks)
@@ -115,8 +138,29 @@ void App::run()
     const int benchFrames = benchEnv ? std::atoi(benchEnv) : 0;
     int benchDone = 0;
     std::chrono::steady_clock::time_point benchStart;
+    // VSA_AUTO_HUGE=file: "Make atlas (huge)" on that file by itself, save the PLY to VSA_AUTO_SAVE, print the outcome and quit
+    const char* autoHuge = std::getenv("VSA_AUTO_HUGE");
+    int hugeFrame = 0;
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+        if (autoHuge) {
+            if (hugeFrame == 2) {
+                if (const char* envK = std::getenv("VSA_K")) hugeK_ = std::max(1, std::atoi(envK));
+                if (const char* envF = std::getenv("VSA_HUGE_FACES")) hugeCoarseFaces_ = std::max(1000, std::atoi(envF));
+                startHuge(autoHuge);
+            }
+            if (hugeFrame > 3 && hugeJob_ && hugeJob_->done && hugeJob_->worker.joinable() == false && hugeJob_->saved == false) {
+                std::printf("AUTO HUGE: %s\n", hugeStatus_.c_str());
+                if (const char* save = std::getenv("VSA_AUTO_SAVE")) {
+                    std::string err;
+                    const bool ok = writeFlatPlyAtlas(save, hugeJob_->mesh, hugeJob_->result, &hugeJob_->transform, &err);
+                    std::printf("AUTO HUGE SAVE: %s %s\n", ok ? "ok" : "failed:", ok ? save : err.c_str());
+                }
+                hugeJob_->saved = true;
+                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            }
+            ++hugeFrame;
+        }
         if (benchFrames > 0) {
             if (benchDone == 5) benchStart = std::chrono::steady_clock::now();   // skip the first frames
             if (benchDone == 5 + benchFrames) {
@@ -1174,12 +1218,181 @@ void App::makeAtlasTick()
     makeAtlasStatus_ = buf;
 }
 
+// ---------------------------------------------------------------------------------------------- huge meshes
+
+void App::startHuge(const std::string& path)
+{
+    if (hugeJob_ && !hugeJob_->done) return;
+    if (atlasStage_ != AtlasStage::Idle || job_) { hugeStatus_ = "finish or cancel the running job first"; return; }
+    auto job = std::make_shared<HugeJob>();
+    job->path = path;
+    job->options.simplify.targetFaces = size_t(std::max(1000, hugeCoarseFaces_));
+    job->options.k = std::max(1, hugeK_);
+    job->options.lloyd.maxIterations = 30;
+    job->horizon = horizonOptions_;
+    HugeJob* raw = job.get();
+    job->options.onStage = [raw](const std::string& s) { raw->say(s); };
+    job->worker = std::thread([raw]() {
+        using Clock = std::chrono::steady_clock;
+        auto since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+        std::string err;
+        raw->say("reading the mesh...");
+        auto t = Clock::now();
+        if (!loadFlatMesh(raw->path, raw->mesh, &raw->loadInfo, &err)) {
+            std::lock_guard<std::mutex> lock(raw->mutex);
+            raw->error = err;
+            raw->done = true;
+            return;
+        }
+        raw->transform = normalizeFlatToUnitBox(raw->mesh);
+        raw->loadSeconds = since(t);
+        t = Clock::now();
+        raw->result = runFlatPipeline(raw->mesh, raw->options);
+        raw->pipelineSeconds = since(t);
+        raw->say("packing the atlas...");
+        t = Clock::now();
+        raw->atlas = packFlatAtlas(raw->result, raw->horizon);
+        raw->packSeconds = since(t);
+        if (!raw->atlas.ok) {
+            std::lock_guard<std::mutex> lock(raw->mutex);
+            raw->error = "packing failed: " + raw->atlas.message;
+        }
+        raw->done = true;
+    });
+    hugeJob_ = job;
+    hugeStatus_.clear();
+}
+
+void App::drawHugeUI()
+{
+    // modal window while the job runs: the rest of the interface stays untouched (the pipeline owns the thread pool)
+    if (hugeJob_ && !hugeJob_->done) {
+        ImGui::OpenPopup("Huge mesh##progress");
+        const ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(c, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_Always);
+        if (ImGui::BeginPopupModal("Huge mesh##progress", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+            std::string stage;
+            { std::lock_guard<std::mutex> lock(hugeJob_->mutex); stage = hugeJob_->stage; }
+            ImGui::TextWrapped("%s", hugeJob_->path.c_str());
+            ImGui::Separator();
+            ImGui::TextUnformatted(stage.c_str());
+            const float t = float(ImGui::GetTime());
+            ImGui::ProgressBar(-t, ImVec2(-1, 0), "");
+            ImGui::TextDisabled("This cannot be cancelled. Large scans take minutes.");
+            ImGui::EndPopup();
+        }
+    } else if (hugeJob_ && hugeJob_->done && !hugeJob_->saved && hugeJob_->worker.joinable()) {
+        hugeJob_->worker.join();
+        std::string err;
+        { std::lock_guard<std::mutex> lock(hugeJob_->mutex); err = hugeJob_->error; }
+        if (!err.empty()) {
+            hugeStatus_ = "huge mesh failed: " + err;
+            status_ = hugeStatus_;
+        } else {
+            const FlatStats& s = hugeJob_->result.stats;
+            char buf[400];
+            std::snprintf(buf, sizeof(buf),
+                          "huge mesh: %zu faces -> %zu patches, %zu faces without UV, atlas %d x %d, efficiency %.1f%% "
+                          "(read %.0f s, pipeline %.0f s, pack %.0f s)",
+                          hugeJob_->mesh.faceCount(), hugeJob_->result.patches.size(), s.facesWithoutUV, hugeJob_->atlas.resolution,
+                          hugeJob_->atlas.resolution, 100.0 * hugeJob_->atlas.efficiency, hugeJob_->loadSeconds,
+                          hugeJob_->pipelineSeconds, hugeJob_->packSeconds);
+            hugeStatus_ = buf;
+            status_ = hugeStatus_;
+            std::printf("%s\n", buf);
+        }
+    }
+
+    // file dialogs
+    static const char* kHugeOpen = "HugeOpenKey";
+    static const char* kHugeSave = "HugeSaveKey";
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    if (hugeOpenRequested_) {
+        hugeOpenRequested_ = false;
+        IGFD::FileDialogConfig cfg;
+        cfg.path = lastDir_;
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal;
+        ImGuiFileDialog::Instance()->OpenDialog(kHugeOpen, "Open a huge mesh (read straight into flat arrays)", "Meshes{.ply,.obj}", cfg);
+    }
+    if (ImGuiFileDialog::Instance()->Display(kHugeOpen, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
+            startHuge(ImGuiFileDialog::Instance()->GetFilePathName());
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    if (hugeSaveRequested_) {
+        hugeSaveRequested_ = false;
+        IGFD::FileDialogConfig cfg;
+        cfg.path = lastDir_;
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
+        ImGuiFileDialog::Instance()->OpenDialog(kHugeSave, "Save the huge mesh with atlas UV (PLY)", ".ply", cfg);
+    }
+    if (ImGuiFileDialog::Instance()->Display(kHugeSave, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
+        if (ImGuiFileDialog::Instance()->IsOk() && hugeJob_ && hugeJob_->done) {
+            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
+            std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
+            if (path.size() < 4 || path.substr(path.size() - 4) != ".ply") path += ".ply";
+            std::string err;
+            const auto t0 = std::chrono::steady_clock::now();
+            if (writeFlatPlyAtlas(path, hugeJob_->mesh, hugeJob_->result, &hugeJob_->transform, &err)) {
+                char buf[300];
+                std::snprintf(buf, sizeof(buf), "saved %s in %.0f s", path.c_str(),
+                              std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+                hugeStatus_ = buf;
+            } else {
+                hugeStatus_ = "save failed: " + err;
+            }
+            status_ = hugeStatus_;
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+}
+
+void App::drawHugeButtons()
+{
+    const bool busy = hugeJob_ && !hugeJob_->done;
+    ImGui::BeginDisabled(busy);
+    ImGui::InputInt("Simplified mesh, faces", &hugeCoarseFaces_, 50000, 200000);
+    hugeCoarseFaces_ = std::max(10000, hugeCoarseFaces_);
+    ImGui::InputInt("Patches to start from", &hugeK_, 100, 500);
+    hugeK_ = std::max(1, hugeK_);
+    if (ImGui::Button("Make atlas (huge)...", ImVec2(-1, 34))) hugeOpenRequested_ = true;
+    ImGui::EndDisabled();
+    // the explanation appears once per run of the program: the first time the mouse rests on the button
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !hugeTipShown_) {
+        ImGui::SetTooltip("%s",
+            "Huge mode for dense scans (tens of millions of faces).\n"
+            "The file (PLY or OBJ) is read straight into compact arrays, not into the half-edge mesh,\n"
+            "simplified, segmented and unwrapped on the simplified mesh, and the result is lifted back\n"
+            "onto the full mesh; the patches that do not lift are repaired. Then the atlas is packed.\n"
+            "Memory stays around 100 bytes per face. The result is not shown in the 3D view; save it\n"
+            "as a PLY with the atlas UV (no texture baking in this mode). It cannot be cancelled.");
+        hugeTipHovered_ = true;
+    } else if (hugeTipHovered_) {
+        hugeTipShown_ = true;
+    }
+    if (hugeJob_ && hugeJob_->done && hugeJob_->error.empty()) {
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("Save the huge result (PLY)...")) hugeSaveRequested_ = true;
+        ImGui::EndDisabled();
+    }
+    if (!hugeStatus_.empty()) ImGui::TextWrapped("%s", hugeStatus_.c_str());
+}
+
 void App::drawMakeAtlasPanel()
 {
     ImGui::SetNextWindowPos(ImVec2(12, 36), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(440, 520), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Make atlas")) { ImGui::End(); return; }
+    const bool hugeBusy = hugeJob_ && !hugeJob_->done;
     if (!meshRenderer_.hasMesh()) {
-        ImGui::TextUnformatted("Open a mesh first (File > Open)");
+        ImGui::TextUnformatted("Open a mesh first (File > Open), or use the huge mode below");
+        ImGui::Separator();
+        drawHugeButtons();
         ImGui::End();
         return;
     }
@@ -1218,6 +1431,9 @@ void App::drawMakeAtlasPanel()
         ImGui::ProgressBar(stage, ImVec2(-1, 0), "");
     }
     if (!makeAtlasStatus_.empty()) ImGui::TextWrapped("%s", makeAtlasStatus_.c_str());
+    ImGui::Separator();
+    drawHugeButtons();
+    ImGui::Separator();
 
     if (atlasValid_ && !running) {
         ImGui::SeparatorText("Retexture and compare");
@@ -2046,6 +2262,7 @@ void App::drawUI()
     drawRefinePanel();
     drawUvPanel();
     drawExportDialogs();
+    drawHugeUI();
 
     handleSceneInput();
 

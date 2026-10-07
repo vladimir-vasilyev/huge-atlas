@@ -15,6 +15,7 @@
 #include "param/LinABF.h"
 #include "param/ParamPipeline.h"
 #include "param/PatchExtractor.h"
+#include "param/FlatPipeline.h"
 #include "param/Refinement.h"
 #include "render/Camera.h"
 #include "render/DebugTriangle.h"
@@ -68,6 +69,11 @@ private:
     void requestSave();                    // File > Save: to the last path, or Save As if there is none
     bool performSave(const std::string& path);              // OBJ / mask PNG dialogs, drawn every frame
     void drawMakeAtlasPanel();
+    // Huge meshes: the file is read straight into flat arrays and processed on a background thread (flat pipeline)
+    struct HugeJob;
+    void startHuge(const std::string& path);
+    void drawHugeButtons();
+    void drawHugeUI();                     // modal progress window, result summary, file dialogs
     void startMakeAtlas();
     void makeAtlasTick();                  // one step of the one-button pipeline (once per frame)
     void cancelMakeAtlas(const char* why);
@@ -194,6 +200,15 @@ private:
     int              makeAtlasIter_ = 0;
     std::string      makeAtlasStatus_;
     bool             exportObjRequested_ = false, exportMaskRequested_ = false;
+
+    // "Make atlas (huge)"
+    std::shared_ptr<HugeJob> hugeJob_;
+    bool             hugeTipShown_ = false;       // the explanation is shown once per run of the program
+    bool             hugeTipHovered_ = false;
+    bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
+    int              hugeCoarseFaces_ = 300000;   // size of the simplified mesh
+    int              hugeK_ = 1000;               // patches to start from on the simplified mesh
+    std::string      hugeStatus_;
 
     // Stage 10: refinement loop
     RefineOptions    refineOptions_;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "param/CoarsePipeline.h"
+#include "param/FlatLoader.h"
 #include "param/HorizonPacker.h"
 
 // The coarse-to-fine pipeline for scans that do not fit into a TriMesh (50-100M faces): the fine mesh stays a
@@ -50,3 +51,9 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& options = 
 // Horizon pack of the patches; the packed UV replace result.cornerUV (in [0, 1]^2). Returns the packer's result
 // (its per-input uv are those of the border vertices).
 AtlasResult packFlatAtlas(FlatResult& result, const HorizonOptions& options = {});
+
+// Binary little endian PLY with the packed atlas UV (properties x y z s t, faces as triangles). Vertices are welded by
+// (position, uv): a seam duplicates a vertex, nothing else does. `original` (optional) restores the coordinates the
+// mesh had before normalizeFlatToUnitBox. Faces without UV get (0, 0).
+bool writeFlatPlyAtlas(const std::string& path, const FlatMesh& fine, const FlatResult& result,
+                       const FlatTransform* original = nullptr, std::string* error = nullptr);

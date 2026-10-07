@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 namespace {
@@ -328,8 +329,10 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
     const size_t nF = fine.faceCount();
     ThreadPool& pool = ThreadPool::shared();
 
+    auto say = [&](const char* m) { if (opt.onStage) opt.onStage(m); };
     CoarseStage stage = runCoarseStage(fine, opt, st.coarse);
     const RefineResult& coarse = stage.result;
+    say("transferring the segmentation to the full mesh...");
 
     // ---- fine labels
     auto t = Clock::now();
@@ -376,6 +379,7 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
     }
 
     // ---- lift every piece
+    say("lifting the charts onto the full mesh...");
     t = Clock::now();
     res.cornerUV.assign(nF * 6, std::nanf(""));
     std::vector<std::vector<FlatPatch>> out(pieces.count);
@@ -424,6 +428,7 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
 
     // ---- the pieces the lift could not handle: the ordinary pipeline on their own sub-mesh. Several at a time, each
     // with a pool of its own (a worker of the shared pool must not use it again).
+    say("repairing the patches that did not lift...");
     t = Clock::now();
     std::vector<int> redo;
     for (int j : order) {
@@ -582,4 +587,73 @@ AtlasResult packFlatAtlas(FlatResult& r, const HorizonOptions& options)
         }
     });
     return res;
+}
+
+bool writeFlatPlyAtlas(const std::string& path, const FlatMesh& fine, const FlatResult& r, const FlatTransform* original,
+                       std::string* error)
+{
+    auto fail = [&](const std::string& m) { if (error) *error = m; return false; };
+    const size_t nV = fine.vertexCount(), nF = fine.faceCount();
+    if (r.cornerUV.size() != nF * 6) return fail("the result does not match the mesh");
+
+    // corners grouped by vertex
+    std::vector<uint32_t> start(nV + 1, 0);
+    for (uint32_t v : fine.idx) ++start[v + 1];
+    for (size_t v = 0; v < nV; ++v) start[v + 1] += start[v];
+    std::vector<uint32_t> corners(fine.idx.size());
+    {
+        std::vector<uint32_t> fill(start.begin(), start.end() - 1);
+        for (size_t c = 0; c < fine.idx.size(); ++c) corners[fill[fine.idx[c]]++] = uint32_t(c);
+    }
+    struct Record { float x, y, z, s, t; };
+    std::vector<Record> records;
+    records.reserve(nV + nV / 8);
+    std::vector<uint32_t> newIndex(fine.idx.size());
+    auto uvOf = [&](uint32_t corner, float& s, float& t) {
+        const size_t f = corner / 3, k = corner % 3;
+        s = r.cornerUV[6 * f + 2 * k];
+        t = r.cornerUV[6 * f + 2 * k + 1];
+        if (!(s == s) || !(t == t)) { s = 0.f; t = 0.f; }   // no UV
+    };
+    for (size_t v = 0; v < nV; ++v) {
+        float x = fine.pos[3 * v], y = fine.pos[3 * v + 1], z = fine.pos[3 * v + 2];
+        if (original) {
+            x = float(double(x) / original->scale + original->centre[0]);
+            y = float(double(y) / original->scale + original->centre[1]);
+            z = float(double(z) / original->scale + original->centre[2]);
+        }
+        const size_t firstOfVertex = records.size();
+        for (uint32_t i = start[v]; i < start[v + 1]; ++i) {
+            float s, t;
+            uvOf(corners[i], s, t);
+            size_t at = firstOfVertex;
+            while (at < records.size() && !(records[at].s == s && records[at].t == t)) ++at;
+            if (at == records.size()) records.push_back({x, y, z, s, t});
+            newIndex[corners[i]] = uint32_t(at);
+        }
+        if (start[v] == start[v + 1]) records.push_back({x, y, z, 0.f, 0.f});   // an unused vertex keeps its slot
+    }
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return fail("cannot write " + path);
+    std::fprintf(f, "ply\nformat binary_little_endian 1.0\ncomment atlas UV in s t\nelement vertex %zu\n"
+                    "property float x\nproperty float y\nproperty float z\nproperty float s\nproperty float t\n"
+                    "element face %zu\nproperty list uchar int vertex_indices\nend_header\n", records.size(), nF);
+    bool ok = std::fwrite(records.data(), sizeof(Record), records.size(), f) == records.size();
+    std::vector<unsigned char> buf;
+    const size_t chunk = 1 << 16;
+    for (size_t b = 0; b < nF && ok; b += chunk) {
+        const size_t e = std::min(nF, b + chunk);
+        buf.resize((e - b) * 13);
+        for (size_t i = b; i < e; ++i) {
+            unsigned char* p = &buf[(i - b) * 13];
+            p[0] = 3;
+            for (int k = 0; k < 3; ++k) {
+                const int32_t id = int32_t(newIndex[3 * i + k]);
+                std::memcpy(p + 1 + 4 * k, &id, 4);
+            }
+        }
+        ok = std::fwrite(buf.data(), 1, buf.size(), f) == buf.size();
+    }
+    ok = (std::fclose(f) == 0) && ok;
+    return ok ? true : fail("write error");
 }

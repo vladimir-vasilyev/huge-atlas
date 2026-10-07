@@ -61,6 +61,24 @@ int main(int argc, char** argv)
     CHECK(after.overlap < 1e-4);
     CHECK(std::abs(after.l2Mean - before.l2Mean) < 1e-3);   // the packer only rescales
 
+    // the PLY with the atlas UV: welded vertices, same triangles, UV in [0, 1]
+    {
+        const std::string path = "/tmp/vsa_flat_atlas_test.ply";
+        std::string err;
+        CHECK(writeFlatPlyAtlas(path, fine, r, nullptr, &err));
+        FlatMesh back;
+        CHECK(loadFlatMesh(path, back, nullptr, &err));
+        CHECK(back.faceCount() == fine.faceCount());
+        CHECK(back.vertexCount() >= fine.vertexCount() && back.vertexCount() <= 3 * fine.faceCount());
+        size_t wrong = 0;
+        for (size_t fc = 0; fc < fine.faceCount(); ++fc)
+            for (int k = 0; k < 3; ++k)
+                for (int c = 0; c < 3; ++c)
+                    wrong += back.pos[3 * size_t(back.idx[3 * fc + k]) + c] != fine.pos[3 * size_t(fine.idx[3 * fc + k]) + c];
+        CHECK(wrong == 0);
+        std::printf("atlas PLY: %zu vertices for %zu original (seams duplicate), triangles preserved\n", back.vertexCount(), fine.vertexCount());
+    }
+
     if (failures) { std::printf("%d failures\n", failures); return 1; }
     std::printf("flat pipeline: OK\n");
     return 0;
