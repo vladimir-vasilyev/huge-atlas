@@ -51,6 +51,29 @@ int main()
     CHECK(!ids.empty());
     for (int f : ids) CHECK(f >= 0 && f < 12);
 
+    // the same cube from flat arrays: the same faces are found, with and without uv, with colors
+    {
+        const FlatMesh flat = flatFromTriMesh(m);
+        std::vector<float> uv(flat.faceCount() * 6);
+        for (size_t f = 0; f < flat.faceCount(); ++f)
+            for (int k = 0; k < 3; ++k) { uv[6 * f + 2 * k] = 0.1f * float(k); uv[6 * f + 2 * k + 1] = 0.05f * float(f % 4); }
+        uv[0] = std::nanf("");   // a corner without uv must not break the welding
+        std::vector<unsigned char> rgba(flat.faceCount() * 4, 200);
+        for (int withUV = 0; withUV < 2; ++withUV) {
+            mr.uploadFlat(flat, withUV ? uv : std::vector<float>(), rgba);
+            CHECK(mr.hasMesh() && mr.faceCount() == flat.faceCount());
+            CHECK(withUV ? mr.vertexCount() >= flat.vertexCount() : mr.vertexCount() == flat.vertexCount());
+            ids.clear();
+            mr.pickFaces(vp, fbW, fbH, fbW / 2, fbH / 2, 4, ids);
+            CHECK(ids.size() == 2 && ids[0] == 2 && ids[1] == 3);
+            mr.setFaceColorsRgba({});   // gray again
+        }
+        mr.upload(m);   // and back to the TriMesh path
+        ids.clear();
+        mr.pickFaces(vp, fbW, fbH, fbW / 2, fbH / 2, 0, ids);
+        CHECK(ids.size() == 1 && (ids[0] == 2 || ids[0] == 3));
+    }
+
     // thick line layer: a red horizontal segment through the window center, 6 px wide
     {
         const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

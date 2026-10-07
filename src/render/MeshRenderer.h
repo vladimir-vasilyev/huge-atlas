@@ -2,6 +2,7 @@
 
 #include "core/MeshTypes.h"
 #include "render/GL.h"
+#include "param/MeshSimplify.h"
 #include "render/Shader.h"
 
 #include <cstdint>
@@ -25,6 +26,14 @@ public:
     // The geometry is rebuilt only when the mesh was invalidated or the uv / offsets changed.
     void upload(const TriMesh& mesh, const std::vector<float>& faceColors = {},
                 const std::vector<float>& faceOffsets = {}, const std::vector<float>& faceUV = {});
+
+    // Geometry straight from flat arrays, without a TriMesh (meshes of tens of millions of faces).
+    // cornerUV: 6 floats per face (corner k = vertex idx[3 f + k]), NaN = none; may be empty. Corners with the same (vertex, uv)
+    // share a GPU vertex. faceRgba: 4 bytes per face; empty = gray. The GPU buffers hold 20 bytes per vertex and 12 per face.
+    void uploadFlat(const FlatMesh& mesh, const std::vector<float>& cornerUV = {},
+                    const std::vector<unsigned char>& faceRgba = {});
+    // New face colors for the current geometry (4 bytes per face); empty = gray.
+    void setFaceColorsRgba(const std::vector<unsigned char>& faceRgba);
 
     // The next upload() rebuilds the geometry (call after the mesh was replaced or edited).
     void invalidateGeometry() { ++geometryVersion_; }
@@ -60,6 +69,8 @@ private:
     void ensurePickTarget(int w, int h);
     void buildGeometry(const TriMesh& mesh, const std::vector<float>& offsets, const std::vector<float>& uv);
     void uploadColors(size_t faces, const std::vector<float>& colors);
+    void uploadColorBytes(size_t faces, const std::vector<unsigned char>& rgba);
+    void createGeometry(const std::vector<float>& verts, const uint32_t* indices, size_t indexCount);
 
     ShaderProgram shader_, wireShader_, pickShader_, lineShader_;
     GLuint lineVao_ = 0, lineVbo_ = 0;

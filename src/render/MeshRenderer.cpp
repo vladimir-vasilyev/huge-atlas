@@ -231,8 +231,13 @@ void MeshRenderer::buildGeometry(const TriMesh& mesh, const std::vector<float>& 
             }
         }
     }
+    createGeometry(verts, indices.data(), indices.size());
+}
+
+void MeshRenderer::createGeometry(const std::vector<float>& verts, const uint32_t* indices, size_t indexCount)
+{
     vertexCount_ = verts.size() / 5;
-    indexCount_ = GLsizei(indices.size());
+    indexCount_ = GLsizei(indexCount);
 
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -242,7 +247,7 @@ void MeshRenderer::buildGeometry(const TriMesh& mesh, const std::vector<float>& 
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);   // stays bound to the VAO
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(indices.size() * sizeof(uint32_t)), indices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(indexCount * sizeof(uint32_t)), indices, GL_STATIC_DRAW);
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     GL_CHECK();
@@ -265,6 +270,67 @@ void MeshRenderer::uploadColors(size_t faces, const std::vector<float>& colors)
     glBindTexture(GL_TEXTURE_BUFFER, 0);
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
     GL_CHECK();
+}
+
+void MeshRenderer::uploadColorBytes(size_t faces, const std::vector<unsigned char>& rgba)
+{
+    useFaceColors_ = rgba.size() >= faces * 4 && faces > 0;
+    if (!useFaceColors_) return;
+    glBindBuffer(GL_TEXTURE_BUFFER, colorBuffer_);
+    glBufferData(GL_TEXTURE_BUFFER, GLsizeiptr(faces * 4), rgba.data(), GL_DYNAMIC_DRAW);
+    glBindTexture(GL_TEXTURE_BUFFER, colorTexture_);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, colorBuffer_);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
+    GL_CHECK();
+}
+
+void MeshRenderer::setFaceColorsRgba(const std::vector<unsigned char>& faceRgba) { uploadColorBytes(faceCount_, faceRgba); }
+
+void MeshRenderer::uploadFlat(const FlatMesh& mesh, const std::vector<float>& cornerUV, const std::vector<unsigned char>& faceRgba)
+{
+    const size_t nV = mesh.vertexCount(), nF = mesh.faceCount();
+    const bool haveUV = cornerUV.size() == nF * 6;
+    std::vector<float> verts;
+    std::vector<uint32_t> welded;   // only with uv: the indices of the welded vertices
+    if (!haveUV) {
+        verts.assign(nV * 5, 0.0f);
+        for (size_t v = 0; v < nV; ++v) {
+            verts[5 * v] = mesh.pos[3 * v];
+            verts[5 * v + 1] = mesh.pos[3 * v + 1];
+            verts[5 * v + 2] = mesh.pos[3 * v + 2];
+        }
+    } else {
+        // corners grouped by vertex; one GPU vertex per distinct uv of a vertex
+        std::vector<uint32_t> start(nV + 1, 0);
+        for (uint32_t v : mesh.idx) ++start[v + 1];
+        for (size_t v = 0; v < nV; ++v) start[v + 1] += start[v];
+        std::vector<uint32_t> corners(mesh.idx.size());
+        {
+            std::vector<uint32_t> fill(start.begin(), start.end() - 1);
+            for (size_t c = 0; c < mesh.idx.size(); ++c) corners[fill[mesh.idx[c]]++] = uint32_t(c);
+        }
+        welded.assign(mesh.idx.size(), 0);
+        verts.reserve((nV + nV / 8) * 5);
+        for (size_t v = 0; v < nV; ++v) {
+            const size_t first = verts.size() / 5;
+            for (uint32_t i = start[v]; i < start[v + 1]; ++i) {
+                const uint32_t c = corners[i];
+                float u = cornerUV[2 * size_t(c)], w = cornerUV[2 * size_t(c) + 1];
+                if (!(u == u) || !(w == w)) { u = 0.f; w = 0.f; }
+                size_t at = first;
+                while (at < verts.size() / 5 && !(verts[5 * at + 3] == u && verts[5 * at + 4] == w)) ++at;
+                if (at == verts.size() / 5) verts.insert(verts.end(), {mesh.pos[3 * v], mesh.pos[3 * v + 1], mesh.pos[3 * v + 2], u, w});
+                welded[c] = uint32_t(at);
+            }
+            if (start[v] == start[v + 1]) verts.insert(verts.end(), {mesh.pos[3 * v], mesh.pos[3 * v + 1], mesh.pos[3 * v + 2], 0.f, 0.f});
+        }
+    }
+    createGeometry(verts, haveUV ? welded.data() : mesh.idx.data(), mesh.idx.size());
+    faceCount_ = nF;
+    builtVersion_ = ~0u;   // the next upload(TriMesh) rebuilds
+    builtFaces_ = 0;
+    uploadColorBytes(nF, faceRgba);
 }
 
 void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceColors,

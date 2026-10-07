@@ -73,6 +73,8 @@ private:
     struct HugeJob;
     void startHuge(const std::string& path);
     void drawHugeButtons();
+    void showHugeResult();                 // the result of the huge mode in the 3D view (flat arrays -> GPU)
+    void setHugeColors();
     void drawHugeUI();                     // modal progress window, result summary, file dialogs
     void startMakeAtlas();
     void makeAtlasTick();                  // one step of the one-button pipeline (once per frame)
@@ -206,6 +208,8 @@ private:
     bool             hugeTipShown_ = false;       // the explanation is shown once per run of the program
     bool             hugeTipHovered_ = false;
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
+    bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_
+    int              hugeView_ = 0;               // 0 patches, 1 uv checker, 2 plain
     int              hugeCoarseFaces_ = 300000;   // size of the simplified mesh
     int              hugeK_ = 1000;               // patches to start from on the simplified mesh
     std::string      hugeStatus_;

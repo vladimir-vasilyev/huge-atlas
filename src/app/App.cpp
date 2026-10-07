@@ -150,6 +150,7 @@ void App::run()
                 startHuge(autoHuge);
             }
             if (hugeFrame > 3 && hugeJob_ && hugeJob_->done && hugeJob_->worker.joinable() == false && hugeJob_->saved == false) {
+                if (const char* view = std::getenv("VSA_HUGE_VIEW")) { hugeView_ = std::atoi(view); setHugeColors(); }
                 std::printf("AUTO HUGE: %s\n", hugeStatus_.c_str());
                 if (const char* save = std::getenv("VSA_AUTO_SAVE")) {
                     std::string err;
@@ -157,7 +158,7 @@ void App::run()
                     std::printf("AUTO HUGE SAVE: %s %s\n", ok ? "ok" : "failed:", ok ? save : err.c_str());
                 }
                 hugeJob_->saved = true;
-                glfwSetWindowShouldClose(window_, GLFW_TRUE);
+                if (!std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
             }
             ++hugeFrame;
         }
@@ -222,7 +223,8 @@ void App::run()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         if (const char* shot = std::getenv("VSA_SCREENSHOT")) {   // testing hook: write the 8th frame to a PNG and quit
             static int frame = 0;
-            if ((!autoAtlas || autoDone) && ++frame == 8) {
+            const bool hugeReady = !autoHuge || (hugeJob_ && hugeJob_->done && hugeShown_);
+            if ((!autoAtlas || autoDone) && hugeReady && ++frame == 8) {
                 std::vector<unsigned char> px(size_t(fbW) * fbH * 4), flipped(px.size());
                 glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
                 for (int y = 0; y < fbH; ++y)
@@ -239,6 +241,7 @@ void App::run()
 
 void App::openMesh(const std::string& path)
 {
+    hugeShown_ = false;
     const auto t0 = std::chrono::steady_clock::now();
     TriMesh m;
     std::string err;
@@ -370,6 +373,7 @@ void weightColor(float w, float out[3])
 
 void App::uploadMesh()
 {
+    if (hugeShown_) return;   // the 3D view belongs to the huge result until another mesh is opened
     std::vector<float> colors;
     const size_t nF = mesh_.n_faces();
     if (colorMode_ == 1) {
@@ -1301,6 +1305,7 @@ void App::drawHugeUI()
             hugeStatus_ = buf;
             status_ = hugeStatus_;
             std::printf("%s\n", buf);
+            showHugeResult();
         }
     }
 
@@ -1352,6 +1357,51 @@ void App::drawHugeUI()
     }
 }
 
+void App::setHugeColors()
+{
+    if (!hugeJob_ || !hugeJob_->done) return;
+    const FlatResult& r = hugeJob_->result;
+    std::vector<unsigned char> rgba;
+    if (hugeView_ == 0) {
+        rgba.assign(r.patchOfFace.size() * 4, 255);
+        // a color per patch from the golden ratio hue walk
+        std::vector<unsigned char> palette(r.patches.size() * 3);
+        for (size_t p = 0; p < r.patches.size(); ++p) {
+            const float h = std::fmod(float(p) * 0.61803398875f, 1.0f), s = 0.55f, v = 0.9f;
+            const float c = v * s, x = c * (1.0f - std::abs(std::fmod(h * 6.0f, 2.0f) - 1.0f)), m = v - c;
+            float rgb[3] = {0, 0, 0};
+            switch (int(h * 6.0f) % 6) {
+                case 0: rgb[0] = c; rgb[1] = x; break;
+                case 1: rgb[0] = x; rgb[1] = c; break;
+                case 2: rgb[1] = c; rgb[2] = x; break;
+                case 3: rgb[1] = x; rgb[2] = c; break;
+                case 4: rgb[0] = x; rgb[2] = c; break;
+                default: rgb[0] = c; rgb[2] = x; break;
+            }
+            for (int k = 0; k < 3; ++k) palette[3 * p + k] = (unsigned char)(255.0f * (rgb[k] + m));
+        }
+        for (size_t f = 0; f < r.patchOfFace.size(); ++f) {
+            const int p = r.patchOfFace[f];
+            if (p < 0) { rgba[4 * f] = 255; rgba[4 * f + 1] = 40; rgba[4 * f + 2] = 40; continue; }   // no patch: red
+            for (int k = 0; k < 3; ++k) rgba[4 * f + k] = palette[3 * size_t(p) + k];
+        }
+    }
+    meshRenderer_.setFaceColorsRgba(rgba);   // empty = gray
+}
+
+void App::showHugeResult()
+{
+    if (!hugeJob_ || !hugeJob_->done) return;
+    meshRenderer_.uploadFlat(hugeJob_->mesh, hugeJob_->result.cornerUV);
+    meshRenderer_.uploadLines({});
+    hugeShown_ = true;
+    cullBackFaces_ = true;
+    wireframe_ = false;
+    msaaSamples_ = 0;
+    camera_.reset();
+    setHugeColors();
+}
+
 void App::drawHugeButtons()
 {
     const bool busy = hugeJob_ && !hugeJob_->done;
@@ -1376,6 +1426,19 @@ void App::drawHugeButtons()
         hugeTipShown_ = true;
     }
     if (hugeJob_ && hugeJob_->done && hugeJob_->error.empty()) {
+        if (hugeShown_) {
+            ImGui::TextUnformatted("3D view:");
+            ImGui::SameLine();
+            int v = hugeView_;
+            bool changed = ImGui::RadioButton("patches", &v, 0);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("atlas checker", &v, 1);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("plain", &v, 2);
+            if (changed) { hugeView_ = v; setHugeColors(); }
+        } else if (ImGui::Button("Show the huge result in 3D")) {
+            showHugeResult();
+        }
         ImGui::BeginDisabled(busy);
         if (ImGui::Button("Save the huge result (PLY)...")) hugeSaveRequested_ = true;
         ImGui::EndDisabled();
@@ -2303,8 +2366,8 @@ void App::renderScene(int fbWidth, int fbHeight)
             }
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
-        meshRenderer_.draw(vp, v, wireframe_, colorMode_ == 8 ? checkerCells_ : 0.0f, colorMode_ == 10 || colorMode_ == 11,
-                         cullBackFaces_);
+        meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? checkerCells_ : 0.0f) : (colorMode_ == 8 ? checkerCells_ : 0.0f),
+                           !hugeShown_ && (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;
 
