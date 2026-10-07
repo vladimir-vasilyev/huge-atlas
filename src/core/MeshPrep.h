@@ -24,3 +24,9 @@ void normalizeToUnitBox(TriMesh& mesh);
 FaceData computeFaceData(const TriMesh& mesh, double degenerateAreaEps = 1e-14);
 
 MeshDiagnostics diagnose(const TriMesh& mesh, const FaceData& fd);
+
+// Closes the small boundary loops of a mesh (holes of at most `maxEdges` edges): a triangle for a loop of three edges, a fan
+// around a new vertex at the centre of the loop for a longer one. The simplified meshes of the huge pipeline have such holes
+// where the half-edge mesh refused a face; a hole makes a patch a ring that has to be cut open, and a cut patch rarely
+// unfolds without overlapping. Returns the number of loops closed (loops that cannot be closed are left as they are).
+int fillSmallHoles(TriMesh& mesh, size_t maxEdges);

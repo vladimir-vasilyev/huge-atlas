@@ -17,7 +17,7 @@ double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::
 // Simplifies `indices` (global vertex ids) to about `targetFaces`; `lock` is indexed by global vertex id
 // or null. Works on a compact copy of the touched vertices, so the cost follows the subset, not the mesh.
 std::vector<uint32_t> simplifySubset(const FlatMesh& in, const uint32_t* indices, size_t indexCount, size_t targetFaces,
-                                     bool lockBorder, const uint8_t* lock, float* error)
+                                     bool lockBorder, bool regularize, bool prune, const uint8_t* lock, float* error)
 {
     std::vector<uint32_t> used(indices, indices + indexCount);
     std::sort(used.begin(), used.end());
@@ -39,7 +39,7 @@ std::vector<uint32_t> simplifySubset(const FlatMesh& in, const uint32_t* indices
     const size_t n = meshopt_simplifyWithAttributes(
         out.data(), local.data(), indexCount, pos.data(), used.size(), 3 * sizeof(float), nullptr, 0, nullptr, 0,
         lock ? localLock.data() : nullptr, targetFaces * 3, 1.0f,
-        lockBorder ? meshopt_SimplifyLockBorder : 0u, &err);
+        (lockBorder ? meshopt_SimplifyLockBorder : 0u) | (regularize ? meshopt_SimplifyRegularize : 0u) | (prune ? meshopt_SimplifyPrune : 0u), &err);
     out.resize(n);
     for (uint32_t& v : out) v = used[v];
     if (error) *error = err;
@@ -135,7 +135,7 @@ SimplifyResult simplifyMesh(const FlatMesh& in, const SimplifyOptions& opt)
             const size_t c = work[w];
             const size_t faces = start[c + 1] - start[c];
             const size_t target = std::max<size_t>(1, size_t(double(faces) * double(intermediate) / double(nF)));
-            parts[w] = simplifySubset(in, &sortedIdx[3 * start[c]], 3 * faces, target, opt.lockBorder, frozen.data(), nullptr);
+            parts[w] = simplifySubset(in, &sortedIdx[3 * start[c]], 3 * faces, target, opt.lockBorder, false, false, frozen.data(), nullptr);
         });
         for (auto& p : parts) cur.insert(cur.end(), p.begin(), p.end());
     } else {
@@ -144,7 +144,7 @@ SimplifyResult simplifyMesh(const FlatMesh& in, const SimplifyOptions& opt)
     r.blockSeconds = since(t0);
 
     t0 = Clock::now();
-    cur = simplifySubset(in, cur.data(), cur.size(), opt.targetFaces, opt.lockBorder, lock, &r.error);
+    cur = simplifySubset(in, cur.data(), cur.size(), opt.targetFaces, opt.lockBorder, opt.regularize, opt.prune, lock, &r.error);
     r.finalSeconds = since(t0);
 
     // compact: only the vertices still in use

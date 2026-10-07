@@ -56,10 +56,15 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
     auto say = [&](const char* m) { if (opt.onStage) opt.onStage(m); };
     say("simplifying the mesh...");
     auto t = Clock::now();
-    const SimplifyResult simp = simplifyMesh(fineFlat, opt.simplify);
+    SimplifyOptions so = opt.simplify;
+    so.prune = so.prune || opt.pruneSmallParts;
+    const SimplifyResult simp = simplifyMesh(fineFlat, so);
     st.simplifySeconds = since(t);
     st.coarseFaces = simp.mesh.faceCount();
     cs.mesh = triMeshFromFlat(simp.mesh);
+    // where the half-edge mesh refused a face there is a hole: a patch around it is a ring that must be cut open, and cut patches
+    // almost never unfold without overlapping (they were 37 of 98 patches on the Doom scan, 13 after closing the holes)
+    if (opt.fillHolesUpTo > 0) st.holesClosed = fillSmallHoles(cs.mesh, size_t(opt.fillHolesUpTo));
     // the faces OpenMesh refused (complex edges) are dropped: index the flat mesh like the TriMesh from here on
     cs.flat = flatFromTriMesh(cs.mesh);
 

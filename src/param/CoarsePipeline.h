@@ -20,6 +20,8 @@ struct CoarseOptions {
     Metric       metric = Metric::L21;
     SmoothParams smooth{0.1, 0.0, 10};
     LloydParams  lloyd;
+    bool         pruneSmallParts = true;   // the simplified mesh drops tiny floating pieces
+    int          fillHolesUpTo = 24;       // holes of the simplified mesh up to this many edges are closed (0 = leave them)
     double       fineSmoothing = 0.1;    // border smoothing of the transferred labels on the fine mesh (0 = off)
     RefineOptions refine;                // coarse refinement, extraction and the fine fallback
     LiftOptions  lift;
@@ -29,6 +31,7 @@ struct CoarseOptions {
 struct CoarseStats {
     size_t coarseFaces = 0;
     int    coarsePatches = 0;
+    int    holesClosed = 0;              // holes of the simplified mesh that were closed
     int    coarseInitialBad = 0, coarseSplits = 0, coarseRounds = 0, coarseUnresolved = 0;   // of the refinement of the simplified mesh
     int    finePatches = 0;              // after the lift, before the fallback
     int    lifted = 0;                   // lifted patches that passed the checks

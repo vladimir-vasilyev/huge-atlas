@@ -123,3 +123,38 @@ MeshDiagnostics diagnose(const TriMesh& mesh, const FaceData& fd)
     }
     return d;
 }
+
+int fillSmallHoles(TriMesh& mesh, size_t maxEdges)
+{
+    std::vector<char> seen(mesh.n_halfedges(), 0);
+    std::vector<std::vector<TriMesh::VertexHandle>> loops;
+    for (auto h : mesh.halfedges()) {
+        if (!mesh.is_boundary(h) || seen[h.idx()]) continue;
+        std::vector<TriMesh::VertexHandle> loop;
+        auto cur = h;
+        bool ok = true;
+        do {
+            seen[cur.idx()] = 1;
+            loop.push_back(mesh.from_vertex_handle(cur));
+            cur = mesh.next_halfedge_handle(cur);
+            if (loop.size() > maxEdges + 1 || !mesh.is_boundary(cur)) { ok = false; break; }
+        } while (cur != h);
+        if (ok && loop.size() >= 3 && loop.size() <= maxEdges) loops.push_back(std::move(loop));
+    }
+    int closed = 0;
+    for (const auto& loop : loops) {
+        bool done = false;
+        if (loop.size() == 3) {
+            done = mesh.add_face(loop[0], loop[1], loop[2]).is_valid();
+        } else {
+            Vec3 c(0, 0, 0);
+            for (auto v : loop) c += mesh.point(v);
+            const auto centre = mesh.add_vertex(c / double(loop.size()));
+            done = true;
+            for (size_t i = 0; i < loop.size() && done; ++i)
+                done = mesh.add_face(loop[i], loop[(i + 1) % loop.size()], centre).is_valid();
+        }
+        closed += done;
+    }
+    return closed;
+}

@@ -20,6 +20,8 @@ FlatMesh flatFromTriMesh(const TriMesh& mesh);
 struct SimplifyOptions {
     size_t targetFaces = 100000;
     bool   lockBorder = false;       // keep the open border of the mesh where it is
+    bool   prune = false;            // drop small disconnected parts (smaller than the simplification error)
+    bool   regularize = false;       // prefer well shaped triangles (fewer slivers) at a small cost in accuracy
     // Meshes above `blockFaces` * 2 are cut into spatial blocks of about that many faces, simplified in
     // parallel with the block borders locked, then simplified once more as a whole (that removes the
     // frozen block seams). The result does not depend on the thread count.
