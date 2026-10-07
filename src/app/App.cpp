@@ -1511,6 +1511,15 @@ void App::drawHugeUI()
     }
 }
 
+// The checker follows the atlas: every square is a whole number of texels of the atlas and has the same size on the surface
+// (the packer gives all charts the same texel density), about 1 / hugeCheckerSquares_ of the size of the model.
+float App::hugeCheckerCells() const
+{
+    if (!hugeJob_ || !hugeJob_->done || hugeJob_->atlas.resolution <= 0 || hugeJob_->atlas.texelsPerUnit <= 0.0) return 32.0f;
+    const double texelsPerSquare = std::max(2.0, std::round(hugeJob_->atlas.texelsPerUnit / std::max(4, hugeCheckerSquares_)));
+    return float(std::floor(hugeJob_->atlas.resolution / texelsPerSquare));
+}
+
 void App::setHugeColors()
 {
     if (!hugeJob_ || !hugeJob_->done) return;
@@ -1610,6 +1619,10 @@ void App::drawHugeButtons()
             if (!hugeJob_->baked.empty()) {
                 ImGui::SameLine();
                 changed |= ImGui::RadioButton("texture", &v, 3);
+            }
+            if (v == 1) {
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SliderInt("##squares", &hugeCheckerSquares_, 8, 200, "%d squares across the model");
             }
             if (changed) { hugeView_ = v; setHugeColors(); }
         } else if (ImGui::Button("Show the huge result in 3D")) {
@@ -2542,7 +2555,7 @@ void App::renderScene(int fbWidth, int fbHeight)
             }
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
-        meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? checkerCells_ : 0.0f) : (colorMode_ == 8 ? checkerCells_ : 0.0f),
+        meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? checkerCells_ : 0.0f),
                            hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;

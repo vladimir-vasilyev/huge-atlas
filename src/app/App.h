@@ -80,6 +80,7 @@ private:
     bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it
     void showHugeResult();                 // the result of the huge mode in the 3D view (flat arrays -> GPU)
     void setHugeColors();
+    float hugeCheckerCells() const;        // checker cells across the atlas uv, tied to the texel density of the atlas
     void drawHugeUI();                     // modal progress window, result summary, file dialogs
     void startMakeAtlas();
     void makeAtlasTick();                  // one step of the one-button pipeline (once per frame)
@@ -215,6 +216,7 @@ private:
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
     bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_
+    int              hugeCheckerSquares_ = 40;    // size of a checker square: 1 / this of the model
     int              hugeView_ = 0;               // 0 patches, 1 uv checker, 2 plain
     int              hugeCoarseFaces_ = 300000;   // size of the simplified mesh
     int              hugeK_ = 1000;               // patches to start from on the simplified mesh
