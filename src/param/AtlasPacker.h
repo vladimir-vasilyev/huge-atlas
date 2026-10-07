@@ -7,6 +7,7 @@
 
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Atlas packing: every patch is scaled so that its UV area equals its 3D area (the same texel
@@ -18,6 +19,8 @@ struct AtlasInput {
     double uvArea = 0.0;                                 // total UV area of the patch (any scale)
     double area3D = 0.0;                                 // total 3D area of the patch
     const TriMesh* mesh = nullptr;                       // optional: the horizon packer reads the patch boundary from it
+    // optional, instead of `mesh`: boundary edges as pairs of indices into `uv` (a chart that only keeps its border)
+    const std::vector<std::pair<int, int>>* boundaryEdges = nullptr;
 };
 
 struct AtlasOptions {

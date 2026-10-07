@@ -45,6 +45,10 @@ bool validInput(const AtlasInput& a)
 std::vector<Segment2> boundaryOf(const AtlasInput& a, double s)
 {
     std::vector<Segment2> segs;
+    if (a.boundaryEdges) {
+        for (const auto& e : *a.boundaryEdges) segs.push_back({(*a.uv)[e.first] * s, (*a.uv)[e.second] * s});
+        if (!segs.empty()) return segs;
+    }
     if (a.mesh && a.mesh->n_vertices() == a.uv->size()) {
         for (auto h : a.mesh->halfedges()) {
             if (!a.mesh->is_boundary(h)) continue;

@@ -50,27 +50,21 @@ void splitComponents(const TriMesh& m, std::vector<int>& label)
 
 } // namespace
 
-CoarseResult runCoarsePipeline(const TriMesh& fine, const CoarseOptions& opt)
+CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, CoarseStats& st)
 {
-    CoarseResult res;
-    CoarseStats& st = res.stats;
-
-    // ---- simplify
+    CoarseStage cs;
     auto t = Clock::now();
-    const FlatMesh fineFlat = flatFromTriMesh(fine);
-    SimplifyOptions so = opt.simplify;
-    const SimplifyResult simp = simplifyMesh(fineFlat, so);
+    const SimplifyResult simp = simplifyMesh(fineFlat, opt.simplify);
     st.simplifySeconds = since(t);
     st.coarseFaces = simp.mesh.faceCount();
-    const TriMesh coarse = triMeshFromFlat(simp.mesh);
+    cs.mesh = triMeshFromFlat(simp.mesh);
     // the faces OpenMesh refused (complex edges) are dropped: index the flat mesh like the TriMesh from here on
-    const FlatMesh coarseFlat = flatFromTriMesh(coarse);
+    cs.flat = flatFromTriMesh(cs.mesh);
 
-    // ---- VSA on the coarse mesh
     t = Clock::now();
-    const FaceData cfd = computeFaceData(coarse);
-    const std::vector<Moments> cfm = computeFaceMoments(coarse, cfd);
-    const VSAInput cin{coarse, cfd, cfm};
+    const FaceData cfd = computeFaceData(cs.mesh);
+    const std::vector<Moments> cfm = computeFaceMoments(cs.mesh, cfd);
+    const VSAInput cin{cs.mesh, cfd, cfm};
     VSAState vs;
     vs.metric = opt.metric;
     vs.smooth = opt.smooth;
@@ -78,11 +72,23 @@ CoarseResult runCoarsePipeline(const TriMesh& fine, const CoarseOptions& opt)
     runLloyd(cin, vs, opt.lloyd);
     st.coarseVsaSeconds = since(t);
 
-    // ---- coarse patches and their parameterization
     t = Clock::now();
-    RefineResult coarseResult = refinePatches(coarse, vs.label, opt.refine);
+    cs.result = refinePatches(cs.mesh, vs.label, opt.refine);
     st.coarseRefineSeconds = since(t);
-    st.coarsePatches = int(coarseResult.params.size());
+    st.coarsePatches = int(cs.result.params.size());
+    return cs;
+}
+
+CoarseResult runCoarsePipeline(const TriMesh& fine, const CoarseOptions& opt)
+{
+    CoarseResult res;
+    CoarseStats& st = res.stats;
+
+    const FlatMesh fineFlat = flatFromTriMesh(fine);
+    CoarseStage stage = runCoarseStage(fineFlat, opt, st);
+    const FlatMesh& coarseFlat = stage.flat;
+    RefineResult& coarseResult = stage.result;
+    auto t = Clock::now();
 
     // ---- fine labels
     t = Clock::now();

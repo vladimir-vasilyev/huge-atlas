@@ -137,7 +137,7 @@ void Refiner::evaluate()
     std::sort(work.begin(), work.end(), [&](int a, int b) {
         return ex.patches[a].faceToGlobal.size() > ex.patches[b].faceToGlobal.size();
     });
-    ThreadPool::shared().parallelFor(int(work.size()), [&](int t) {
+    (opt_.pool ? *opt_.pool : ThreadPool::shared()).parallelFor(int(work.size()), [&](int t) {
         const int i = work[t];
         // Tutte (an expensive LU factorization, and always a bad result) is the last resort: a patch that can still
         // be split is simply split in the next round
@@ -196,6 +196,7 @@ bool Refiner::splitPatch(int pi)
         const int k = std::min(8, 2 + 2 * genus);
         if (int(faces.size()) >= k * opt_.minFaces) {
             VSAState s;
+            s.pool = opt_.pool;
             s.metric = opt_.metric;
             s.smooth = opt_.smooth;
             initFarthestSeeds(in, s, k, 12345);
@@ -255,6 +256,7 @@ bool Refiner::splitPatch(int pi)
     int kind = 0;   // 0 Lloyd (hint/farthest), 1 flood, 2 Voronoi
     {
         VSAState s;
+        s.pool = opt_.pool;
         s.metric = opt_.metric;
         s.smooth = opt_.smooth;
         setSeeds(in, s, {seedA, seedB});
@@ -263,6 +265,7 @@ bool Refiner::splitPatch(int pi)
     }
     if (split.empty()) {
         VSAState s;
+        s.pool = opt_.pool;
         s.metric = opt_.metric;
         setSeeds(in, s, {seedA, seedB});
         partition(in, s);

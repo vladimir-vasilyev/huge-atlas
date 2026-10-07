@@ -26,6 +26,8 @@ enum class RefinePolicy {
     SplitImmediately   // plain LinABF only: a patch that is not injective right away is split
 };
 
+class ThreadPool;
+
 struct RefineOptions {
     RefinePolicy policy = RefinePolicy::FixFirst;
     ParamOptions param;              // ladder and thresholds (maxStretch decides "too distorted")
@@ -37,6 +39,7 @@ struct RefineOptions {
     int minFaces = 8;                // both parts of a split need at least this many faces
     int maxRounds = 12;
     int maxPatches = 100000;
+    ThreadPool* pool = nullptr;      // for the parallel loops inside (null = the shared pool); a worker of the shared pool must pass its own
 
     RefineOptions() { lloyd.maxIterations = 30; }
 };

@@ -39,4 +39,12 @@ struct CoarseResult {
     CoarseStats  stats;
 };
 
+// The coarse half shared by both pipelines: simplification, VSA, parameterization of the coarse patches.
+struct CoarseStage {
+    TriMesh      mesh;        // the simplified mesh (faces OpenMesh refused are missing)
+    FlatMesh     flat;        // the same mesh as flat arrays, indexed like `mesh`
+    RefineResult result;      // patches and charts of the coarse mesh; result.labels = coarse patch per coarse face
+};
+CoarseStage runCoarseStage(const FlatMesh& fine, const CoarseOptions& options, CoarseStats& stats);
+
 CoarseResult runCoarsePipeline(const TriMesh& fine, const CoarseOptions& options = {});
