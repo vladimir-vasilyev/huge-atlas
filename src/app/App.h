@@ -81,6 +81,7 @@ private:
     void stopRefine(bool wait);
     void drawRefineModal();
     void drawHugeAtlas();
+    void saveBadPatches();
     bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it
     void showHugeResult();                 // the result of the huge mode in the 3D view (flat arrays -> GPU)
     void setHugeColors();

@@ -15,6 +15,9 @@
 #include <algorithm>
 #include <cfloat>
 #include <atomic>
+#include <ctime>
+#include <filesystem>
+#include <unordered_map>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -162,6 +165,7 @@ void App::run()
             if (hugeFrame > 3 && hugeJob_ && hugeJob_->done && hugeJob_->worker.joinable() == false && hugeJob_->saved == false) {
                 if (const char* view = std::getenv("VSA_HUGE_VIEW")) { hugeView_ = std::atoi(view); setHugeColors(); }
                 std::printf("AUTO HUGE: %s\n", hugeStatus_.c_str());
+                if (std::getenv("VSA_AUTO_BADPATCH")) saveBadPatches();
                 if (const char* save = std::getenv("VSA_AUTO_SAVE")) {
                     const bool ok = saveHuge(save);
                     std::printf("AUTO HUGE SAVE: %s (%s)\n", ok ? "ok" : "failed", hugeStatus_.c_str());
@@ -187,6 +191,7 @@ void App::run()
             if (autoFrame == 2) startMakeAtlas();
             if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle && !autoDone) {
                 std::printf("AUTO ATLAS: %s\n", makeAtlasStatus_.c_str());
+                if (std::getenv("VSA_AUTO_BADPATCH")) saveBadPatches();
                 if (std::getenv("VSA_AUTO_BAKE") && atlasValid_) {   // bake the atlas texture, compare with the original layout
                     measureLayouts();
                     const UVLayoutStats &o = layoutOriginal_, &n = layoutOurs_;
@@ -682,6 +687,139 @@ void App::computeUV(bool onlySelected)
         uvStats_[i] = uv_[i].ok ? analyzeUV(m, uv_[i].uv, linabf_[i].angles) : UVStats();
         uvDone_[i] = 1;
     }
+}
+
+// ---------------------------------------------------------------------------------------------- debug output
+
+namespace {
+
+std::string timestamp()
+{
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%Y%m%d-%H%M%S", &tm);
+    return buf;
+}
+
+// OBJ of one patch: v, vt (the uv of the corners, when there are any) and faces. The first lines say what is wrong with it.
+bool writeBadPatchObj(const std::string& path, const std::vector<std::string>& notes, const std::vector<Eigen::Vector3d>& positions,
+                      const std::vector<float>& cornerUV, const std::vector<int>& triangles)
+{
+    FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) return false;
+    for (const std::string& n : notes) std::fprintf(f, "# %s\n", n.c_str());
+    for (const auto& p : positions) std::fprintf(f, "v %.9g %.9g %.9g\n", p.x(), p.y(), p.z());
+    const bool uv = cornerUV.size() == triangles.size() * 2;
+    if (uv)
+        for (size_t c = 0; c < triangles.size(); ++c) std::fprintf(f, "vt %.9g %.9g\n", cornerUV[2 * c], cornerUV[2 * c + 1]);
+    for (size_t t = 0; t + 2 < triangles.size() + 0; t += 3) {
+        if (uv) std::fprintf(f, "f %d/%zu %d/%zu %d/%zu\n", triangles[t] + 1, t + 1, triangles[t + 1] + 1, t + 2, triangles[t + 2] + 1, t + 3);
+        else    std::fprintf(f, "f %d %d %d\n", triangles[t] + 1, triangles[t + 1] + 1, triangles[t + 2] + 1);
+    }
+    return std::fclose(f) == 0;
+}
+
+} // namespace
+
+// Debug > Save Bad Patch: every patch that is not a disk, overlaps itself or is too stretched (or only the selected one, when
+// it is bad) goes to DebugOut/BadPatch/ as an OBJ with the faulty uv in vt, a name that cannot repeat (kind, patch, size,
+// time, running number). Works on the patches of the loaded mesh and on the result of the huge mode.
+void App::saveBadPatches()
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::path("DebugOut") / "BadPatch";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) { status_ = "cannot create " + dir.string() + ": " + ec.message(); return; }
+    static int counter = 0;
+    const std::string stamp = timestamp();
+    int saved = 0, bad = 0;
+    auto fileName = [&](const char* mode, size_t patch, size_t faces, const char* why) {
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "badpatch_%s_p%zu_%zuf_%s_%s_%03d.obj", mode, patch, faces, why, stamp.c_str(), ++counter);
+        return (dir / buf).string();
+    };
+
+    if (hugeShown_ && hugeJob_ && hugeJob_->done) {
+        const FlatMesh& m = hugeJob_->mesh;
+        const FlatResult& r = hugeJob_->result;
+        for (size_t i = 0; i < r.patches.size(); ++i) {
+            const FlatPatch& p = r.patches[i];
+            if (!p.needsSplit && p.injective) continue;
+            ++bad;
+            if (selectedPatch_ >= 0 && size_t(selectedPatch_) < r.patches.size() && size_t(selectedPatch_) != i &&
+                (r.patches[selectedPatch_].needsSplit || !r.patches[selectedPatch_].injective)) continue;
+            std::vector<Eigen::Vector3d> pos;
+            std::vector<int> tri;
+            std::vector<float> uv;
+            std::unordered_map<uint32_t, int> local;
+            for (uint32_t f : p.faces)
+                for (int k = 0; k < 3; ++k) {
+                    const uint32_t v = m.idx[3 * size_t(f) + k];
+                    auto it = local.find(v);
+                    if (it == local.end()) {
+                        it = local.emplace(v, int(pos.size())).first;
+                        pos.emplace_back(m.pos[3 * size_t(v)], m.pos[3 * size_t(v) + 1], m.pos[3 * size_t(v) + 2]);
+                    }
+                    tri.push_back(it->second);
+                    uv.push_back(r.cornerUV[6 * size_t(f) + 2 * k]);
+                    uv.push_back(r.cornerUV[6 * size_t(f) + 2 * k + 1]);
+                }
+            char line[200];
+            std::vector<std::string> notes{"bad patch of the huge result (uv are the packed atlas uv)"};
+            std::snprintf(line, sizeof line, "patch %zu: %zu faces, method %s, injective %d, needs split %d, flipped %d, bad area share %.4f, L2 mean %.3f",
+                          i, p.faces.size(), paramMethodName(p.method), int(p.injective), int(p.needsSplit), p.distortion.flipped,
+                          p.badAreaFraction, p.distortion.l2Mean);
+            notes.push_back(line);
+            if (writeBadPatchObj(fileName("huge", i, p.faces.size(), p.injective ? "stretch" : "overlap"), notes, pos, uv, tri)) ++saved;
+        }
+    } else if (patchesValid_ && params_.size() == patches_.patches.size()) {
+        for (size_t i = 0; i < params_.size(); ++i) {
+            const PatchParam& pp = params_[i];
+            const Patch& patch = patchAt(int(i));
+            const bool notDisk = !patch.isDisk();
+            const bool hasUV = !notDisk && pp.method != ParamMethod::None && pp.uv.size() == pp.patch.mesh.n_vertices();
+            if (!notDisk && !(hasUV && (pp.needsSplit || !pp.injective))) continue;
+            ++bad;
+            if (selectedPatch_ >= 0 && size_t(selectedPatch_) < params_.size() && size_t(selectedPatch_) != i) {
+                const PatchParam& sp = params_[selectedPatch_];
+                const Patch& spatch = patchAt(selectedPatch_);
+                if (!spatch.isDisk() || sp.needsSplit || !sp.injective) continue;   // the selected patch is bad: only it
+            }
+            const TriMesh& m = hasUV ? pp.patch.mesh : patch.mesh;
+            std::vector<Eigen::Vector3d> pos;
+            for (auto v : m.vertices()) { const auto q = m.point(v); pos.emplace_back(q[0], q[1], q[2]); }
+            std::vector<int> tri;
+            std::vector<float> uv;
+            for (auto fh : m.faces())
+                for (auto v : m.fv_range(fh)) {
+                    tri.push_back(v.idx());
+                    if (hasUV) { uv.push_back(float(pp.uv[v.idx()].x())); uv.push_back(float(pp.uv[v.idx()].y())); }
+                }
+            std::vector<std::string> notes{"bad patch of the loaded mesh (uv are the patch uv, not the atlas)"};
+            char line[240];
+            if (notDisk)
+                std::snprintf(line, sizeof line, "patch %zu: %zu faces, not a disk: %s", i, patch.faceToGlobal.size(), patchKindName(patch.topology.kind));
+            else
+                std::snprintf(line, sizeof line,
+                              "patch %zu: %zu faces, method %s, injective %d, needs split %d, flipped %d, crossings %zu, folds %zu, L2 mean %.3f max %.3f, bad area share %.4f",
+                              i, patch.faceToGlobal.size(), paramMethodName(pp.method), int(pp.injective), int(pp.needsSplit), pp.distortion.flipped,
+                              pp.report.uv.crossings.size(), pp.report.angles.foldVertices.size(), pp.distortion.l2Mean, pp.distortion.l2Max, pp.badAreaFraction);
+            notes.push_back(line);
+            const char* why = notDisk ? "notdisk" : (!pp.injective ? (pp.distortion.flipped ? "flipped" : "crossing") : "stretch");
+            if (writeBadPatchObj(fileName("mesh", i, patch.faceToGlobal.size(), why), notes, pos, uv, tri)) ++saved;
+        }
+    } else {
+        status_ = "no patches yet: make the atlas or extract and parameterize the patches first";
+        return;
+    }
+    char buf[300];
+    if (bad == 0) std::snprintf(buf, sizeof buf, "no bad patches");
+    else std::snprintf(buf, sizeof buf, "saved %d of %d bad patches to %s", saved, bad, fs::absolute(dir).string().c_str());
+    status_ = buf;
+    std::printf("%s\n", buf);
 }
 
 void App::drawHugeAtlas()
@@ -2420,6 +2558,11 @@ void App::drawMainMenu()
             ImGui::Separator();
             if (ui::MenuItem("Quit", "Cmd+Q"))
                 glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Debug")) {
+            if (ui::MenuItem("Save Bad Patch", nullptr, false, patchesValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done)))
+                saveBadPatches();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
