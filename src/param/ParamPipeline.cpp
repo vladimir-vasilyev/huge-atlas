@@ -10,6 +10,7 @@ const char* paramMethodName(ParamMethod m)
         case ParamMethod::ActiveSet: return "active set";
         case ParamMethod::Cut:       return "cut";
         case ParamMethod::Tutte:     return "Tutte";
+        case ParamMethod::Lifted:    return "lifted";
         default:                     return "none";
     }
 }

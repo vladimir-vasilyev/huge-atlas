@@ -15,6 +15,7 @@ public:
         uint32_t face = UINT32_MAX;   // UINT32_MAX: the grid is empty
         float    u = 0, v = 0, w = 0; // barycentric coordinates of the closest point (u + v + w = 1, all >= 0)
         double   dist2 = 0;           // squared distance to it
+        bool     inside = false;      // the point projects into the triangle (not clamped to an edge or vertex)
     };
 
     // `faces` null = all faces of `mesh`. The mesh must outlive the grid.

@@ -18,7 +18,7 @@
 // A patch that stays non-injective, comes from the Tutte fallback, or is too stretched, is marked needsSplit: it has
 // to be split by VSA again (the loop of stage 10).
 
-enum class ParamMethod { None, LinABF, ActiveSet, Cut, Tutte };
+enum class ParamMethod { None, LinABF, ActiveSet, Cut, Tutte, Lifted };
 const char* paramMethodName(ParamMethod method);
 
 struct ParamOptions {

@@ -15,36 +15,38 @@ inline double dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline V3 load(const FlatMesh& m, uint32_t v) { return {m.pos[3 * size_t(v)], m.pos[3 * size_t(v) + 1], m.pos[3 * size_t(v) + 2]}; }
 
 // Closest point of triangle abc to p (Ericson, Real-Time Collision Detection): barycentrics of the point.
-void closestOnTriangle(V3 p, V3 a, V3 b, V3 c, double& u, double& v, double& w)
+// Returns true when the projection of p lies inside the triangle (the closest point is an interior point).
+bool closestOnTriangle(V3 p, V3 a, V3 b, V3 c, double& u, double& v, double& w)
 {
     const V3 ab = b - a, ac = c - a, ap = p - a;
     const double d1 = dot(ab, ap), d2 = dot(ac, ap);
-    if (d1 <= 0 && d2 <= 0) { u = 1; v = 0; w = 0; return; }
+    if (d1 <= 0 && d2 <= 0) { u = 1; v = 0; w = 0; return false; }
     const V3 bp = p - b;
     const double d3 = dot(ab, bp), d4 = dot(ac, bp);
-    if (d3 >= 0 && d4 <= d3) { u = 0; v = 1; w = 0; return; }
+    if (d3 >= 0 && d4 <= d3) { u = 0; v = 1; w = 0; return false; }
     const double vc = d1 * d4 - d3 * d2;
     if (vc <= 0 && d1 >= 0 && d3 <= 0) {
         const double t = d1 / (d1 - d3);
-        u = 1 - t; v = t; w = 0; return;
+        u = 1 - t; v = t; w = 0; return false;
     }
     const V3 cp = p - c;
     const double d5 = dot(ab, cp), d6 = dot(ac, cp);
-    if (d6 >= 0 && d5 <= d6) { u = 0; v = 0; w = 1; return; }
+    if (d6 >= 0 && d5 <= d6) { u = 0; v = 0; w = 1; return false; }
     const double vb = d5 * d2 - d1 * d6;
     if (vb <= 0 && d2 >= 0 && d6 <= 0) {
         const double t = d2 / (d2 - d6);
-        u = 1 - t; v = 0; w = t; return;
+        u = 1 - t; v = 0; w = t; return false;
     }
     const double va = d3 * d6 - d5 * d4;
     if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
         const double t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        u = 0; v = 1 - t; w = t; return;
+        u = 0; v = 1 - t; w = t; return false;
     }
     const double denom = 1.0 / (va + vb + vc);
     v = vb * denom;
     w = vc * denom;
     u = 1 - v - w;
+    return true;
 }
 
 } // namespace
@@ -139,13 +141,13 @@ TriangleGrid::Hit TriangleGrid::closest(const float pf[3]) const
                         double u, v, w;
                         const V3 a = load(mesh_, mesh_.idx[3 * size_t(f)]), b = load(mesh_, mesh_.idx[3 * size_t(f) + 1]),
                                  cc = load(mesh_, mesh_.idx[3 * size_t(f) + 2]);
-                        closestOnTriangle(p, a, b, cc, u, v, w);
+                        const bool inside = closestOnTriangle(p, a, b, cc, u, v, w);
                         const V3 q{u * a.x + v * b.x + w * cc.x, u * a.y + v * b.y + w * cc.y, u * a.z + v * b.z + w * cc.z};
                         const V3 d = p - q;
                         const double d2 = dot(d, d);
                         if (d2 < bestD || (d2 == bestD && f < best.face)) {
                             bestD = d2;
-                            best = {f, float(u), float(v), float(w), d2};
+                            best = {f, float(u), float(v), float(w), d2, inside};
                         }
                     }
                 }

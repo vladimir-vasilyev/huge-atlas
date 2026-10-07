@@ -88,6 +88,14 @@ Refiner::Refiner(const TriMesh& mesh, std::vector<int> labels, const RefineOptio
     result_.stats.depthHistogram.assign(size_t(opt_.maxDepth) + 2, 0);
 }
 
+void Refiner::seed(ExtractionResult&& ex, std::vector<PatchParam>&& params)
+{
+    labels_ = ex.faceToPatch;
+    nextLabel_ = int(ex.patches.size());
+    result_.extraction = std::move(ex);
+    result_.params = std::move(params);
+}
+
 void Refiner::evaluate()
 {
     // What was computed in the previous round is reused for the patches whose faces did not change. The old

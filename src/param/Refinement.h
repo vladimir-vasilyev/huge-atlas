@@ -71,6 +71,10 @@ public:
     // false once finished: nothing is bad, nothing could be split, or the round limit is reached.
     bool step();
 
+    // Starts from patches that are already parameterized (same labels as `ex.faceToPatch`): the first round reuses
+    // every patch whose faces stay the same instead of parameterizing it again. Call before the first step().
+    void seed(ExtractionResult&& ex, std::vector<PatchParam>&& params);
+
     bool finished() const { return finished_; }
     const RefineResult& result() const { return result_; }   // the last evaluation (final once finished)
     // Moves the result out (no copy of the patches): for the caller that keeps it. The refiner is finished and
