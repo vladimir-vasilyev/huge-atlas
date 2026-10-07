@@ -23,5 +23,6 @@ struct LiftStats {
 
 // `coarse` must be a parameterized disk (coarse.patch.mesh with coarse.uv). `finePatch` is a patch of the fine mesh
 // (a disk). The returned parameterization has method Lifted; needsSplit tells whether it must be redone.
+// `source` (the mesh finePatch was cut from), when given, lets a failed lift suggest where to split (hintFaceA/B).
 PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& options = {},
-                     LiftStats* stats = nullptr);
+                     LiftStats* stats = nullptr, const TriMesh* source = nullptr);

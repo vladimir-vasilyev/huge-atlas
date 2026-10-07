@@ -88,6 +88,11 @@ void finish(PatchParam& out, const Patch& patch, ParamMethod method, Attempt& a)
 
 } // namespace
 
+void crossingHintFaces(const TriMesh& source, const Patch& patch, const InjectivityReport& rep, int& hintA, int& hintB)
+{
+    crossingHints(source, patch, rep, hintA, hintB);
+}
+
 PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const ParamOptions& opt)
 {
     PatchParam out;

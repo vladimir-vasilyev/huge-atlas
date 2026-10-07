@@ -52,4 +52,8 @@ struct PatchParam {
     int         hintFaceA = -1, hintFaceB = -1;
 };
 
+// The pair of crossing boundary edges (of rep.uv) whose adjacent faces are farthest apart in 3D: their faces (indices in
+// `source`) are the seeds of a split. Leaves hintA/hintB alone when there are no crossings.
+void crossingHintFaces(const TriMesh& source, const Patch& patch, const InjectivityReport& rep, int& hintA, int& hintB);
+
 PatchParam parameterizePatch(const TriMesh& source, const Patch& patch, const ParamOptions& options = {});

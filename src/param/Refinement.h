@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <functional>
 #include <vector>
 
 // The refinement loop: patches that cannot be flattened well are split again by a local VSA with
@@ -39,6 +40,8 @@ struct RefineOptions {
     int minFaces = 8;                // both parts of a split need at least this many faces
     int maxRounds = 12;
     int maxPatches = 100000;
+    // Replaces parameterizePatch (the coarse-to-fine pipeline lifts a chart instead). Called from several threads.
+    std::function<PatchParam(const TriMesh& source, const Patch& patch, const ParamOptions& options)> parameterize;
     ThreadPool* pool = nullptr;      // for the parallel loops inside (null = the shared pool); a worker of the shared pool must pass its own
 
     RefineOptions() { lloyd.maxIterations = 30; }

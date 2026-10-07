@@ -5,6 +5,8 @@
 #include <Eigen/Sparse>
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 
 namespace {
@@ -90,9 +92,42 @@ bool solveBand(const TriMesh& m, const std::vector<char>& unknown, std::vector<E
     return true;
 }
 
+// Shortens the border curve around the crossings (Laplacian smoothing of the vertices of the loop arcs between two
+// crossing edges, plus a margin; everything else on the border stays): a small tangle of the border straightens out.
+// Returns true when the crossings are gone.
+bool straightenBorder(const TriMesh& fm, const std::vector<int>& loop, const std::vector<std::pair<int, int>>& crossings,
+                      std::vector<Eigen::Vector2d>& uv, int margin, int maxIterations)
+{
+    const int L = int(loop.size());
+    if (L < 4) return false;
+    std::vector<int> pos(fm.n_vertices(), -1);
+    for (int i = 0; i < L; ++i) pos[loop[i]] = i;
+    std::vector<char> mark(L, 0);
+    for (const auto& pr : crossings) {
+        int p1 = pos[fm.from_vertex_handle(TriMesh::HalfedgeHandle(pr.first)).idx()];
+        int p2 = pos[fm.from_vertex_handle(TriMesh::HalfedgeHandle(pr.second)).idx()];
+        if (p1 < 0 || p2 < 0) return false;
+        int d = ((p2 - p1) % L + L) % L;
+        if (d > L / 2) { std::swap(p1, p2); d = L - d; }
+        for (int k = -margin; k <= d + 1 + margin; ++k) mark[((p1 + k) % L + L) % L] = 1;
+    }
+    std::vector<Eigen::Vector2d> next = uv;
+    for (int it = 0; it < maxIterations; ++it) {
+        for (int i = 0; i < L; ++i)
+            if (mark[i]) {
+                const Eigen::Vector2d avg = 0.5 * (uv[loop[(i + L - 1) % L]] + uv[loop[(i + 1) % L]]);
+                next[loop[i]] = uv[loop[i]] + 0.5 * (avg - uv[loop[i]]);
+            }
+        uv = next;
+        if (it % 4 == 3 && boundaryCrossings(fm, uv).empty()) return true;
+    }
+    return boundaryCrossings(fm, uv).empty();
+}
+
 } // namespace
 
-PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& opt, LiftStats* stats)
+PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& opt, LiftStats* stats,
+                     const TriMesh* source)
 {
     PatchParam out;
     out.method = ParamMethod::Lifted;
@@ -144,38 +179,81 @@ PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const Lif
     }
     out.report.uv = checkUV(fm, out.uv);
     // a few flipped triangles (the fine surface folds against the coarse one): solve the neighbourhood again,
-    // growing it until the map is clean
-    for (int ring : {1, 2, 4, 8}) {
-        if (out.report.uv.ok()) break;
-        std::vector<char> region(nV, 0);
-        std::vector<int> frontier;
-        for (const auto& pr : out.report.uv.crossings)
-            for (int h : {pr.first, pr.second}) {
-                const auto he = TriMesh::HalfedgeHandle(h);
-                for (auto v : {fm.from_vertex_handle(he), fm.to_vertex_handle(he)})
+    // growing it until the map is clean. Also used after the border was straightened.
+    auto repair = [&](std::vector<Eigen::Vector2d>& uvv, UVReport& report) {
+        for (int ring : {1, 2, 4, 8}) {
+            if (report.ok()) break;
+            std::vector<char> region(nV, 0);
+            std::vector<int> frontier;
+            for (const auto& pr : report.crossings)
+                for (int h : {pr.first, pr.second}) {
+                    const auto he = TriMesh::HalfedgeHandle(h);
+                    for (auto v : {fm.from_vertex_handle(he), fm.to_vertex_handle(he)})
+                        if (!region[v.idx()]) { region[v.idx()] = 1; frontier.push_back(v.idx()); }
+                }
+            for (int f : report.flippedFaces)
+                for (auto v : fm.fv_range(TriMesh::FaceHandle(f)))
                     if (!region[v.idx()]) { region[v.idx()] = 1; frontier.push_back(v.idx()); }
+            for (int r = 0; r < ring; ++r) {
+                std::vector<int> next;
+                for (int v : frontier)
+                    for (auto w : fm.vv_range(TriMesh::VertexHandle(v)))
+                        if (!region[w.idx()]) { region[w.idx()] = 1; next.push_back(w.idx()); }
+                frontier.swap(next);
             }
-        for (int f : out.report.uv.flippedFaces)
-            for (auto v : fm.fv_range(TriMesh::FaceHandle(f)))
-                if (!region[v.idx()]) { region[v.idx()] = 1; frontier.push_back(v.idx()); }
-        for (int r = 0; r < ring; ++r) {
-            std::vector<int> next;
-            for (int v : frontier)
-                for (auto w : fm.vv_range(TriMesh::VertexHandle(v)))
-                    if (!region[w.idx()]) { region[w.idx()] = 1; next.push_back(w.idx()); }
-            frontier.swap(next);
+            int faces = 0;
+            std::vector<Eigen::Vector2d> trial = uvv;
+            if (!solveBand(fm, region, trial, opt.regularization, faces)) break;
+            const UVReport rep = checkUV(fm, trial);
+            if (rep.flippedFaces.size() + rep.crossings.size() < report.flippedFaces.size() + report.crossings.size()) {
+                uvv = std::move(trial);
+                report = rep;
+                ++local.repairs;
+            }
         }
-        int faces = 0;
-        std::vector<Eigen::Vector2d> trial = out.uv;
-        if (!solveBand(fm, region, trial, opt.regularization, faces)) break;
-        const UVReport rep = checkUV(fm, trial);
-        if (rep.flippedFaces.size() + rep.crossings.size() < out.report.uv.flippedFaces.size() + out.report.uv.crossings.size()) {
-            out.uv = std::move(trial);
-            out.report.uv = rep;
-            ++local.repairs;
+    };
+    out.report.uv = checkUV(fm, out.uv);
+    repair(out.uv, out.report.uv);
+
+    // crossings only: the border itself is tangled. Straighten it, then let the interior follow.
+    if (out.report.uv.flippedFaces.empty() && !out.report.uv.crossings.empty() && finePatch.topology.loops.size() == 1) {
+        for (int margin : {3, 8, 20}) {
+            std::vector<Eigen::Vector2d> trial = out.uv;
+            const bool straight = straightenBorder(fm, finePatch.topology.loops[0], out.report.uv.crossings, trial, margin, 400);
+            if (std::getenv("VSA_DEBUG_LIFT")) {
+                const UVReport dbg = checkUV(fm, trial);
+                std::fprintf(stderr, "[straighten] %zu faces margin %d: straight %d, crossings %zu (was %zu), flipped %zu\n", fm.n_faces(),
+                             margin, int(straight), dbg.crossings.size(), out.report.uv.crossings.size(), dbg.flippedFaces.size());
+            }
+            if (!straight) continue;
+            UVReport rep = checkUV(fm, trial);
+            repair(trial, rep);
+            if (rep.ok()) { out.uv = std::move(trial); out.report.uv = rep; break; }
         }
     }
     if (stats) *stats = local;
+    if (std::getenv("VSA_DEBUG_LIFT") && !out.report.uv.crossings.empty() && out.report.uv.flippedFaces.empty()) {
+        // where along the border loop are the two edges of a crossing, and what kind of vertices do they have
+        std::vector<int> loopId(fm.n_halfedges(), -1), loopPos(fm.n_halfedges(), -1);
+        const auto& loops = finePatch.topology.loops;
+        std::vector<int> posOfVertex(nV, -1);
+        for (size_t l = 0; l < loops.size(); ++l)
+            for (size_t i = 0; i < loops[l].size(); ++i) posOfVertex[loops[l][i]] = int(i);
+        int shown = 0;
+        for (const auto& pr : out.report.uv.crossings) {
+            if (shown++ >= 3) break;
+            const auto h1 = TriMesh::HalfedgeHandle(pr.first), h2 = TriMesh::HalfedgeHandle(pr.second);
+            const int a1 = fm.from_vertex_handle(h1).idx(), b1 = fm.to_vertex_handle(h1).idx();
+            const int a2 = fm.from_vertex_handle(h2).idx(), b2 = fm.to_vertex_handle(h2).idx();
+            const double len3 = (fm.point(TriMesh::VertexHandle(a1)) - fm.point(TriMesh::VertexHandle(a2))).norm();
+            const double e1 = (fm.point(TriMesh::VertexHandle(a1)) - fm.point(TriMesh::VertexHandle(b1))).norm();
+            std::fprintf(stderr, "[crossing] patch %zu faces: loops %zu, loop positions %d,%d vs %d,%d (of %zu), outside flags %d%d vs %d%d, "
+                         "3D distance %.2e (edge %.2e), uv e1 (%.4g,%.4g)-(%.4g,%.4g) e2 (%.4g,%.4g)-(%.4g,%.4g)\n",
+                         fm.n_faces(), loops.size(), posOfVertex[a1], posOfVertex[b1], posOfVertex[a2], posOfVertex[b2],
+                         loops.empty() ? size_t(0) : loops[0].size(), outside[a1], outside[b1], outside[a2], outside[b2], len3, e1,
+                         out.uv[a1].x(), out.uv[a1].y(), out.uv[b1].x(), out.uv[b1].y(), out.uv[a2].x(), out.uv[a2].y(), out.uv[b2].x(), out.uv[b2].y());
+        }
+    }
 
     out.injective = out.report.ok();
     out.distortion = computeDistortion(fm, out.uv, &out.perTriangleL2);
@@ -188,6 +266,8 @@ PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const Lif
     }
     out.badAreaFraction = total > 0.0 ? bad / total : 0.0;
     out.needsSplit = !out.injective || (opt.param.maxStretch > 0.0 && out.badAreaFraction > opt.param.maxBadAreaFraction);
+    if (out.needsSplit && source && !out.report.uv.crossings.empty())
+        crossingHintFaces(*source, finePatch, out.report, out.hintFaceA, out.hintFaceB);
     char buf[160];
     std::snprintf(buf, sizeof buf, "lift: %d of %d vertices solved again (%d faces), %zu flipped, %zu crossings, L2 mean %.3f\n",
                   nOutside, int(nV), local.bandFaces, out.report.uv.flippedFaces.size(), out.report.uv.crossings.size(),

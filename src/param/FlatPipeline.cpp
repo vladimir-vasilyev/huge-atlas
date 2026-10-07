@@ -321,6 +321,21 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
         ThreadPool inlinePool(1);
         RefineOptions ro = opt.refine;
         ro.pool = &inlinePool;
+        // Split what does not lift: every part is lifted from the same coarse chart again (cheap), the ordinary ladder
+        // is the last resort for tiny parts and pieces without a chart.
+        const int q = pieces.coarseOf[j];
+        const bool chart = q >= 0 && q < int(coarse.params.size()) && coarse.params[q].injective && !coarse.params[q].uv.empty();
+        if (chart) {
+            const LiftOptions lo = opt.lift;
+            const PatchParam& cp = coarse.params[q];
+            ro.parameterize = [&cp, lo](const TriMesh& source, const Patch& patch, const ParamOptions& popt) {
+                if (patch.isDisk()) {
+                    PatchParam pp = liftPatch(patch, cp, lo, nullptr, &source);
+                    if (!pp.needsSplit || patch.faceToGlobal.size() > 64) return pp;
+                }
+                return parameterizePatch(source, patch, popt);
+            };
+        }
         SubMesh sm = buildSubMesh(fine, &faceList[start[j]], n);
         RefineResult rr = refinePatches(sm.mesh, std::vector<int>(sm.mesh.n_faces(), 0), ro);
         for (size_t i = 0; i < rr.params.size(); ++i) {

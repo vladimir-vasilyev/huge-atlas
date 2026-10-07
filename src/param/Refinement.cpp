@@ -144,7 +144,7 @@ void Refiner::evaluate()
         ParamOptions mine = ladder;
         const std::vector<int>& faces = ex.patches[i].faceToGlobal;
         if (faceDepth_[faces[0]] < opt_.maxDepth && int(faces.size()) >= 2 * opt_.minFaces) mine.allowTutte = false;
-        params[i] = parameterizePatch(mesh_, ex.patches[i], mine);
+        params[i] = opt_.parameterize ? opt_.parameterize(mesh_, ex.patches[i], mine) : parameterizePatch(mesh_, ex.patches[i], mine);
         // the mesh of the patch is in params[i].patch now: release the extracted copy at once, not at the end of the round
         if (params[i].patch.mesh.n_faces() == ex.patches[i].mesh.n_faces() && ex.patches[i].mesh.n_faces() > 0)
             ex.patches[i].mesh = TriMesh();
