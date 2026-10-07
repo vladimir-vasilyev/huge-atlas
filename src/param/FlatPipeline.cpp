@@ -219,6 +219,106 @@ private:
     size_t used_ = 0, cap_;
 };
 
+
+// Shortens the borders of the transferred labels: a face moves to a neighbouring region when it hangs on its own region by
+// at most one edge and on the new one by at least two (spikes and notches), and the move lowers
+//   E = sum err(f, label) + lambda_eff * (number of edges between different labels),
+// err = 2 A (1 - n . N_label) (the L2,1 error against the normal of the coarse patch). No region is cut apart by such a
+// move (the face is a leaf of its region). Decisions of one round are made from the labels of the round before; of two
+// neighbouring faces that both want to move only the one with the lower index does. Deterministic.
+void smoothFlatLabels(const FlatMesh& m, const std::vector<int32_t>& nbr, std::vector<int32_t>& label,
+                      const std::vector<Eigen::Vector3d>& normalOf, double lambda, ThreadPool& pool, int maxRounds)
+{
+    const size_t nF = label.size();
+    auto geom = [&](size_t f, double& area, Eigen::Vector3d& n) {
+        const float* a = &m.pos[3 * size_t(m.idx[3 * f])];
+        const float* b = &m.pos[3 * size_t(m.idx[3 * f + 1])];
+        const float* c = &m.pos[3 * size_t(m.idx[3 * f + 2])];
+        const Eigen::Vector3d e1(double(b[0]) - a[0], double(b[1]) - a[1], double(b[2]) - a[2]);
+        const Eigen::Vector3d e2(double(c[0]) - a[0], double(c[1]) - a[1], double(c[2]) - a[2]);
+        const Eigen::Vector3d cr = e1.cross(e2);
+        const double len = cr.norm();
+        area = 0.5 * len;
+        n = len > 0 ? Eigen::Vector3d(cr / len) : Eigen::Vector3d(0, 0, 0);
+    };
+    auto err = [&](size_t f, int32_t l) {
+        double area;
+        Eigen::Vector3d n;
+        geom(f, area, n);
+        return 2.0 * area * (1.0 - n.dot(normalOf[l]));
+    };
+    const size_t chunk = 1 << 15, chunks = (nF + chunk - 1) / chunk;
+    std::vector<double> partE(chunks, 0.0);
+    std::vector<size_t> partP(chunks, 0);
+    pool.parallelFor(int(chunks), [&](int c) {
+        double e = 0;
+        size_t pcount = 0;
+        for (size_t f = size_t(c) * chunk; f < std::min(nF, size_t(c + 1) * chunk); ++f) {
+            e += err(f, label[f]);
+            for (int k = 0; k < 3; ++k) {
+                const int32_t g = nbr[3 * f + k];
+                pcount += g > int32_t(f) && label[g] != label[f];
+            }
+        }
+        partE[c] = e;
+        partP[c] = pcount;
+    });
+    double eRef = 0;
+    size_t pRef = 0;
+    for (size_t c = 0; c < chunks; ++c) { eRef += partE[c]; pRef += partP[c]; }
+    if (eRef <= 1e-13 || pRef == 0) return;
+    const double lam = lambda * eRef / double(pRef);
+
+    std::vector<int32_t> want(nF, -1);
+    for (int round = 0; round < maxRounds; ++round) {
+        pool.parallelFor(int(chunks), [&](int c) {
+            for (size_t f = size_t(c) * chunk; f < std::min(nF, size_t(c + 1) * chunk); ++f) {
+                want[f] = -1;
+                int32_t nl[3];
+                int n = 0, same = 0;
+                for (int k = 0; k < 3; ++k) {
+                    const int32_t g = nbr[3 * f + k];
+                    if (g < 0) continue;
+                    nl[n++] = label[g];
+                    same += label[g] == label[f];
+                }
+                if (same > 1 || same == n) continue;
+                const double own = err(f, label[f]);
+                double bestD = 0;
+                int32_t best = -1;
+                for (int i = 0; i < n; ++i) {
+                    if (nl[i] == label[f]) continue;
+                    int b = 0;
+                    for (int j = 0; j < n; ++j) b += nl[j] == nl[i];
+                    if (b < 2) continue;
+                    const double d = err(f, nl[i]) - own + lam * double(same - b);
+                    if (d < bestD || (d == bestD && best >= 0 && nl[i] < best)) { bestD = d; best = nl[i]; }
+                }
+                want[f] = best;
+            }
+        });
+        std::vector<size_t> flips(chunks, 0);
+        std::vector<int32_t> next = label;
+        pool.parallelFor(int(chunks), [&](int c) {
+            for (size_t f = size_t(c) * chunk; f < std::min(nF, size_t(c + 1) * chunk); ++f) {
+                if (want[f] < 0) continue;
+                bool yield = false;
+                for (int k = 0; k < 3; ++k) {
+                    const int32_t g = nbr[3 * f + k];
+                    yield = yield || (g >= 0 && g < int32_t(f) && want[g] >= 0);
+                }
+                if (yield) continue;
+                next[f] = want[f];
+                ++flips[c];
+            }
+        });
+        label.swap(next);
+        size_t total = 0;
+        for (size_t x : flips) total += x;
+        if (total == 0) break;
+    }
+}
+
 } // namespace
 
 FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_t faceBudget)
@@ -244,6 +344,23 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
     const std::vector<int32_t> nbr = buildFaceNeighbors(fine, &pool);
     st.adjacencySeconds = since(t);
     t = Clock::now();
+    if (opt.fineSmoothing > 0.0) {
+        // the normal of every coarse patch: area weighted mean over its coarse faces
+        std::vector<Eigen::Vector3d> normalOf(coarse.params.size() + 1, Eigen::Vector3d::Zero());
+        const FlatMesh& cf = stage.flat;
+        for (size_t f = 0; f < cf.faceCount(); ++f) {
+            const int l = coarse.labels[f];
+            if (l < 0 || size_t(l) >= normalOf.size()) continue;
+            const float* a = &cf.pos[3 * size_t(cf.idx[3 * f])];
+            const float* b = &cf.pos[3 * size_t(cf.idx[3 * f + 1])];
+            const float* c = &cf.pos[3 * size_t(cf.idx[3 * f + 2])];
+            const Eigen::Vector3d e1(double(b[0]) - a[0], double(b[1]) - a[1], double(b[2]) - a[2]);
+            const Eigen::Vector3d e2(double(c[0]) - a[0], double(c[1]) - a[1], double(c[2]) - a[2]);
+            normalOf[l] += 0.5 * e1.cross(e2);
+        }
+        for (auto& n : normalOf) if (n.norm() > 0) n.normalize();
+        smoothFlatLabels(fine, nbr, label, normalOf, opt.fineSmoothing, pool, 30);
+    }
     const Pieces pieces = makePieces(nbr, std::move(label), size_t(std::max(1, opt.refine.patch.minFaces)), pool);
     st.cleanSeconds = since(t);
     st.pieces = size_t(pieces.count);
