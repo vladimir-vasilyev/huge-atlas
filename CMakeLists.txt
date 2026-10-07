@@ -115,6 +115,9 @@ add_library(vsa_core STATIC
     src/param/UVMetrics.cpp
     src/param/MeshWriters.h
     src/param/MeshWriters.cpp
+    src/core/TextParse.h
+    src/param/FlatLoader.h
+    src/param/FlatLoader.cpp
     src/param/FlatAdjacency.h
     src/param/FlatAdjacency.cpp
     src/param/FlatPipeline.h
@@ -179,6 +182,10 @@ add_test(NAME coarse COMMAND test_coarse ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 add_executable(test_flat tests/test_flat.cpp)
 target_link_libraries(test_flat PRIVATE vsa_core)
 add_test(NAME flat COMMAND test_flat ${CMAKE_SOURCE_DIR}/data/bunny.ply)
+
+add_executable(test_flatload tests/test_flatload.cpp)
+target_link_libraries(test_flatload PRIVATE vsa_core)
+add_test(NAME flatload COMMAND test_flatload ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
