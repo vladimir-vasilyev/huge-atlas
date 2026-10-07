@@ -36,9 +36,11 @@ struct HorizonOptions {
     int  atlasBorder = 0;         // texels kept free around the atlas beyond the chart margin; 0 is safe for wrapping
     int  rotations = 1;           // 1: longest diameter vertical (the paper); N > 1: N equally spaced orientations, best wins
     bool sortByDiameter = true;   // otherwise by area (both decreasing)
-    int  searchIterations = 16;   // bisection steps for the texel density
+    int  searchIterations = 16;   // bisection steps for the texel density (at most)
+    double densityTolerance = 0.002;   // stop bisecting when the bracket is this much (relative) wider than the density; 0 = use all steps
     bool fillHoles = true;        // put charts into the free space under the horizon (overhangs, gaps between charts)
     int  holeRotations = 4;       // orientations tried when looking for a hole (equally spaced, starting at the base one)
+    bool holeFilter = true;       // skip positions where some column of the chart finds no tall enough gap (same result, much faster)
     int  threads = 0;             // hole search threads: 0 = all cores, 1 = none. The result does not depend on it.
 };
 
@@ -78,6 +80,7 @@ public:
     const std::vector<std::pair<int, int>>& column(int x) const { return cols_[x]; }
     int  floor() const { return floor_; }
     int  maxGap(int column) const { return maxGap_[column]; }   // the tallest free gap below the horizon of the column
+
 
 private:
     int floor_;

@@ -513,6 +513,27 @@ static void testThreadCountDoesNotChangeTheResult()
     }
 }
 
+// The free-region filter only skips positions that cannot work: the packing must be bit identical without it.
+static void testHoleFilterDoesNotChangeTheResult()
+{
+    for (unsigned seed : {5u, 77u, 1234u}) {
+        const std::vector<StarChart> charts = makeCharts(60, seed, 0.1, 1.2);
+        const std::vector<AtlasInput> in = inputsOf(charts);
+        HorizonOptions o;
+        o.resolution = 512;
+        o.maxMipLevel = 1;
+        o.threads = 1;
+        o.holeFilter = false;
+        const AtlasResult plain = packHorizon(in, o);
+        o.holeFilter = true;
+        const AtlasResult filtered = packHorizon(in, o);
+        CHECK(plain.ok && filtered.ok);
+        CHECK(plain.texelsPerUnit == filtered.texelsPerUnit);
+        for (size_t i = 0; i < plain.uv.size(); ++i)
+            for (size_t k = 0; k < plain.uv[i].size(); ++k) CHECK(plain.uv[i][k] == filtered.uv[i][k]);
+    }
+}
+
 // ---- mask and PNG ---------------------------------------------------------------------------------
 static uint32_t be32(const unsigned char* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 
@@ -595,6 +616,7 @@ int main(int argc, char** argv)
     run("threadpool", testThreadPool);
     run("parallelholes", testParallelHoleSearchMatchesSequential);
     run("threads", testThreadCountDoesNotChangeTheResult);
+    run("holefilter", testHoleFilterDoesNotChangeTheResult);
     run("bad", testBadInput);
     run("mask", testMaskAndPNG);
     std::printf(failures ? "FAILED (%d)\n" : "OK\n", failures);

@@ -286,11 +286,12 @@ struct HoleScratch { std::vector<Range> feasible, column, next; };
 
 // The best hole position among u in [uBegin, uEnd] (inclusive); lowest v, then lowest u.
 Placement searchHoles(const HorizonProfile& p, const HorizonOccupancy& occ, int uBegin, int uEnd, int tallest,
-                      int tallestHeight, int maxHi, HoleScratch& sc)
+                      int tallestHeight, int maxHi, HoleScratch& sc, const std::vector<char>* allowed = nullptr)
 {
     Placement best;
     const int W = p.width();
     for (int u = uBegin; u <= uEnd; ++u) {
+        if (allowed && !(*allowed)[u]) continue;
         if (occ.maxGap(u + tallest) < tallestHeight || occ.maxGap(u) < p.hi[0] - p.lo[0] ||
             occ.maxGap(u + W - 1) < p.hi[W - 1] - p.lo[W - 1])
             continue;
@@ -323,9 +324,10 @@ struct HoleQuery {
     int tallest = 0, tallestHeight = 0, maxHi = 0;
     int uBegin = 0, uLast = -1;
     bool viable = false;
+    std::vector<char> allowed;   // per position: some free region can hold the whole profile (empty = no filter)
 };
 
-HoleQuery makeHoleQuery(const HorizonProfile& p, const HorizonOccupancy& occ, int xBegin, int xEnd)
+HoleQuery makeHoleQuery(const HorizonProfile& p, const HorizonOccupancy& occ, int xBegin, int xEnd, bool filter = false)
 {
     HoleQuery q;
     const int W = p.width();
@@ -340,6 +342,15 @@ HoleQuery makeHoleQuery(const HorizonProfile& p, const HorizonOccupancy& occ, in
     q.uBegin = xBegin;
     q.uLast = xEnd - W;
     q.viable = anyGap;
+    if (anyGap && filter && q.uLast >= q.uBegin) {
+        // Every column of the chart needs a gap at least as tall as the column in the atlas column it lands on: a position
+        // where one column finds none is out. One pass of comparisons per chart column over all positions.
+        q.allowed.assign(size_t(xEnd), 1);
+        for (int k = 0; k < W; ++k) {
+            const int need = p.hi[k] - p.lo[k];
+            for (int u = q.uBegin; u <= q.uLast; ++u) q.allowed[u] &= char(occ.maxGap(u + k) >= need);
+        }
+    }
     return q;
 }
 
@@ -426,7 +437,7 @@ Outcome packAt(const std::vector<Chart>& order, double tau, const HorizonOptions
                 c.holeProfile = (wantHorizon && c.thetaH == c.thetaO) ? c.horizonProfile
                                                                        : computeProfile(toTexels(order[i], tau, c.thetaO), margin);
                 if (c.holeProfile.width() > 0 && c.holeProfile.width() <= xEnd - xBegin)
-                    c.query = makeHoleQuery(c.holeProfile, occ, xBegin, xEnd);
+                    c.query = makeHoleQuery(c.holeProfile, occ, xBegin, xEnd, o.holeFilter);
             }
         };
         if (pool && candidates > 1) pool->parallelFor(candidates, stage1);
@@ -457,7 +468,7 @@ Outcome packAt(const std::vector<Chart>& order, double tau, const HorizonOptions
             int b, e;
             chunkRange(q, task.chunks, task.c, b, e);
             HoleScratch sc;
-            found[t] = searchHoles(*q.profile, occ, b, e, q.tallest, q.tallestHeight, q.maxHi, sc);
+            found[t] = searchHoles(*q.profile, occ, b, e, q.tallest, q.tallestHeight, q.maxHi, sc, q.allowed.empty() ? nullptr : &q.allowed);
         };
         if (pool && tasks.size() > 1) pool->parallelFor(int(tasks.size()), stage2);
         else for (size_t t = 0; t < tasks.size(); ++t) stage2(int(t));
@@ -528,7 +539,7 @@ AtlasResult packHorizon(const std::vector<AtlasInput>& in, const HorizonOptions&
     }
     if (!feasible) return fail("the charts do not fit: the gutter is too large for this resolution");
     if (lo < hi) {
-        for (int i = 0; i < o.searchIterations; ++i) {
+        for (int i = 0; i < o.searchIterations && (hi - lo) > o.densityTolerance * lo; ++i) {
             const double mid = 0.5 * (lo + hi);
             if (packAt(order, mid, plain, margin).fits) lo = mid;
             else hi = mid;
@@ -543,7 +554,7 @@ AtlasResult packHorizon(const std::vector<AtlasInput>& in, const HorizonOptions&
         if (up > lo && packAt(order, up, o, margin, pool).fits) {
             lo = up;
         } else {
-            for (int i = 0; i < std::max(4, o.searchIterations - 5) && up > lo; ++i) {
+            for (int i = 0; i < std::max(4, o.searchIterations - 5) && up > lo && (up - lo) > o.densityTolerance * lo; ++i) {
                 const double mid = 0.5 * (lo + up);
                 if (packAt(order, mid, o, margin, pool).fits) lo = mid;
                 else up = mid;
