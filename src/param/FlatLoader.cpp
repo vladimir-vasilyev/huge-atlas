@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 
@@ -112,7 +113,7 @@ bool fail(std::string* error, const std::string& msg)
     return false;
 }
 
-bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, std::string* error)
+bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, std::string* error, FlatSurface* surface)
 {
     // ---- header
     size_t pos = 0;
@@ -142,6 +143,10 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
             else if (f == "binary_big_endian") fmt = Big;
             else return fail(error, "unknown PLY format " + f);
             info.format = "ply " + f;
+        } else if (key == "comment") {
+            std::string word, name;
+            in >> word >> name;
+            if (surface && (word == "TextureFile" || word == "texturefile")) surface->textureFile = name;
         } else if (key == "element") {
             Element e;
             in >> e.name >> e.count;
@@ -186,6 +191,8 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
     out.pos.assign(nV * 3, 0.f);
     out.idx.clear();
     out.idx.reserve(nFaceRecords * 3);
+    std::vector<float> vertexUV;   // per vertex, when the vertices carry texture coordinates
+    if (surface) surface->cornerUV.clear();
 
     auto isFixed = [](const Element& e) {
         for (const Property& p : e.props) if (p.isList) return false;
@@ -210,6 +217,13 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
                 if (e.props[i].name == "z") iz = int(i);
             }
             if (ix < 0 || iy < 0 || iz < 0) return fail(error, "PLY vertices without x y z");
+            int iu = -1, iv = -1;
+            for (size_t i = 0; i < e.props.size(); ++i) {
+                const std::string& n = e.props[i].name;
+                if (n == "s" || n == "u" || n == "texture_u" || n == "texture_s") iu = int(i);
+                if (n == "t" || n == "v" || n == "texture_v" || n == "texture_t") iv = int(i);
+            }
+            if (surface && iu >= 0 && iv >= 0) vertexUV.assign(nV * 2, 0.f);
             if (binary) {
                 if (!isFixed(e)) return fail(error, "PLY vertex element with a list property");
                 std::vector<size_t> off(e.props.size());
@@ -220,6 +234,10 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
                 for (size_t v = 0; v < nV; ++v) {
                     for (int c = 0; c < 3; ++c)
                         out.pos[3 * v + c] = float(readScalar(p + s * v + off[sel[c]], e.props[sel[c]].type, swap));
+                    if (!vertexUV.empty()) {
+                        vertexUV[2 * v] = float(readScalar(p + s * v + off[iu], e.props[iu].type, swap));
+                        vertexUV[2 * v + 1] = float(readScalar(p + s * v + off[iv], e.props[iv].type, swap));
+                    }
                 }
                 p += s * nV;
             } else {
@@ -232,6 +250,8 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
                         if (int(i) == ix) out.pos[3 * v] = float(x);
                         if (int(i) == iy) out.pos[3 * v + 1] = float(x);
                         if (int(i) == iz) out.pos[3 * v + 2] = float(x);
+                        if (!vertexUV.empty() && int(i) == iu) vertexUV[2 * v] = float(x);
+                        if (!vertexUV.empty() && int(i) == iv) vertexUV[2 * v + 1] = float(x);
                     }
                 }
             }
@@ -241,16 +261,44 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
             for (size_t i = 0; i < e.props.size(); ++i)
                 if (e.props[i].isList && (e.props[i].name == "vertex_indices" || e.props[i].name == "vertex_index")) listIdx = int(i);
             if (listIdx < 0) return fail(error, "PLY faces without vertex_indices");
+            int texIdx = -1;   // per face corner texture coordinates: "property list uchar float texcoord"
+            for (size_t i = 0; i < e.props.size(); ++i)
+                if (e.props[i].isList && (e.props[i].name == "texcoord" || e.props[i].name == "texcoords")) texIdx = int(i);
+            const bool faceUV = surface && texIdx >= 0;
+            const bool wantUV = surface && (faceUV || !vertexUV.empty());
             std::vector<uint32_t> poly;
+            size_t pendingFirst = 0, pendingCount = 0;   // the triangles of the face being read (their uv wait for the texcoord list)
             auto emit = [&](const std::vector<uint32_t>& c) {
+                pendingCount = 0;
                 if (c.size() < 3) { ++info.skippedFaces; return; }
                 for (uint32_t v : c) if (v >= nV) { ++info.skippedFaces; return; }
+                pendingFirst = out.idx.size() / 3;
                 for (size_t k = 1; k + 1 < c.size(); ++k) {
                     out.idx.push_back(c[0]);
                     out.idx.push_back(c[k]);
                     out.idx.push_back(c[k + 1]);
+                    ++pendingCount;
+                    if (!wantUV) continue;
+                    if (faceUV) {
+                        for (int q = 0; q < 6; ++q) surface->cornerUV.push_back(std::nanf(""));
+                    } else {
+                        const uint32_t corner[3] = {c[0], c[k], c[k + 1]};
+                        for (uint32_t v : corner) { surface->cornerUV.push_back(vertexUV[2 * size_t(v)]); surface->cornerUV.push_back(vertexUV[2 * size_t(v) + 1]); }
+                    }
                 }
             };
+            // the texture coordinates of the corners of the polygon just emitted: fan triangles (0, k, k + 1)
+            auto applyTex = [&](const std::vector<float>& tc) {
+                for (size_t k = 0; k < pendingCount; ++k) {
+                    const size_t corner[3] = {0, k + 1, k + 2};
+                    for (int q = 0; q < 3; ++q)
+                        if (2 * corner[q] + 1 < tc.size()) {
+                            surface->cornerUV[6 * (pendingFirst + k) + 2 * q] = tc[2 * corner[q]];
+                            surface->cornerUV[6 * (pendingFirst + k) + 2 * q + 1] = tc[2 * corner[q] + 1];
+                        }
+                }
+            };
+            std::vector<float> texBuf;
             if (binary) {
                 for (size_t f = 0; f < e.count; ++f) {
                     for (size_t i = 0; i < e.props.size(); ++i) {
@@ -268,6 +316,10 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
                             poly.resize(n);
                             for (size_t k = 0; k < n; ++k) poly[k] = uint32_t(readScalar(p + k * sizeOf(pr.type), pr.type, swap));
                             emit(poly);
+                        } else if (faceUV && int(i) == texIdx && pendingCount > 0) {
+                            texBuf.resize(n);
+                            for (size_t k = 0; k < n; ++k) texBuf[k] = float(readScalar(p + k * sizeOf(pr.type), pr.type, swap));
+                            applyTex(texBuf);
                         }
                         p += n * sizeOf(pr.type);
                     }
@@ -281,6 +333,17 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
                         if (!pr.isList) { double x; if (!parseDouble(p, end, x)) return fail(error, "PLY: bad face value"); continue; }
                         long n;
                         if (!parseInt(p, end, n) || n < 0) return fail(error, "PLY: bad face size");
+                        if (int(i) == texIdx && faceUV) {
+                            texBuf.resize(size_t(n));
+                            for (long k = 0; k < n; ++k) {
+                                double x;
+                                p = skipSpaces(p, end);
+                                if (!parseDouble(p, end, x)) return fail(error, "PLY: bad texcoord");
+                                texBuf[size_t(k)] = float(x);
+                            }
+                            if (pendingCount > 0) applyTex(texBuf);
+                            continue;
+                        }
                         poly.resize(size_t(n));
                         for (long k = 0; k < n; ++k) {
                             long v;
@@ -313,12 +376,30 @@ bool loadPly(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, s
 
 // ---------------------------------------------------------------- OBJ
 
-bool loadObjFlat(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& info, std::string* error)
+bool readTextFile(const std::string& path, std::string& out)
+{
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    out.resize(size > 0 ? size_t(size) : 0);
+    const size_t got = out.empty() ? 0 : std::fread(&out[0], 1, out.size(), f);
+    std::fclose(f);
+    return got == out.size();
+}
+
+bool loadObjFlat(const char* data, size_t size, const std::string& directory, FlatMesh& out, FlatLoadInfo& info,
+                 std::string* error, FlatSurface* surface)
 {
     info.format = "obj";
     const char* p = data;
     const char* const end = data + size;
-    std::vector<long> poly;
+    std::vector<long> poly, polyVt;
+    std::vector<float> vt;                 // u v per texture coordinate
+    int material = -1;
+    bool sawUV = false;
+    if (surface) { surface->directory = directory; surface->cornerUV.clear(); surface->faceMaterial.clear(); surface->materials.clear(); }
     while (p < end) {
         const char* lineEnd = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
         if (!lineEnd) lineEnd = end;
@@ -333,16 +414,27 @@ bool loadObjFlat(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& inf
             }
             if (!ok) return fail(error, "OBJ: bad vertex");
             for (int c = 0; c < 3; ++c) out.pos.push_back(float(v[c]));
+        } else if (surface && q + 2 < lineEnd && q[0] == 'v' && q[1] == 't' && isSpace(q[2])) {
+            q += 2;
+            double a = 0, b = 0;
+            q = skipSpaces(q, lineEnd);
+            parseDouble(q, lineEnd, a);
+            q = skipSpaces(q, lineEnd);
+            parseDouble(q, lineEnd, b);
+            vt.push_back(float(a));
+            vt.push_back(float(b));
         } else if (q + 1 < lineEnd && q[0] == 'f' && isSpace(q[1])) {
             q += 1;
             poly.clear();
-            const long nV = long(out.vertexCount());
+            polyVt.clear();
+            const long nV = long(out.vertexCount()), nVt = long(vt.size() / 2);
             for (;;) {
                 q = skipSpaces(q, lineEnd);
                 if (q >= lineEnd) break;
                 Corner c;
                 if (!parseCorner(q, lineEnd, c)) break;
                 poly.push_back(c.v > 0 ? c.v - 1 : nV + c.v);
+                polyVt.push_back(c.vt == 0 ? -1 : (c.vt > 0 ? c.vt - 1 : nVt + c.vt));
                 q = skipToken(q, lineEnd);   // whatever follows the index (v/vt/vn leftovers)
             }
             bool ok = poly.size() >= 3;
@@ -353,16 +445,48 @@ bool loadObjFlat(const char* data, size_t size, FlatMesh& out, FlatLoadInfo& inf
                     out.idx.push_back(uint32_t(poly[0]));
                     out.idx.push_back(uint32_t(poly[k]));
                     out.idx.push_back(uint32_t(poly[k + 1]));
+                    if (!surface) continue;
+                    const size_t corner[3] = {0, k, k + 1};
+                    for (size_t cidx : corner) {
+                        const long t = polyVt[cidx];
+                        if (t >= 0 && t < long(vt.size() / 2)) {
+                            surface->cornerUV.push_back(vt[2 * size_t(t)]);
+                            surface->cornerUV.push_back(vt[2 * size_t(t) + 1]);
+                            sawUV = true;
+                        } else {
+                            surface->cornerUV.push_back(std::nanf(""));
+                            surface->cornerUV.push_back(std::nanf(""));
+                        }
+                    }
+                    surface->faceMaterial.push_back(material < 0 ? uint8_t(255) : uint8_t(std::min(material, 254)));
                 }
+        } else if (surface && lineEnd - q > 7 && std::strncmp(q, "mtllib", 6) == 0 && isSpace(q[6])) {
+            const char* a = skipSpaces(q + 6, lineEnd);
+            const char* b = lineEnd;
+            while (b > a && (b[-1] == ' ' || b[-1] == '\r' || b[-1] == '\t')) --b;
+            std::string text;
+            if (readTextFile(directory + "/" + std::string(a, b), text)) {
+                std::vector<ObjMaterial> m = parseMtl(text);
+                surface->materials.insert(surface->materials.end(), m.begin(), m.end());
+            }
+        } else if (surface && lineEnd - q > 7 && std::strncmp(q, "usemtl", 6) == 0 && isSpace(q[6])) {
+            const char* a = skipSpaces(q + 6, lineEnd);
+            const char* b = lineEnd;
+            while (b > a && (b[-1] == ' ' || b[-1] == '\r' || b[-1] == '\t')) --b;
+            const std::string name(a, b);
+            material = -1;
+            for (size_t i = 0; i < surface->materials.size(); ++i)
+                if (surface->materials[i].name == name) { material = int(i); break; }
         }
         p = lineEnd < end ? lineEnd + 1 : end;
     }
+    if (surface && !sawUV) { surface->cornerUV.clear(); surface->faceMaterial.clear(); }
     return true;
 }
 
 } // namespace
 
-bool loadFlatMesh(const std::string& path, FlatMesh& out, FlatLoadInfo* infoOut, std::string* error)
+bool loadFlatMesh(const std::string& path, FlatMesh& out, FlatLoadInfo* infoOut, std::string* error, FlatSurface* surface)
 {
     const auto t0 = std::chrono::steady_clock::now();
     FlatLoadInfo info;
@@ -376,8 +500,12 @@ bool loadFlatMesh(const std::string& path, FlatMesh& out, FlatLoadInfo* infoOut,
         return e;
     }();
     bool ok = false;
-    if (ext == "ply") ok = loadPly(file.data(), file.size(), out, info, error);
-    else if (ext == "obj") ok = loadObjFlat(file.data(), file.size(), out, info, error);
+    const size_t slash = path.find_last_of('/');
+    const std::string directory = slash == std::string::npos ? std::string(".") : path.substr(0, slash);
+    if (surface) *surface = FlatSurface();
+    if (surface) surface->directory = directory;
+    if (ext == "ply") ok = loadPly(file.data(), file.size(), out, info, error, surface);
+    else if (ext == "obj") ok = loadObjFlat(file.data(), file.size(), directory, out, info, error, surface);
     else return fail(error, "unsupported format ." + ext + " (ply and obj)");
     if (ok && out.faceCount() == 0) ok = fail(error, "no faces in " + path);
     info.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

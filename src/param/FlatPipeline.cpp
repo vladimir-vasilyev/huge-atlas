@@ -590,7 +590,7 @@ AtlasResult packFlatAtlas(FlatResult& r, const HorizonOptions& options)
 }
 
 bool writeFlatPlyAtlas(const std::string& path, const FlatMesh& fine, const FlatResult& r, const FlatTransform* original,
-                       std::string* error)
+                       std::string* error, const std::string& textureFile)
 {
     auto fail = [&](const std::string& m) { if (error) *error = m; return false; };
     const size_t nV = fine.vertexCount(), nF = fine.faceCount();
@@ -635,7 +635,9 @@ bool writeFlatPlyAtlas(const std::string& path, const FlatMesh& fine, const Flat
     }
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return fail("cannot write " + path);
-    std::fprintf(f, "ply\nformat binary_little_endian 1.0\ncomment atlas UV in s t\nelement vertex %zu\n"
+    if (!textureFile.empty()) std::fprintf(f, "ply\nformat binary_little_endian 1.0\ncomment TextureFile %s\n", textureFile.c_str());
+    else std::fprintf(f, "ply\nformat binary_little_endian 1.0\n");
+    std::fprintf(f, "comment atlas UV in s t\nelement vertex %zu\n"
                     "property float x\nproperty float y\nproperty float z\nproperty float s\nproperty float t\n"
                     "element face %zu\nproperty list uchar int vertex_indices\nend_header\n", records.size(), nF);
     bool ok = std::fwrite(records.data(), sizeof(Record), records.size(), f) == records.size();

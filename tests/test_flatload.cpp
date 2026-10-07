@@ -86,6 +86,58 @@ int main(int argc, char** argv)
         CHECK(fbe.idx[3] == 0 && fbe.idx[4] == 2 && fbe.idx[5] == 3);
     }
 
+    // texture coordinates, materials
+    {
+        { std::ofstream mtl(tmp + "_tex.mtl"); mtl << "newmtl wall\nmap_Kd wall.png\nnewmtl floor\nmap_Kd floor.png\n"; }
+        {
+            std::ofstream o(tmp + "_tex.obj");
+            o << "mtllib vsa_flatload_test_tex.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                 "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nusemtl wall\nf 1/1 2/2 3/3 4/4\nusemtl floor\nf 1/1 3/3 4\n";
+        }
+        FlatMesh fm;
+        FlatSurface sf;
+        CHECK(loadFlatMesh(tmp + "_tex.obj", fm, nullptr, &err, &sf));
+        CHECK(fm.faceCount() == 3);   // a quad (two triangles) and a triangle
+        CHECK(sf.cornerUV.size() == 18 && sf.faceMaterial.size() == 3 && sf.materials.size() == 2);
+        CHECK(sf.faceMaterial[0] == 0 && sf.faceMaterial[1] == 0 && sf.faceMaterial[2] == 1);
+        CHECK(sf.materials[1].diffuseMap == "floor.png");
+        CHECK(sf.cornerUV[2] == 1.f && sf.cornerUV[3] == 0.f);          // face 0, corner 1: vt 2
+        CHECK(sf.cornerUV[6 + 2] == 1.f && sf.cornerUV[6 + 3] == 1.f);  // face 1 = fan (0, 2, 3): corner 1 is vt 3 -> (1, 1)
+        CHECK(sf.cornerUV[6 + 4] == 0.f && sf.cornerUV[6 + 5] == 1.f);  //                          corner 2 is vt 4 -> (0, 1)
+        CHECK(std::isnan(sf.cornerUV[12 + 4]));                          // face 2, corner 2 has no vt
+    }
+    {
+        std::ofstream o(tmp + "_vuv.ply");
+        o << "ply\nformat ascii 1.0\ncomment TextureFile skin.png\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+             "property float s\nproperty float t\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n"
+             "0 0 0 0.1 0.2\n1 0 0 0.3 0.4\n0 1 0 0.5 0.6\n3 0 1 2\n";
+        o.close();
+        FlatMesh fm;
+        FlatSurface sf;
+        CHECK(loadFlatMesh(tmp + "_vuv.ply", fm, nullptr, &err, &sf));
+        CHECK(sf.textureFile == "skin.png");
+        CHECK(sf.cornerUV.size() == 6 && std::abs(sf.cornerUV[2] - 0.3f) < 1e-6f && std::abs(sf.cornerUV[5] - 0.6f) < 1e-6f);
+    }
+    {
+        // per face corner texture coordinates, binary: two triangles as one quad
+        std::string body;
+        auto f32 = [&](float x) { body.append(reinterpret_cast<const char*>(&x), 4); };
+        auto i32 = [&](int32_t x) { body.append(reinterpret_cast<const char*>(&x), 4); };
+        for (float c : {0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 1.f, 0.f}) f32(c);
+        body.push_back(char(4)); for (int v : {0, 1, 2, 3}) i32(v);
+        body.push_back(char(8)); for (float c : {0.f, 0.f, 1.f, 0.f, 1.f, 1.f, 0.f, 1.f}) f32(c);
+        std::string file = "ply\nformat binary_little_endian 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\n"
+                           "element face 1\nproperty list uchar int vertex_indices\nproperty list uchar float texcoord\nend_header\n" + body;
+        std::ofstream(tmp + "_fuv.ply", std::ios::binary).write(file.data(), std::streamsize(file.size()));
+        FlatMesh fm;
+        FlatSurface sf;
+        CHECK(loadFlatMesh(tmp + "_fuv.ply", fm, nullptr, &err, &sf));
+        CHECK(fm.faceCount() == 2 && sf.cornerUV.size() == 12);
+        // fan (0, 1, 2) and (0, 2, 3): corners take the texcoords 0 1 2 and 0 2 3
+        CHECK(sf.cornerUV[0] == 0.f && sf.cornerUV[2] == 1.f && sf.cornerUV[3] == 0.f && sf.cornerUV[4] == 1.f && sf.cornerUV[5] == 1.f);
+        CHECK(sf.cornerUV[6 + 2] == 1.f && sf.cornerUV[6 + 3] == 1.f && sf.cornerUV[6 + 4] == 0.f && sf.cornerUV[6 + 5] == 1.f);
+    }
+
     // errors
     FlatMesh x;
     CHECK(!loadFlatMesh("/nonexistent/file.ply", x, nullptr, &err));

@@ -56,4 +56,5 @@ AtlasResult packFlatAtlas(FlatResult& result, const HorizonOptions& options = {}
 // (position, uv): a seam duplicates a vertex, nothing else does. `original` (optional) restores the coordinates the
 // mesh had before normalizeFlatToUnitBox. Faces without UV get (0, 0).
 bool writeFlatPlyAtlas(const std::string& path, const FlatMesh& fine, const FlatResult& result,
-                       const FlatTransform* original = nullptr, std::string* error = nullptr);
+                       const FlatTransform* original = nullptr, std::string* error = nullptr,
+                       const std::string& textureFile = std::string());

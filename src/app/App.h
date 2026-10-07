@@ -15,6 +15,7 @@
 #include "param/LinABF.h"
 #include "param/ParamPipeline.h"
 #include "param/PatchExtractor.h"
+#include "param/FlatBake.h"
 #include "param/FlatPipeline.h"
 #include "param/Refinement.h"
 #include "render/Camera.h"
@@ -73,6 +74,8 @@ private:
     struct HugeJob;
     void startHuge(const std::string& path);
     void drawHugeButtons();
+    void drawHugeAtlas();
+    bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it
     void showHugeResult();                 // the result of the huge mode in the 3D view (flat arrays -> GPU)
     void setHugeColors();
     void drawHugeUI();                     // modal progress window, result summary, file dialogs

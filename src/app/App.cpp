@@ -117,11 +117,16 @@ struct App::HugeJob {
     std::string stage = "starting...";   // guarded by mutex
     std::string error;                   // guarded by mutex; set when the run failed
     FlatMesh mesh;
+    FlatSurface surface;                 // old texture coordinates and materials of the file
     FlatTransform transform;
     FlatResult result;
+    std::vector<unsigned char> baked;    // the atlas texture, RGBA, row 0 = v = 0 (empty: the file had no texture)
+    int bakedResolution = 0;
+    std::string textureName;             // of the old texture (for the messages)
     AtlasResult atlas;
     FlatLoadInfo loadInfo;
-    double loadSeconds = 0, pipelineSeconds = 0, packSeconds = 0;
+    double loadSeconds = 0, pipelineSeconds = 0, packSeconds = 0, bakeSeconds = 0;
+    std::string warning;                 // guarded by mutex
     bool saved = false;
     ~HugeJob() { if (worker.joinable()) worker.join(); }
     void say(const std::string& s) { std::lock_guard<std::mutex> lock(mutex); stage = s; }
@@ -153,9 +158,8 @@ void App::run()
                 if (const char* view = std::getenv("VSA_HUGE_VIEW")) { hugeView_ = std::atoi(view); setHugeColors(); }
                 std::printf("AUTO HUGE: %s\n", hugeStatus_.c_str());
                 if (const char* save = std::getenv("VSA_AUTO_SAVE")) {
-                    std::string err;
-                    const bool ok = writeFlatPlyAtlas(save, hugeJob_->mesh, hugeJob_->result, &hugeJob_->transform, &err);
-                    std::printf("AUTO HUGE SAVE: %s %s\n", ok ? "ok" : "failed:", ok ? save : err.c_str());
+                    const bool ok = saveHuge(save);
+                    std::printf("AUTO HUGE SAVE: %s (%s)\n", ok ? "ok" : "failed", hugeStatus_.c_str());
                 }
                 hugeJob_->saved = true;
                 if (!std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
@@ -675,11 +679,63 @@ void App::computeUV(bool onlySelected)
     }
 }
 
+void App::drawHugeAtlas()
+{
+    const FlatResult& r = hugeJob_->result;
+    const AtlasResult& atlas = hugeJob_->atlas;
+    ImGui::Checkbox("Edges", &uvShowEdges_);
+    ImGui::SameLine();
+    if (ImGui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
+    ImGui::Text("Atlas of the huge result: %zu patches, %d x %d, efficiency %.1f%%%s", r.patches.size(), atlas.resolution,
+                atlas.resolution, 100.0 * atlas.efficiency, hugeJob_->baked.empty() ? "" : ", baked texture");
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 canvas(std::max(avail.x, 64.0f), std::max(avail.y, 64.0f));
+    ImGui::InvisibleButton("hugeuvcanvas", canvas, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    if (ImGui::IsItemHovered()) {
+        const ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseWheel != 0.0f) uvZoom_ = std::max(0.05f, uvZoom_ * std::pow(1.15f, io.MouseWheel));
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+            uvPan_.x += io.MouseDelta.x;
+            uvPan_.y += io.MouseDelta.y;
+        }
+    }
+    const float scale = 0.92f * std::min(canvas.x, canvas.y) * uvZoom_;
+    auto toScreen = [&](double u, double v) {   // the unit square, v points up
+        return ImVec2(origin.x + canvas.x * 0.5f + uvPan_.x + float(u - 0.5) * scale,
+                      origin.y + canvas.y * 0.5f + uvPan_.y - float(v - 0.5) * scale);
+    };
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(origin, ImVec2(origin.x + canvas.x, origin.y + canvas.y), true);
+    dl->AddRectFilled(origin, ImVec2(origin.x + canvas.x, origin.y + canvas.y), IM_COL32(24, 26, 32, 255));
+    const bool haveTexture = !hugeJob_->baked.empty() && meshRenderer_.hasTexture();
+    if (haveTexture)   // GL row 0 is v = 0: v = 1 is the top of the picture
+        dl->AddImage(ImTextureID(uintptr_t(meshRenderer_.textureId())), toScreen(0, 1), toScreen(1, 0), ImVec2(0, 1), ImVec2(1, 0));
+    dl->AddRect(toScreen(0, 1), toScreen(1, 0), IM_COL32(120, 120, 130, 255));
+    if (uvShowEdges_ || !haveTexture) {
+        for (size_t i = 0; i < r.patches.size() && i < atlas.uv.size(); ++i) {
+            const auto& pts = atlas.uv[i];
+            if (pts.empty()) continue;
+            float rgb[3];
+            hueColor(int(i), rgb);
+            const ImU32 col = haveTexture ? IM_COL32(250, 220, 90, 255) : IM_COL32(int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255), 255);
+            for (const auto& e : r.patches[i].boundaryEdges)
+                dl->AddLine(toScreen(pts[e.first].x(), pts[e.first].y()), toScreen(pts[e.second].x(), pts[e.second].y()), col, 1.0f);
+        }
+    }
+    dl->PopClipRect();
+}
+
 void App::drawUvPanel()
 {
     ImGui::SetNextWindowSize(ImVec2(520, 520), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("UV view")) { ImGui::End(); return; }
 
+    if (hugeShown_ && hugeJob_ && hugeJob_->done) {   // the atlas of the huge result: texture and chart borders
+        drawHugeAtlas();
+        ImGui::End();
+        return;
+    }
     const int sel = selectedPatch_;
     const bool haveParam = patchesValid_ && sel >= 0 && sel < int(params_.size()) && paramDone_[sel] &&
                            params_[sel].method != ParamMethod::None;
@@ -1242,13 +1298,28 @@ void App::startHuge(const std::string& path)
         std::string err;
         raw->say("reading the mesh...");
         auto t = Clock::now();
-        if (!loadFlatMesh(raw->path, raw->mesh, &raw->loadInfo, &err)) {
+        if (!loadFlatMesh(raw->path, raw->mesh, &raw->loadInfo, &err, &raw->surface)) {
             std::lock_guard<std::mutex> lock(raw->mutex);
             raw->error = err;
             raw->done = true;
             return;
         }
         raw->transform = normalizeFlatToUnitBox(raw->mesh);
+        // the old texture: the first material with a map_Kd (OBJ) or the TextureFile comment (PLY)
+        int textureMaterial = -1;
+        std::vector<unsigned char> sourcePixels;
+        int sourceW = 0, sourceH = 0;
+        if (raw->surface.hasUV()) {
+            std::string name = raw->surface.textureFile;
+            for (size_t i = 0; i < raw->surface.materials.size() && name.empty(); ++i)
+                if (!raw->surface.materials[i].diffuseMap.empty()) { name = raw->surface.materials[i].diffuseMap; textureMaterial = int(i); }
+            if (!name.empty()) {
+                raw->say("reading the texture...");
+                std::string texErr;
+                if (loadImageRGBA(raw->surface.directory + "/" + name, sourceW, sourceH, sourcePixels, &texErr)) raw->textureName = name;
+                else { std::lock_guard<std::mutex> lock(raw->mutex); raw->warning = "texture " + name + " not read: " + texErr; sourcePixels.clear(); }
+            }
+        }
         raw->loadSeconds = since(t);
         t = Clock::now();
         raw->result = runFlatPipeline(raw->mesh, raw->options);
@@ -1260,11 +1331,57 @@ void App::startHuge(const std::string& path)
         if (!raw->atlas.ok) {
             std::lock_guard<std::mutex> lock(raw->mutex);
             raw->error = "packing failed: " + raw->atlas.message;
+        } else if (!sourcePixels.empty()) {
+            raw->say("baking the atlas texture...");
+            t = Clock::now();
+            BakeSource src{sourceW, sourceH, sourcePixels.data()};
+            BakeOptions bo;
+            bo.resolution = raw->atlas.resolution;
+            bo.margin = raw->atlas.margin;
+            raw->baked = bakeAtlasFlat(raw->mesh, raw->result, raw->surface.cornerUV, raw->surface.faceMaterial, textureMaterial, &src, bo);
+            raw->bakedResolution = bo.resolution;
+            raw->bakeSeconds = since(t);
+            std::vector<float>().swap(raw->surface.cornerUV);   // the old uv are not needed any more
+            std::vector<uint8_t>().swap(raw->surface.faceMaterial);
         }
         raw->done = true;
     });
     hugeJob_ = job;
     hugeStatus_.clear();
+}
+
+bool App::saveHuge(const std::string& path)
+{
+    if (!hugeJob_ || !hugeJob_->done) return false;
+    bool ok = false;
+    {
+        std::string err;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string textureFile;
+        if (!hugeJob_->baked.empty()) {   // the baked atlas next to the mesh; image row 0 is v = 1
+            const size_t slash = path.find_last_of('/');
+            const std::string dir = slash == std::string::npos ? "." : path.substr(0, slash);
+            const std::string stem = path.substr(slash == std::string::npos ? 0 : slash + 1, path.size() - (slash == std::string::npos ? 0 : slash + 1) - 4);
+            textureFile = stem + "_atlas.png";
+            const int R = hugeJob_->bakedResolution;
+            std::vector<unsigned char> flipped(hugeJob_->baked.size());
+            const size_t row = size_t(R) * 4;
+            for (int y = 0; y < R; ++y)
+                std::copy(hugeJob_->baked.begin() + size_t(R - 1 - y) * row, hugeJob_->baked.begin() + size_t(R - y) * row, flipped.begin() + size_t(y) * row);
+            std::string pngErr;
+            if (!writePNG(dir + "/" + textureFile, R, R, flipped, &pngErr)) { err = "texture: " + pngErr; textureFile.clear(); }
+        }
+        if (err.empty() && writeFlatPlyAtlas(path, hugeJob_->mesh, hugeJob_->result, &hugeJob_->transform, &err, textureFile)) {
+            char buf[300];
+            std::snprintf(buf, sizeof(buf), "saved %s in %.0f s", path.c_str(),
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            hugeStatus_ = buf; ok = true;
+        } else {
+            hugeStatus_ = "save failed: " + err;
+        }
+    }
+    status_ = hugeStatus_;
+    return ok;
 }
 
 void App::drawHugeUI()
@@ -1295,16 +1412,18 @@ void App::drawHugeUI()
             status_ = hugeStatus_;
         } else {
             const FlatStats& s = hugeJob_->result.stats;
-            char buf[400];
+            char buf[560];
             std::snprintf(buf, sizeof(buf),
-                          "huge mesh: %zu faces -> %zu patches, %zu faces without UV, atlas %d x %d, efficiency %.1f%% "
-                          "(read %.0f s, pipeline %.0f s, pack %.0f s)",
+                          "huge mesh: %zu faces -> %zu patches, %zu faces without UV, atlas %d x %d, efficiency %.1f%%%s "
+                          "(read %.0f s, pipeline %.0f s, pack %.0f s, bake %.0f s)",
                           hugeJob_->mesh.faceCount(), hugeJob_->result.patches.size(), s.facesWithoutUV, hugeJob_->atlas.resolution,
-                          hugeJob_->atlas.resolution, 100.0 * hugeJob_->atlas.efficiency, hugeJob_->loadSeconds,
-                          hugeJob_->pipelineSeconds, hugeJob_->packSeconds);
+                          hugeJob_->atlas.resolution, 100.0 * hugeJob_->atlas.efficiency,
+                          hugeJob_->baked.empty() ? "" : ", texture baked", hugeJob_->loadSeconds, hugeJob_->pipelineSeconds,
+                          hugeJob_->packSeconds, hugeJob_->bakeSeconds);
             hugeStatus_ = buf;
+            { std::lock_guard<std::mutex> lock(hugeJob_->mutex); if (!hugeJob_->warning.empty()) hugeStatus_ += "\n" + hugeJob_->warning; }
             status_ = hugeStatus_;
-            std::printf("%s\n", buf);
+            std::printf("%s\n", hugeStatus_.c_str());
             showHugeResult();
         }
     }
@@ -1341,16 +1460,7 @@ void App::drawHugeUI()
             lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
             std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
             if (path.size() < 4 || path.substr(path.size() - 4) != ".ply") path += ".ply";
-            std::string err;
-            const auto t0 = std::chrono::steady_clock::now();
-            if (writeFlatPlyAtlas(path, hugeJob_->mesh, hugeJob_->result, &hugeJob_->transform, &err)) {
-                char buf[300];
-                std::snprintf(buf, sizeof(buf), "saved %s in %.0f s", path.c_str(),
-                              std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-                hugeStatus_ = buf;
-            } else {
-                hugeStatus_ = "save failed: " + err;
-            }
+            saveHuge(path);
             status_ = hugeStatus_;
         }
         ImGuiFileDialog::Instance()->Close();
@@ -1394,6 +1504,12 @@ void App::showHugeResult()
     if (!hugeJob_ || !hugeJob_->done) return;
     meshRenderer_.uploadFlat(hugeJob_->mesh, hugeJob_->result.cornerUV);
     meshRenderer_.uploadLines({});
+    if (!hugeJob_->baked.empty() && hugeJob_->bakedResolution > 0) {
+        meshRenderer_.setTexture(hugeJob_->bakedResolution, hugeJob_->bakedResolution, hugeJob_->baked.data());
+        hugeView_ = 3;   // the retextured model is what one wants to see
+    } else if (hugeView_ == 3) {
+        hugeView_ = 0;
+    }
     hugeShown_ = true;
     cullBackFaces_ = true;
     wireframe_ = false;
@@ -1435,6 +1551,10 @@ void App::drawHugeButtons()
             changed |= ImGui::RadioButton("atlas checker", &v, 1);
             ImGui::SameLine();
             changed |= ImGui::RadioButton("plain", &v, 2);
+            if (!hugeJob_->baked.empty()) {
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("texture", &v, 3);
+            }
             if (changed) { hugeView_ = v; setHugeColors(); }
         } else if (ImGui::Button("Show the huge result in 3D")) {
             showHugeResult();
@@ -2367,7 +2487,7 @@ void App::renderScene(int fbWidth, int fbHeight)
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
         meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? checkerCells_ : 0.0f) : (colorMode_ == 8 ? checkerCells_ : 0.0f),
-                           !hugeShown_ && (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
+                           hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;
 

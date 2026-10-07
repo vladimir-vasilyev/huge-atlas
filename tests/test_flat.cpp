@@ -2,6 +2,7 @@
 // valid.
 #include "core/MeshPrep.h"
 #include "param/FlatAdjacency.h"
+#include "param/FlatBake.h"
 #include "param/FlatPipeline.h"
 #include "param/UVMetrics.h"
 #include "TestUtil.h"
@@ -60,6 +61,51 @@ int main(int argc, char** argv)
     CHECK(after.flipped == 0);
     CHECK(after.overlap < 1e-4);
     CHECK(std::abs(after.l2Mean - before.l2Mean) < 1e-3);   // the packer only rescales
+
+    // retexturing: an old planar UV and a gradient texture are baked into the atlas; a point of the surface must show the same
+    // colour through the old uv and the old texture as through the new uv and the new texture
+    {
+        std::vector<float> oldUV(fine.faceCount() * 6);
+        for (size_t fc = 0; fc < fine.faceCount(); ++fc)
+            for (int k = 0; k < 3; ++k) {
+                const float* p = &fine.pos[3 * size_t(fine.idx[3 * fc + k])];
+                oldUV[6 * fc + 2 * k] = p[0] + 0.5f;
+                oldUV[6 * fc + 2 * k + 1] = p[1] + 0.5f;
+            }
+        const int W = 256;
+        std::vector<unsigned char> tex(size_t(W) * W * 4, 255);
+        for (int y = 0; y < W; ++y)
+            for (int x = 0; x < W; ++x) {
+                unsigned char* px = &tex[(size_t(y) * W + x) * 4];
+                px[0] = (unsigned char)x; px[1] = (unsigned char)y; px[2] = 100;
+            }
+        BakeSource src{W, W, tex.data()};
+        BakeOptions bo;
+        bo.resolution = ar.resolution;
+        bo.margin = ar.margin;
+        const std::vector<unsigned char> baked = bakeAtlasFlat(fine, r, oldUV, {}, 0, &src, bo);
+        CHECK(baked.size() == size_t(bo.resolution) * bo.resolution * 4);
+        double sum = 0;
+        size_t n = 0, bad = 0, uncovered = 0;
+        for (size_t fc = 0; fc < fine.faceCount(); fc += 7) {
+            double u = 0, v = 0, ou = 0, ov = 0;
+            for (int k = 0; k < 3; ++k) {
+                u += r.cornerUV[6 * fc + 2 * k] / 3.0; v += r.cornerUV[6 * fc + 2 * k + 1] / 3.0;
+                ou += oldUV[6 * fc + 2 * k] / 3.0; ov += oldUV[6 * fc + 2 * k + 1] / 3.0;
+            }
+            const int x = std::min(bo.resolution - 1, int(u * bo.resolution)), y = std::min(bo.resolution - 1, int(v * bo.resolution));
+            const unsigned char* px = &baked[(size_t(y) * bo.resolution + x) * 4];
+            if (px[3] != 255) { ++uncovered; continue; }
+            const double dr = std::abs(px[0] - ou * (W - 1)), dg = std::abs(px[1] - ov * (W - 1));
+            sum += 0.5 * (dr + dg);
+            bad += (dr > 30 || dg > 30);
+            ++n;
+        }
+        std::printf("baked texture: mean error %.2f of 255 over %zu faces, %zu above 30, %zu centroids not covered\n", n ? sum / n : 0.0, n, bad, uncovered);
+        CHECK(uncovered == 0);
+        CHECK(n > 0 && sum / n < 6.0);
+        CHECK(bad < n / 100 + 1);
+    }
 
     // the PLY with the atlas UV: welded vertices, same triangles, UV in [0, 1]
     {

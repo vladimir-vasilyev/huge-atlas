@@ -120,6 +120,9 @@ add_library(vsa_core STATIC
     src/param/FlatLoader.cpp
     src/param/FlatAdjacency.h
     src/param/FlatAdjacency.cpp
+    src/param/FlatBake.h
+    src/param/FlatBake.cpp
+    src/param/MipChain.h
     src/param/FlatPipeline.h
     src/param/FlatPipeline.cpp
     src/param/CoarsePipeline.h

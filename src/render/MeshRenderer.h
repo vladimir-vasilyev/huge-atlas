@@ -41,6 +41,7 @@ public:
     // RGBA8 image, row 0 = v = 0 (bottom). Mip maps are generated; anisotropic filtering if available.
     bool setTexture(int width, int height, const unsigned char* rgba);
     bool hasTexture() const { return texture_ != 0; }
+    GLuint textureId() const { return texture_; }
 
     // wireframe is a second pass with polygon mode LINE (one pixel wide: wide lines do not exist in GL 4.1 core).
     // cullBackFaces: counter-clockwise faces only. On a closed or scanned shell that skips about half of the
