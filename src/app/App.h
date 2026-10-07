@@ -26,7 +26,9 @@
 
 #include <imgui.h>
 
+#include <atomic>
 #include <memory>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -76,6 +78,8 @@ private:
     void startHugeFromLoaded();
     void runHugeJob(const std::shared_ptr<HugeJob>& job);
     void drawHugeButtons();
+    void stopRefine(bool wait);
+    void drawRefineModal();
     void drawHugeAtlas();
     bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it
     void showHugeResult();                 // the result of the huge mode in the 3D view (flat arrays -> GPU)
@@ -197,7 +201,7 @@ private:
     AtlasResult      atlas_;              // parallel to params_
     bool             atlasValid_ = false;
     bool             uvShowAtlas_ = false;
-    float            checkerCells_ = 32.0f;
+    int              checkerSquares_ = 40;        // UV checker: size of a square = 1 / this of the model
     std::string      paramStatus_;
 
     // One-button pipeline: VSA (Lloyd) -> patches -> refinement (parameterization of every patch) -> atlas
@@ -225,6 +229,9 @@ private:
     // Stage 10: refinement loop
     RefineOptions    refineOptions_;
     std::unique_ptr<Refiner> refiner_;
+    std::thread      refineThread_;                // one round of refiner_->step() at a time
+    std::atomic<bool> refineBusy_{false}, refineStop_{false}, refineMore_{false};
+    int              refineRounds_ = 0;
     RefineStats      refineStats_;
     bool             refineHasStats_ = false;
     bool             patchesRefined_ = false;  // the patches come from the refinement, not from the VSA labels

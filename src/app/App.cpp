@@ -278,7 +278,7 @@ void App::openMesh(const std::string& path)
     vsaAdded_ = vsaSteps_ = 0;
     job_.reset();
     lloydStatus_.clear();
-    refiner_.reset();
+    stopRefine(true);
     refineHasStats_ = false;
     patchesRefined_ = false;
     patches_ = ExtractionResult();
@@ -936,6 +936,8 @@ void App::startRefine()
     refineOptions_.param = paramOptions_;
     refineOptions_.patch = patchOptions_;
     refineOptions_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+    stopRefine(true);
+    refineRounds_ = 0;
     refiner_ = std::make_unique<Refiner>(mesh_, patches_.faceToPatch, refineOptions_);
     refineHasStats_ = false;
     paramStatus_.clear();
@@ -965,12 +967,58 @@ void App::applyRefineResult()
     uploadMesh();
 }
 
+// One round of the refinement takes tens of seconds on a big scan: it runs on a worker thread, a round at a time, and the
+// window stays alive (a modal window shows the progress and Cancel; it also keeps the rest of the interface away from the
+// shared thread pool while the round runs).
 void App::refineTick()
 {
     if (!refiner_) return;
-    if (refiner_->step()) return;
-    applyRefineResult();
+    if (refineBusy_) return;                         // a round is running
+    if (refineThread_.joinable()) {
+        refineThread_.join();
+        if (refineStop_) { refiner_.reset(); refineStop_ = false; return; }
+        if (refineMore_) { ++refineRounds_; }        // go on with the next round below
+        else { applyRefineResult(); refiner_.reset(); return; }
+    }
+    refineBusy_ = true;
+    refineThread_ = std::thread([this]() {
+        refineMore_ = refiner_->step();
+        refineBusy_ = false;
+    });
+}
+
+// Stops the refinement: the round in progress finishes first, then the refiner is dropped (wait: block until that happens).
+void App::stopRefine(bool wait)
+{
+    if (!refiner_) return;
+    if (refineThread_.joinable() || refineBusy_) {
+        refineStop_ = true;
+        if (!wait) return;
+        if (refineThread_.joinable()) refineThread_.join();
+        refineBusy_ = false;
+        refineStop_ = false;
+    }
     refiner_.reset();
+}
+
+void App::drawRefineModal()
+{
+    if (!refiner_) return;
+    ImGui::OpenPopup("Refining##modal");
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Always);
+    if (ImGui::BeginPopupModal("Refining##modal", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("Parameterizing the patches and splitting the bad ones: round %d", refineRounds_ + 1);
+        ImGui::ProgressBar(-float(ImGui::GetTime()), ImVec2(-1, 0), "");
+        ImGui::TextDisabled("A round takes seconds to minutes on a big scan.");
+        if (refineStop_) ImGui::TextUnformatted("Cancelling after this round...");
+        else if (ImGui::Button("Cancel", ImVec2(-1, 0))) {
+            refineStop_ = true;
+            paramStatus_ = "refinement stopped";
+            if (atlasStage_ == AtlasStage::Refine) { atlasStage_ = AtlasStage::Idle; makeAtlasStatus_ = "cancelled"; }
+        }
+        ImGui::EndPopup();
+    }
 }
 
 void App::drawRefinePanel()
@@ -1002,8 +1050,7 @@ void App::drawRefinePanel()
     ImGui::EndDisabled();
     if (running) {
         ImGui::SameLine();
-        if (ImGui::Button("Stop")) { refiner_.reset(); paramStatus_ = "refinement stopped"; }
-        ImGui::Text("round %d running...", refiner_ ? refiner_->result().stats.rounds + 1 : 0);
+        ImGui::Text("round %d running...", refineRounds_ + 1);
     }
 
     if (refineHasStats_) {
@@ -1156,7 +1203,8 @@ void App::drawParamPanel()
         if (ImGui::SliderFloat("Gutter", &g, 0.0f, 0.05f, "%.3f")) atlasOptions_.gutter = g;
         ImGui::Checkbox("Rotate to minimum rectangle", &atlasOptions_.rotate);
     }
-    ImGui::SliderFloat("Checker cells", &checkerCells_, 4.0f, 128.0f, "%.0f");
+    ImGui::SliderInt("Checker squares", &checkerSquares_, 8, 200, "%d across the model");
+    ImGui::TextDisabled("The UV checker follows the atlas: equal squares on the surface, whole texels of the atlas.");
     ImGui::BeginDisabled(done == 0);
     if (ImGui::Button("Pack atlas")) packAtlasNow();
     ImGui::EndDisabled();
@@ -1179,7 +1227,7 @@ void App::drawParamPanel()
 void App::cancelMakeAtlas(const char* why)
 {
     atlasJob_.reset();
-    if (atlasStage_ == AtlasStage::Refine) refiner_.reset();
+    if (atlasStage_ == AtlasStage::Refine) stopRefine(false);
     atlasStage_ = AtlasStage::Idle;
     makeAtlasStatus_ = why;
 }
@@ -1188,7 +1236,7 @@ void App::startMakeAtlas()
 {
     if (!meshRenderer_.hasMesh()) return;
     job_.reset();
-    refiner_.reset();
+    stopRefine(true);
     atlasJob_.reset();
 
     // a fresh partition with the settings of the VSA panel (the paint weights count)
@@ -1248,7 +1296,7 @@ void App::makeAtlasTick()
     // Refine: refineTick() (in the Refinement panel code) steps the refiner and applies its result
     if (refiner_) {
         std::snprintf(buf, sizeof(buf), "3/4 parameterizing and refining: round %d, %zu patches",
-                      refiner_->result().stats.rounds + 1, patches_.patches.size());
+                      refineRounds_ + 1, patches_.patches.size());
         makeAtlasStatus_ = buf;
         return;
     }
@@ -1511,13 +1559,24 @@ void App::drawHugeUI()
     }
 }
 
-// The checker follows the atlas: every square is a whole number of texels of the atlas and has the same size on the surface
-// (the packer gives all charts the same texel density), about 1 / hugeCheckerSquares_ of the size of the model.
+// The checker follows the atlas: every square has the same size on the surface (the packer gives all charts the same texel
+// density), about 1 / squares of the size of the model (the models are normalized to a unit box), and with the texel based
+// packer a whole number of texels of the atlas.
+static float atlasCheckerCells(const AtlasResult& a, int squares)
+{
+    squares = std::max(4, squares);
+    if (a.resolution > 0 && a.texelsPerUnit > 0.0) {
+        const double texelsPerSquare = std::max(2.0, std::round(a.texelsPerUnit / squares));
+        return float(std::max(1.0, std::floor(a.resolution / texelsPerSquare)));
+    }
+    if (a.side > 0.0) return float(std::max(4.0, std::round(squares * a.side)));   // shelf packer: the uv unit is `side` long in 3D
+    return 32.0f;
+}
+
 float App::hugeCheckerCells() const
 {
-    if (!hugeJob_ || !hugeJob_->done || hugeJob_->atlas.resolution <= 0 || hugeJob_->atlas.texelsPerUnit <= 0.0) return 32.0f;
-    const double texelsPerSquare = std::max(2.0, std::round(hugeJob_->atlas.texelsPerUnit / std::max(4, hugeCheckerSquares_)));
-    return float(std::floor(hugeJob_->atlas.resolution / texelsPerSquare));
+    if (!hugeJob_ || !hugeJob_->done) return 32.0f;
+    return atlasCheckerCells(hugeJob_->atlas, checkerSquares_);
 }
 
 void App::setHugeColors()
@@ -1622,7 +1681,7 @@ void App::drawHugeButtons()
             }
             if (v == 1) {
                 ImGui::SetNextItemWidth(-1.0f);
-                ImGui::SliderInt("##squares", &hugeCheckerSquares_, 8, 200, "%d squares across the model");
+                ImGui::SliderInt("##squares", &checkerSquares_, 8, 200, "%d squares across the model");
             }
             if (changed) { hugeView_ = v; setHugeColors(); }
         } else if (ImGui::Button("Show the huge result in 3D")) {
@@ -2515,6 +2574,7 @@ void App::drawUI()
     drawUvPanel();
     drawExportDialogs();
     drawHugeUI();
+    drawRefineModal();
 
     handleSceneInput();
 
@@ -2555,7 +2615,7 @@ void App::renderScene(int fbWidth, int fbHeight)
             }
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
-        meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? checkerCells_ : 0.0f),
+        meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
                            hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;
@@ -2568,6 +2628,7 @@ void App::renderScene(int fbWidth, int fbHeight)
 
 void App::shutdown()
 {
+    stopRefine(true);
     // Delete GL resources while the context is alive
     if (window_) {
         glfwMakeContextCurrent(window_);
