@@ -34,5 +34,8 @@ add_sub https://github.com/aiekick/ImGuiFileDialog.git external/ImGuiFileDialog
 add_sub https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh.git external/OpenMesh
 add_sub https://gitlab.com/libeigen/eigen.git                         external/eigen 3.4.0
 
+# Mesh simplification (flat arrays, MIT)
+add_sub https://github.com/zeux/meshoptimizer.git external/meshoptimizer v1.3
+
 git submodule update --init --recursive
 echo "Done."

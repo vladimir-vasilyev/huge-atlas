@@ -59,6 +59,11 @@ set(DISABLE_QMAKE_BUILD ON CACHE BOOL "" FORCE)
 set(OPENMESH_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${EXT_DIR}/OpenMesh EXCLUDE_FROM_ALL)
 
+# ---------------------------------------------------------------- meshoptimizer (simplifier only)
+set(MO_DIR ${EXT_DIR}/meshoptimizer/src)
+add_library(meshopt STATIC ${MO_DIR}/simplifier.cpp ${MO_DIR}/allocator.cpp ${MO_DIR}/indexgenerator.cpp)
+target_include_directories(meshopt SYSTEM PUBLIC ${MO_DIR})
+
 # ---------------------------------------------------------------- Core (no GL/ImGui)
 add_library(vsa_core STATIC
     src/core/MeshTypes.h
@@ -110,13 +115,15 @@ add_library(vsa_core STATIC
     src/param/UVMetrics.cpp
     src/param/MeshWriters.h
     src/param/MeshWriters.cpp
+    src/param/MeshSimplify.h
+    src/param/MeshSimplify.cpp
     src/param/Refinement.h
     src/param/Refinement.cpp
 )
 target_include_directories(vsa_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
-target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen ZLIB::ZLIB Threads::Threads)
+target_link_libraries(vsa_core PUBLIC OpenMeshCoreStatic OpenMeshToolsStatic eigen meshopt ZLIB::ZLIB Threads::Threads)
 # OM_STATIC_BUILD: explicit registration of OpenMesh readers (otherwise the linker drops them from the static library)
 target_compile_definitions(vsa_core PUBLIC _USE_MATH_DEFINES OM_STATIC_BUILD)
 target_compile_options(vsa_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -146,6 +153,10 @@ add_test(NAME smoothing COMMAND test_smoothing ${CMAKE_SOURCE_DIR}/data/hemisphe
 add_executable(test_parallel tests/test_parallel.cpp)
 target_link_libraries(test_parallel PRIVATE vsa_core)
 add_test(NAME parallel COMMAND test_parallel ${CMAKE_SOURCE_DIR}/data/bunny.ply)
+
+add_executable(test_simplify tests/test_simplify.cpp)
+target_link_libraries(test_simplify PRIVATE vsa_core)
+add_test(NAME simplify COMMAND test_simplify ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
