@@ -104,13 +104,21 @@ void Refiner::evaluate()
     for (size_t i = 0; i < result_.extraction.patches.size(); ++i)
         previous[hashFaces(result_.extraction.patches[i].faceToGlobal)] = int(i);
     std::vector<PatchParam> oldParams = std::move(result_.params);
-    const std::vector<Patch> oldPatches = [&] {                // only the face lists are needed to confirm a match
-        std::vector<Patch> v(result_.extraction.patches.size());
-        for (size_t i = 0; i < v.size(); ++i) v[i].faceToGlobal = std::move(result_.extraction.patches[i].faceToGlobal);
-        return v;
-    }();
+    // the previous patches stay (their meshes are empty where a parameterization owns them): a region that did not change is
+    // not built again
+    const std::vector<Patch> oldPatches = std::move(result_.extraction.patches);
+    const PatchReuse reuse = [&](const std::vector<int>& faces) -> const Patch* {
+        auto it = previous.find(hashFaces(faces));
+        if (it == previous.end() || it->second >= int(oldPatches.size()) || it->second >= int(oldParams.size())) return nullptr;
+        const Patch& old = oldPatches[it->second];
+        if (old.faceToGlobal != faces || oldParams[it->second].method == ParamMethod::None) return nullptr;   // never parameterized: build it
+        return &old;
+    };
 
-    ExtractionResult ex = extractPatches(mesh_, labels_, opt_.patch);
+    const auto tExtract0 = std::chrono::steady_clock::now();
+    ExtractionResult ex = extractPatches(mesh_, labels_, opt_.patch, &reuse);
+    const double extractSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - tExtract0).count();
+    const auto tLadder0 = std::chrono::steady_clock::now();
     labels_ = ex.faceToPatch;           // compact, merged labels (-1 stays -1)
     nextLabel_ = int(ex.patches.size());
 
@@ -150,6 +158,9 @@ void Refiner::evaluate()
             ex.patches[i].mesh = TriMesh();
     });
     for (size_t i = 0; i < ex.patches.size(); ++i) bad[i] = params[i].needsSplit;
+    if (std::getenv("VSA_VERBOSE"))
+        std::fprintf(stderr, "[refine] evaluate: extraction %.1f s, parameterization of %zu new patches %.1f s\n", extractSeconds, work.size(),
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - tLadder0).count());
 
     // the patch mesh now lives in params[i].patch: release the second copy
     for (size_t i = 0; i < ex.patches.size(); ++i)

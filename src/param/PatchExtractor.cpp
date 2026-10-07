@@ -250,7 +250,7 @@ bool buildPatch(const TriMesh& mesh, const std::vector<int>& faces, const std::v
     return true;
 }
 
-ExtractionResult extractPatches(const TriMesh& mesh, std::vector<int> label, const PatchOptions& opt)
+ExtractionResult extractPatches(const TriMesh& mesh, std::vector<int> label, const PatchOptions& opt, const PatchReuse* reuse)
 {
     ExtractionResult res;
     res.mergedRegions = mergeSmallRegions(mesh, label, opt.minFaces);
@@ -265,6 +265,16 @@ ExtractionResult extractPatches(const TriMesh& mesh, std::vector<int> label, con
     for (int r = 0; r < regions; ++r) {
         if (faces[r].empty()) continue;
 
+        if (reuse) {
+            if (const Patch* old = (*reuse)(faces[r])) {
+                Patch same = *old;
+                same.region = r;
+                for (int f : faces[r]) res.faceToPatch[f] = int(res.patches.size());
+                if (same.isDisk()) ++res.disks;
+                res.patches.push_back(std::move(same));
+                continue;
+            }
+        }
         Patch p;
         std::vector<int> cuts;   // source edge indices
         if (!buildPatch(mesh, faces[r], cuts, p)) {

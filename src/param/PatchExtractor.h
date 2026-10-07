@@ -2,6 +2,7 @@
 
 #include "param/PatchTopology.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -48,4 +49,9 @@ bool buildPatch(const TriMesh& mesh, const std::vector<int>& faces, const std::v
 
 // Full pipeline: merge small regions, build every patch, cut multi-boundary patches into disks.
 // `label` is the per-face region label (-1 faces are ignored).
-ExtractionResult extractPatches(const TriMesh& mesh, std::vector<int> label, const PatchOptions& opt = {});
+// `reuse` (optional): given the faces of a region, returns the patch built for exactly these faces before (or null). Such a
+// patch is copied instead of being built again (the refinement rounds change only a few regions). The patch must have been
+// produced with the same options; its mesh may be empty (a patch whose parameterization owns the mesh).
+using PatchReuse = std::function<const Patch*(const std::vector<int>& faces)>;
+ExtractionResult extractPatches(const TriMesh& mesh, std::vector<int> label, const PatchOptions& opt = {},
+                                const PatchReuse* reuse = nullptr);
