@@ -460,6 +460,21 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
             std::lock_guard<std::mutex> lock(statMutex);
             st.facesRefused += n - sm.keptFaces.size();
         }
+        // Patches the refinement could not make good (limits reached): the ordinary ladder, Tutte included, once more. An
+        // injective map beats an overlapping one.
+        for (size_t i = 0; i < rr.params.size(); ++i) {
+            PatchParam& cur = rr.params[i];
+            if (!cur.needsSplit || !cur.patch.isDisk()) continue;
+            ParamOptions po = opt.refine.param;
+            po.allowTutte = true;
+            PatchParam alt = parameterizePatch(sm.mesh, cur.patch, po);
+            if (alt.uv.empty() || !alt.injective) continue;
+            if (!cur.injective || alt.badAreaFraction < cur.badAreaFraction) {
+                cur = std::move(alt);
+                std::lock_guard<std::mutex> lock(statMutex);
+                ++st.patchesRepaired;
+            }
+        }
         for (size_t i = 0; i < rr.params.size(); ++i) {
             if (rr.params[i].uv.empty()) {   // unresolved: its faces keep no UV
                 std::lock_guard<std::mutex> lock(statMutex);

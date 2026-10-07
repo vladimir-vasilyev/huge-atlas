@@ -32,6 +32,7 @@ struct FlatStats {
     size_t facesRefused = 0;         // of those: refused by the half-edge mesh (non-manifold edges)
     size_t facesUnresolved = 0;      // of those: in patches that stayed bad after the refinement
     size_t patchesUnresolved = 0;
+    size_t patchesRepaired = 0;      // bad patches of the fallback that the ordinary ladder made injective
     double adjacencySeconds = 0, cleanSeconds = 0, liftSeconds = 0, fallbackSeconds = 0;
 };
 
