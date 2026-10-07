@@ -151,7 +151,12 @@ void Refiner::evaluate()
         // be split is simply split in the next round
         ParamOptions mine = ladder;
         const std::vector<int>& faces = ex.patches[i].faceToGlobal;
-        if (faceDepth_[faces[0]] < opt_.maxDepth && int(faces.size()) >= 2 * opt_.minFaces) mine.allowTutte = false;
+        const bool canSplit = faceDepth_[faces[0]] < opt_.maxDepth && int(faces.size()) >= 2 * opt_.minFaces;
+        if (canSplit) mine.allowTutte = false;
+        if (canSplit && opt_.splitAtOnceAboveFaces > 0 && int(faces.size()) > opt_.splitAtOnceAboveFaces) {
+            mine.useActiveSet = false;
+            mine.allowCut = false;
+        }
         params[i] = opt_.parameterize ? opt_.parameterize(mesh_, ex.patches[i], mine) : parameterizePatch(mesh_, ex.patches[i], mine);
         // the mesh of the patch is in params[i].patch now: release the extracted copy at once, not at the end of the round
         if (params[i].patch.mesh.n_faces() == ex.patches[i].mesh.n_faces() && ex.patches[i].mesh.n_faces() > 0)

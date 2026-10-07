@@ -215,8 +215,6 @@ private:
 
     // "Make atlas (huge)"
     std::shared_ptr<HugeJob> hugeJob_;
-    bool             hugeTipShown_ = false;       // the explanation is shown once per run of the program
-    bool             hugeTipHovered_ = false;
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
     bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_

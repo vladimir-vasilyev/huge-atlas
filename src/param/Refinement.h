@@ -40,6 +40,9 @@ struct RefineOptions {
     int minFaces = 8;                // both parts of a split need at least this many faces
     int maxRounds = 12;
     int maxPatches = 100000;
+    // A patch of more faces than this is only tried with plain LinABF when it can still be split: the repair ladder is slow on
+    // big patches (a factorization of tens of seconds per step) and the split fixes most of them anyway. 0 = never.
+    int splitAtOnceAboveFaces = 40000;
     // Replaces parameterizePatch (the coarse-to-fine pipeline lifts a chart instead). Called from several threads.
     std::function<PatchParam(const TriMesh& source, const Patch& patch, const ParamOptions& options)> parameterize;
     ThreadPool* pool = nullptr;      // for the parallel loops inside (null = the shared pool); a worker of the shared pool must pass its own

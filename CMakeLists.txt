@@ -246,6 +246,8 @@ set(APP_SOURCES
     src/app/main.cpp
     src/app/App.h
     src/app/App.cpp
+    src/app/UiTips.h
+    src/app/UiTips.cpp
     src/render/GL.h
     src/render/GL.cpp
     src/render/Shader.h

@@ -4,6 +4,7 @@
 #include "param/AtlasMask.h"   // writePNG
 #include "param/MeshWriters.h"
 #include "render/ImageFile.h"
+#include "app/UiTips.h"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -600,24 +601,24 @@ void App::drawPatchPanel()
         ImGui::End();
         return;
     }
-    ImGui::InputInt("Merge regions smaller than", &patchOptions_.minFaces);
+    ui::InputInt("Merge regions smaller than", &patchOptions_.minFaces);
     patchOptions_.minFaces = std::max(1, patchOptions_.minFaces);
-    ImGui::Checkbox("Cut multi-boundary patches into disks", &patchOptions_.cutMultiBoundary);
-    if (ImGui::Button("Extract patches")) extractPatchesNow();
+    ui::Checkbox("Cut multi-boundary patches into disks", &patchOptions_.cutMultiBoundary);
+    if (ui::Button("Extract patches")) extractPatchesNow();
     if (!patchesValid_) { ImGui::End(); return; }
 
     if (patchesRefined_)
         ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.6f, 1.0f), "refined: patches were split after the VSA partition");
     else if (patchedLabels_ != vsa_.label)
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "stale: the partition changed since extraction");
-    if (ImGui::SliderFloat("Explode", &explode_, 0.0f, 1.0f)) uploadMesh();
-    if (ImGui::Checkbox("Show patch boundaries", &showBoundaries_)) rebuildBoundaryLines();
+    if (ui::SliderFloat("Explode", &explode_, 0.0f, 1.0f)) uploadMesh();
+    if (ui::Checkbox("Show patch boundaries", &showBoundaries_)) rebuildBoundaryLines();
     if (showBoundaries_)
-        ImGui::SliderFloat("Boundary width (px)", &boundaryWidth_, 1.0f, 8.0f, "%.1f");
+        ui::SliderFloat("Boundary width (px)", &boundaryWidth_, 1.0f, 8.0f, "%.1f");
     ImGui::TextDisabled("black: seams   magenta: cuts");
-    if (ImGui::RadioButton("Patches", &colorMode_, 4)) uploadMesh();
+    if (ui::RadioButton("Patches", &colorMode_, 4)) uploadMesh();
     ImGui::SameLine();
-    if (ImGui::RadioButton("Patch kind", &colorMode_, 5)) uploadMesh();
+    if (ui::RadioButton("Patch kind", &colorMode_, 5)) uploadMesh();
 
     int cutPatches = 0;
     for (const Patch& p : patches_.patches) cutPatches += p.cuts > 0;
@@ -687,9 +688,9 @@ void App::drawHugeAtlas()
 {
     const FlatResult& r = hugeJob_->result;
     const AtlasResult& atlas = hugeJob_->atlas;
-    ImGui::Checkbox("Edges", &uvShowEdges_);
+    ui::Checkbox("Edges", &uvShowEdges_);
     ImGui::SameLine();
-    if (ImGui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
+    if (ui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
     ImGui::Text("Atlas of the huge result: %zu patches, %d x %d, efficiency %.1f%%%s", r.patches.size(), atlas.resolution,
                 atlas.resolution, 100.0 * atlas.efficiency, hugeJob_->baked.empty() ? "" : ", baked texture");
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -746,14 +747,14 @@ void App::drawUvPanel()
     const bool haveStage8 = patchesValid_ && sel >= 0 && sel < int(uv_.size()) && uvDone_[sel] && uv_[sel].ok;
     const bool canAtlas = atlasValid_ && !atlas_.uv.empty();
     if (canAtlas) {
-        ImGui::Checkbox("Atlas", &uvShowAtlas_);
+        ui::Checkbox("Atlas", &uvShowAtlas_);
         ImGui::SameLine();
     } else {
         uvShowAtlas_ = false;
     }
-    ImGui::Checkbox("Edges", &uvShowEdges_);
+    ui::Checkbox("Edges", &uvShowEdges_);
     ImGui::SameLine();
-    if (ImGui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
+    if (ui::Button("Fit view")) { uvZoom_ = 1.0f; uvPan_ = ImVec2(0, 0); }
 
     // What to draw: list of (mesh, uv, color index) plus bounds
     struct Layer { const TriMesh* mesh; const std::vector<Eigen::Vector2d>* uv; int colorIndex; const PatchParam* pp; };
@@ -1012,7 +1013,7 @@ void App::drawRefineModal()
         ImGui::ProgressBar(-float(ImGui::GetTime()), ImVec2(-1, 0), "");
         ImGui::TextDisabled("A round takes seconds to minutes on a big scan.");
         if (refineStop_) ImGui::TextUnformatted("Cancelling after this round...");
-        else if (ImGui::Button("Cancel", ImVec2(-1, 0))) {
+        else if (ui::Button("Cancel", ImVec2(-1, 0))) {
             refineStop_ = true;
             paramStatus_ = "refinement stopped";
             if (atlasStage_ == AtlasStage::Refine) { atlasStage_ = AtlasStage::Idle; makeAtlasStatus_ = "cancelled"; }
@@ -1034,19 +1035,20 @@ void App::drawRefinePanel()
 
     int pol = refineOptions_.policy == RefinePolicy::FixFirst ? 0 : 1;
     ImGui::BeginDisabled(running);
-    if (ImGui::RadioButton("Fix first (ladder, then split)", &pol, 0)) refineOptions_.policy = RefinePolicy::FixFirst;
-    if (ImGui::RadioButton("Split immediately (plain LinABF)", &pol, 1)) refineOptions_.policy = RefinePolicy::SplitImmediately;
-    ImGui::SliderInt("Max depth", &refineOptions_.maxDepth, 0, 10);
-    ImGui::SliderInt("Min faces per part", &refineOptions_.minFaces, 2, 200);
-    ImGui::SliderInt("Max rounds", &refineOptions_.maxRounds, 1, 30);
+    if (ui::RadioButton("Fix first (ladder, then split)", &pol, 0)) refineOptions_.policy = RefinePolicy::FixFirst;
+    if (ui::RadioButton("Split immediately (plain LinABF)", &pol, 1)) refineOptions_.policy = RefinePolicy::SplitImmediately;
+    ui::SliderInt("Max depth", &refineOptions_.maxDepth, 0, 10);
+    ui::SliderInt("Min faces per part", &refineOptions_.minFaces, 2, 200);
+    ui::SliderInt("Max rounds", &refineOptions_.maxRounds, 1, 30);
+    ui::SliderInt("Split at once above (faces)", &refineOptions_.splitAtOnceAboveFaces, 0, 200000);
     {
         float lam = float(refineOptions_.smooth.lambda);
-        if (ImGui::SliderFloat("Local smoothing lambda", &lam, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
+        if (ui::SliderFloat("Local smoothing lambda", &lam, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
             refineOptions_.smooth.lambda = lam;
     }
     ImGui::TextDisabled("Bad: not a disk, not injective, or L2 stretch above the Parameterize limit (%.1f)",
                         paramOptions_.maxStretch);
-    if (ImGui::Button("Refine bad patches")) startRefine();
+    if (ui::Button("Refine bad patches")) startRefine();
     ImGui::EndDisabled();
     if (running) {
         ImGui::SameLine();
@@ -1084,25 +1086,25 @@ void App::drawParamPanel()
     }
 
     ImGui::SeparatorText("Repair ladder");
-    ImGui::Checkbox("Active set (pin angles, limit boundary fans)", &paramOptions_.useActiveSet);
+    ui::Checkbox("Active set (pin angles, limit boundary fans)", &paramOptions_.useActiveSet);
     {
         float d = float(paramOptions_.active.foldDelta), mg = float(paramOptions_.active.angleMargin);
-        if (ImGui::SliderFloat("Fold delta (rad)", &d, 0.0f, 0.5f)) paramOptions_.active.foldDelta = d;
-        if (ImGui::SliderFloat("Angle margin (rad)", &mg, 0.001f, 0.2f)) paramOptions_.active.angleMargin = mg;
+        if (ui::SliderFloat("Fold delta (rad)", &d, 0.0f, 0.5f)) paramOptions_.active.foldDelta = d;
+        if (ui::SliderFloat("Angle margin (rad)", &mg, 0.001f, 0.2f)) paramOptions_.active.angleMargin = mg;
     }
-    ImGui::Checkbox("Slits from the worst vertex", &paramOptions_.allowCut);
-    ImGui::SliderInt("Max slits", &paramOptions_.maxCuts, 0, 6);
-    ImGui::Checkbox("Tutte fallback (always injective)", &paramOptions_.allowTutte);
+    ui::Checkbox("Slits from the worst vertex", &paramOptions_.allowCut);
+    ui::SliderInt("Max slits", &paramOptions_.maxCuts, 0, 6);
+    ui::Checkbox("Tutte fallback (always injective)", &paramOptions_.allowTutte);
     {
         float ms = float(paramOptions_.maxStretch);
-        if (ImGui::SliderFloat("Split above L2 stretch", &ms, 0.0f, 20.0f)) paramOptions_.maxStretch = ms;
+        if (ui::SliderFloat("Split above L2 stretch", &ms, 0.0f, 20.0f)) paramOptions_.maxStretch = ms;
     }
 
     ImGui::BeginDisabled(selectedPatch_ < 0);
-    if (ImGui::Button("Parameterize selected")) runParam(true);
+    if (ui::Button("Parameterize selected")) runParam(true);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Parameterize all disks")) runParam(false);
+    if (ui::Button("Parameterize all disks")) runParam(false);
 
     // summary
     int done = 0, injective = 0, split = 0, byMethod[5] = {0, 0, 0, 0, 0};
@@ -1124,11 +1126,11 @@ void App::drawParamPanel()
                     byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Tutte)],
                     byMethod[int(ParamMethod::None)]);
         ImGui::Text("L2 stretch: mean of patches %.3f, worst triangle %.2f", sumL2 / std::max(1, done), worst);
-        if (ImGui::RadioButton("Stretch", &colorMode_, 7)) uploadMesh();
+        if (ui::RadioButton("Stretch", &colorMode_, 7)) uploadMesh();
         ImGui::SameLine();
-        if (ImGui::RadioButton("Problems", &colorMode_, 9)) uploadMesh();
+        if (ui::RadioButton("Problems", &colorMode_, 9)) uploadMesh();
         ImGui::SameLine();
-        if (ImGui::RadioButton("UV checker", &colorMode_, 8)) uploadMesh();
+        if (ui::RadioButton("UV checker", &colorMode_, 8)) uploadMesh();
     }
 
     if (done > 0 && ImGui::BeginTable("params", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
@@ -1164,8 +1166,8 @@ void App::drawParamPanel()
     }
 
     ImGui::SeparatorText("Atlas");
-    ImGui::RadioButton("Horizon pack (texel exact, mip aware)", &atlasMethod_, 0);
-    ImGui::RadioButton("Shelf pack (quick)", &atlasMethod_, 1);
+    ui::RadioButton("Horizon pack (texel exact, mip aware)", &atlasMethod_, 0);
+    ui::RadioButton("Shelf pack (quick)", &atlasMethod_, 1);
     if (atlasMethod_ == 0) {
         HorizonOptions& ho = horizonOptions_;
         static const int kResolutions[] = {256, 512, 1024, 2048, 4096, 8192};
@@ -1173,7 +1175,7 @@ void App::drawParamPanel()
         for (int i = 0; i < 6; ++i) if (kResolutions[i] == ho.resolution) ri = i;
         char label[16];
         std::snprintf(label, sizeof(label), "%d", ho.resolution);
-        if (ImGui::BeginCombo("Texture size", label)) {
+        if (ui::BeginCombo("Texture size", label)) {
             for (int i = 0; i < 6; ++i) {
                 std::snprintf(label, sizeof(label), "%d x %d", kResolutions[i], kResolutions[i]);
                 if (ImGui::Selectable(label, i == ri)) ho.resolution = kResolutions[i];
@@ -1184,35 +1186,35 @@ void App::drawParamPanel()
         while ((1 << (maxLevel + 1)) <= ho.resolution) ++maxLevel;
         maxLevel = std::max(0, maxLevel - 2);
         ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
-        ImGui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
-        ImGui::SliderInt("Extra margin (texels)", &ho.extraTexels, 0, 16);
-        ImGui::SliderInt("Atlas border (texels)", &ho.atlasBorder, 0, 32);
-        ImGui::SliderInt("Rotations tried per chart", &ho.rotations, 1, 16);
-        ImGui::Checkbox("Fill holes under overhangs", &ho.fillHoles);
+        ui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
+        ui::SliderInt("Extra margin (texels)", &ho.extraTexels, 0, 16);
+        ui::SliderInt("Atlas border (texels)", &ho.atlasBorder, 0, 32);
+        ui::SliderInt("Rotations tried per chart", &ho.rotations, 1, 16);
+        ui::Checkbox("Fill holes under overhangs", &ho.fillHoles);
         if (ho.fillHoles) {
-            ImGui::SliderInt("Rotations tried per hole", &ho.holeRotations, 1, 16);
-            ImGui::SliderInt("Threads (0 = all cores)", &ho.threads, 0, 16);
+            ui::SliderInt("Rotations tried per hole", &ho.holeRotations, 1, 16);
+            ui::SliderInt("Threads (0 = all cores)", &ho.threads, 0, 16);
         }
-        ImGui::Checkbox("Longest first by diameter (else by area)", &ho.sortByDiameter);
+        ui::Checkbox("Longest first by diameter (else by area)", &ho.sortByDiameter);
         const int gutter = chartGutter(ho.maxMipLevel, ho.extraTexels);
         ImGui::Text("Gap between charts: %d texels (%.2f%% of the side); each chart reaches %d texels into it", gutter,
                     100.0 * gutter / ho.resolution, chartMargin(ho.maxMipLevel, ho.extraTexels));
         ImGui::TextDisabled("Bake: extrude every chart border by that many texels into the gutter.");
     } else {
         float g = float(atlasOptions_.gutter);
-        if (ImGui::SliderFloat("Gutter", &g, 0.0f, 0.05f, "%.3f")) atlasOptions_.gutter = g;
-        ImGui::Checkbox("Rotate to minimum rectangle", &atlasOptions_.rotate);
+        if (ui::SliderFloat("Gutter", &g, 0.0f, 0.05f, "%.3f")) atlasOptions_.gutter = g;
+        ui::Checkbox("Rotate to minimum rectangle", &atlasOptions_.rotate);
     }
-    ImGui::SliderInt("Checker squares", &checkerSquares_, 8, 200, "%d across the model");
+    ui::SliderInt("Checker squares", &checkerSquares_, 8, 200, "%d across the model");
     ImGui::TextDisabled("The UV checker follows the atlas: equal squares on the surface, whole texels of the atlas.");
     ImGui::BeginDisabled(done == 0);
-    if (ImGui::Button("Pack atlas")) packAtlasNow();
+    if (ui::Button("Pack atlas")) packAtlasNow();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!atlasValid_);
-    if (ImGui::Button("Export OBJ...")) exportObjRequested_ = true;
+    if (ui::Button("Export OBJ...")) exportObjRequested_ = true;
     ImGui::SameLine();
-    if (ImGui::Button("Export mask PNG...")) exportMaskRequested_ = true;
+    if (ui::Button("Export mask PNG...")) exportMaskRequested_ = true;
     ImGui::EndDisabled();
     if (atlasValid_) {
         ImGui::Text("Efficiency %.1f%%", 100.0 * atlas_.efficiency);
@@ -1634,61 +1636,45 @@ void App::drawHugeButtons()
 {
     const bool busy = hugeJob_ && !hugeJob_->done;
     ImGui::BeginDisabled(busy);
-    ImGui::InputInt("Simplified mesh, faces", &hugeCoarseFaces_, 50000, 200000);
+    ui::InputInt("Simplified mesh, faces", &hugeCoarseFaces_, 50000, 200000);
     hugeCoarseFaces_ = std::max(10000, hugeCoarseFaces_);
-    ImGui::InputInt("Patches to start from", &hugeK_, 100, 500);
+    ui::InputInt("Patches to start from", &hugeK_, 100, 500);
     hugeK_ = std::max(1, hugeK_);
     // a loaded mesh is used as it is (flat arrays and texture are filled from it); with nothing loaded the file dialog opens
     const bool haveLoaded = meshRenderer_.hasMesh() && mesh_.n_faces() > 0 && (!hugeShown_ || hugeFromLoaded_);
-    if (ImGui::Button(haveLoaded ? "Make atlas (huge)" : "Make atlas (huge)...", ImVec2(haveLoaded ? -130.0f : -1.0f, 34))) {
+    if (ui::Button(haveLoaded ? "Make atlas (huge)" : "Make atlas (huge)...", ImVec2(haveLoaded ? -130.0f : -1.0f, 34))) {
         if (haveLoaded) startHugeFromLoaded();
         else hugeOpenRequested_ = true;
     }
-    const bool tipItem = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
     if (haveLoaded) {
         ImGui::SameLine();
-        if (ImGui::Button("from a file...", ImVec2(-1, 34))) hugeOpenRequested_ = true;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Process another mesh straight from a PLY or OBJ file (read into flat arrays)");
+        if (ui::Button("from a file...", ImVec2(-1, 34))) hugeOpenRequested_ = true;
     }
     ImGui::EndDisabled();
-    // the explanation appears once per run of the program: the first time the mouse rests on the button
-    if (tipItem && !hugeTipShown_) {
-        ImGui::SetTooltip("%s",
-            "Huge mode for dense scans (tens of millions of faces).\n"
-            "Works without the half-edge mesh, on compact arrays (about 100 bytes per face): with a mesh\n"
-            "loaded this button takes it and its texture straight from memory, no file dialog (\"from a file\"\n"
-            "reads a PLY / OBJ directly). The mesh is simplified, segmented and unwrapped on the simplified\n"
-            "copy, the charts are lifted back onto the full mesh, the ones that do not lift are repaired,\n"
-            "and the atlas is packed. If there is a texture it is moved to the new atlas. The result is shown\n"
-            "in the 3D view and the UV view and saved as PLY + atlas PNG. It cannot be cancelled.");
-        hugeTipHovered_ = true;
-    } else if (hugeTipHovered_) {
-        hugeTipShown_ = true;
-    }
     if (hugeJob_ && hugeJob_->done && hugeJob_->error.empty()) {
         if (hugeShown_) {
             ImGui::TextUnformatted("3D view:");
             ImGui::SameLine();
             int v = hugeView_;
-            bool changed = ImGui::RadioButton("patches", &v, 0);
+            bool changed = ui::RadioButton("patches", &v, 0);
             ImGui::SameLine();
-            changed |= ImGui::RadioButton("atlas checker", &v, 1);
+            changed |= ui::RadioButton("atlas checker", &v, 1);
             ImGui::SameLine();
-            changed |= ImGui::RadioButton("plain", &v, 2);
+            changed |= ui::RadioButton("plain", &v, 2);
             if (!hugeJob_->baked.empty()) {
                 ImGui::SameLine();
-                changed |= ImGui::RadioButton("texture", &v, 3);
+                changed |= ui::RadioButton("texture", &v, 3);
             }
             if (v == 1) {
                 ImGui::SetNextItemWidth(-1.0f);
-                ImGui::SliderInt("##squares", &checkerSquares_, 8, 200, "%d squares across the model");
+                ui::SliderInt("##squares", &checkerSquares_, 8, 200, "%d squares across the model");
             }
             if (changed) { hugeView_ = v; setHugeColors(); }
-        } else if (ImGui::Button("Show the huge result in 3D")) {
+        } else if (ui::Button("Show the huge result in 3D")) {
             showHugeResult();
         }
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Save the huge result (PLY)...")) hugeSaveRequested_ = true;
+        if (ui::Button("Save the huge result (PLY)...")) hugeSaveRequested_ = true;
         ImGui::EndDisabled();
     }
     if (!hugeStatus_.empty()) ImGui::TextWrapped("%s", hugeStatus_.c_str());
@@ -1710,14 +1696,14 @@ void App::drawMakeAtlasPanel()
     const bool running = atlasStage_ != AtlasStage::Idle;
 
     ImGui::BeginDisabled(running);
-    ImGui::InputInt("Patches to start from (k)", &vsaK_);
+    ui::InputInt("Patches to start from (k)", &vsaK_);
     vsaK_ = std::max(1, std::min(vsaK_, int(mesh_.n_faces())));
     {
         HorizonOptions& ho = horizonOptions_;
         static const int kResolutions[] = {256, 512, 1024, 2048, 4096, 8192};
         char label[24];
         std::snprintf(label, sizeof(label), "%d x %d", ho.resolution, ho.resolution);
-        if (ImGui::BeginCombo("Texture size", label)) {
+        if (ui::BeginCombo("Texture size", label)) {
             for (int r : kResolutions) {
                 std::snprintf(label, sizeof(label), "%d x %d", r, r);
                 if (ImGui::Selectable(label, r == ho.resolution)) ho.resolution = r;
@@ -1728,16 +1714,16 @@ void App::drawMakeAtlasPanel()
         while ((1 << (maxLevel + 1)) <= ho.resolution) ++maxLevel;
         maxLevel = std::max(0, maxLevel - 2);
         ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
-        ImGui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
+        ui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
         ImGui::TextDisabled("gap between charts: %d texels", chartGutter(ho.maxMipLevel, ho.extraTexels));
     }
-    ImGui::Checkbox("Improve the partition with teleportation (slower)", &makeAtlasTeleport_);
+    ui::Checkbox("Improve the partition with teleportation (slower)", &makeAtlasTeleport_);
     ImGui::EndDisabled();
 
     if (!running) {
-        if (ImGui::Button("Make atlas", ImVec2(-1, 40))) startMakeAtlas();
+        if (ui::Button("Make atlas", ImVec2(-1, 40))) startMakeAtlas();
     } else {
-        if (ImGui::Button("Cancel", ImVec2(-1, 40))) cancelMakeAtlas("cancelled");
+        if (ui::Button("Cancel", ImVec2(-1, 40))) cancelMakeAtlas("cancelled");
         const float stage = atlasStage_ == AtlasStage::Lloyd ? 0.15f : 0.55f;
         ImGui::ProgressBar(stage, ImVec2(-1, 0), "");
     }
@@ -1748,10 +1734,10 @@ void App::drawMakeAtlasPanel()
 
     if (atlasValid_ && !running) {
         ImGui::SeparatorText("Retexture and compare");
-        if (ImGui::Button("Bake atlas texture")) bakeAtlasPreview();
+        if (ui::Button("Bake atlas texture")) bakeAtlasPreview();
         ImGui::SameLine();
         ImGui::BeginDisabled(!objExtras_.hasUV());
-        if (ImGui::Button("Compare with the original layout")) measureLayouts();
+        if (ui::Button("Compare with the original layout")) measureLayouts();
         ImGui::EndDisabled();
         ImGui::TextDisabled("Save bakes the source texture into the new atlas by itself.");
         if (layoutMeasured_ && bakedVersion_ == atlasVersion_) {
@@ -1793,20 +1779,20 @@ void App::drawMakeAtlasPanel()
                             retexture_.psnrFull, retexture_.samples);
             ImGui::TextDisabled("Distortion is measured after scaling the uv to the 3D area: 1 is ideal. Lower stretch, a tighter density, fewer seams are better.");
         }
-        if (bakedVersion_ == atlasVersion_ && ImGui::RadioButton("View the baked atlas texture", &colorMode_, 11)) uploadMesh();
+        if (bakedVersion_ == atlasVersion_ && ui::RadioButton("View the baked atlas texture", &colorMode_, 11)) uploadMesh();
     }
 
     ImGui::BeginDisabled(running);
-    if (ImGui::Button("Save")) requestSave();
+    if (ui::Button("Save")) requestSave();
     ImGui::SameLine();
-    if (ImGui::Button("Save As...")) saveAsRequested_ = true;
+    if (ui::Button("Save As...")) saveAsRequested_ = true;
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("%s", atlasValid_ ? "OBJ / PLY with atlas UV and texture" : "make an atlas to save UV and texture");
     ImGui::BeginDisabled(!atlasValid_ || running);
-    if (ImGui::Button("Export OBJ...")) exportObjRequested_ = true;
+    if (ui::Button("Export OBJ...")) exportObjRequested_ = true;
     ImGui::SameLine();
-    if (ImGui::Button("Export mask PNG...")) exportMaskRequested_ = true;
+    if (ui::Button("Export mask PNG...")) exportMaskRequested_ = true;
     ImGui::EndDisabled();
     if (!paramStatus_.empty()) ImGui::TextWrapped("%s", paramStatus_.c_str());
     ImGui::TextDisabled("Other settings come from the VSA, Patches, Parameterize and Refinement panels.");
@@ -2067,27 +2053,27 @@ void App::drawLinabfPanel()
         ImGui::End();
         return;
     }
-    ImGui::InputInt("Max linearization steps", &linabfParams_.maxIterations);
+    ui::InputInt("Max linearization steps", &linabfParams_.maxIterations);
     linabfParams_.maxIterations = std::max(1, linabfParams_.maxIterations);
     {
         float tol = float(linabfParams_.wheelTolerance), th = float(linabfParams_.deficitThreshold);
-        if (ImGui::InputFloat("Wheel tolerance", &tol, 0.0f, 0.0f, "%.1e")) linabfParams_.wheelTolerance = tol;
-        if (ImGui::SliderFloat("Fan deficit threshold", &th, 0.1f, 6.0f)) linabfParams_.deficitThreshold = th;
+        if (ui::InputFloat("Wheel tolerance", &tol, 0.0f, 0.0f, "%.1e")) linabfParams_.wheelTolerance = tol;
+        if (ui::SliderFloat("Fan deficit threshold", &th, 0.1f, 6.0f)) linabfParams_.deficitThreshold = th;
     }
     ImGui::BeginDisabled(selectedPatch_ < 0);
-    if (ImGui::Button("Solve selected")) solvePatches(true);
+    if (ui::Button("Solve selected")) solvePatches(true);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Solve all disks")) solvePatches(false);
+    if (ui::Button("Solve all disks")) solvePatches(false);
     ImGui::SameLine();
-    if (ImGui::RadioButton("Angle error", &colorMode_, 6)) uploadMesh();
+    if (ui::RadioButton("Angle error", &colorMode_, 6)) uploadMesh();
 
-    ImGui::Checkbox("Greedy (debug) instead of least squares", &uvGreedy_);
+    ui::Checkbox("Greedy (debug) instead of least squares", &uvGreedy_);
     ImGui::BeginDisabled(selectedPatch_ < 0);
-    if (ImGui::Button("UV selected")) computeUV(true);
+    if (ui::Button("UV selected")) computeUV(true);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("UV all solved")) computeUV(false);
+    if (ui::Button("UV all solved")) computeUV(false);
     {
         int done = 0, withFlips = 0, flipped = 0;
         for (size_t i = 0; i < uvDone_.size(); ++i)
@@ -2196,19 +2182,19 @@ void App::drawVsaPanel()
     const bool partitioned = vsa_.label.size() == mesh_.n_faces();
 
     const char* metrics[] = {"L2,1", "L2"};
-    if (ImGui::Combo("Metric", &vsaMetric_, metrics, 2)) {
+    if (ui::Combo("Metric", &vsaMetric_, metrics, 2)) {
         vsa_ = VSAState();
         vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
         resetState();
         refresh();
     }
-    ImGui::InputInt("Proxies (k)", &vsaK_);
+    ui::InputInt("Proxies (k)", &vsaK_);
     vsaK_ = std::max(1, std::min(vsaK_, int(mesh_.n_faces())));
 
     const char* methods[] = {"Random", "Farthest point"};
-    ImGui::Combo("Seeding", &seedMethod_, methods, 2);
-    ImGui::InputInt("Random seed", &vsaRngSeed_);
-    if (ImGui::Button("Seed")) {
+    ui::Combo("Seeding", &seedMethod_, methods, 2);
+    ui::InputInt("Random seed", &vsaRngSeed_);
+    if (ui::Button("Seed")) {
         vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
         if (seedMethod_ == 0) initRandomSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
         else                  initFarthestSeeds(vsaInput(), vsa_, vsaK_, uint64_t(vsaRngSeed_));
@@ -2218,19 +2204,19 @@ void App::drawVsaPanel()
 
     ImGui::SeparatorText("Lloyd");
     ImGui::BeginDisabled(vsa_.k() == 0 || running);
-    if (ImGui::Button("Partition")) {
+    if (ui::Button("Partition")) {
         vsaAdded_ = partition(vsaInput(), vsa_);
         ++vsaSteps_;
         colorMode_ = 2;
         uploadMesh();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Fit")) {
+    if (ui::Button("Fit")) {
         fitProxies(vsaInput(), vsa_);
         refresh();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step")) {   // one Lloyd iteration: partition + fit
+    if (ui::Button("Step")) {   // one Lloyd iteration: partition + fit
         vsaAdded_ = lloydStep(vsaInput(), vsa_).added;
         ++vsaSteps_;
         colorMode_ = 2;
@@ -2240,36 +2226,36 @@ void App::drawVsaPanel()
     ImGui::SameLine();
     if (!running) {
         ImGui::BeginDisabled(vsa_.k() == 0);
-        if (ImGui::Button("Run")) startJob(RefineJob::Kind::Lloyd);
+        if (ui::Button("Run")) startJob(RefineJob::Kind::Lloyd);
         ImGui::EndDisabled();
-    } else if (ImGui::Button("Stop")) {
+    } else if (ui::Button("Stop")) {
         job_.reset();
         lloydStatus_ = "stopped";
     }
 
-    ImGui::InputInt("Max iterations", &lloydParams_.maxIterations);
+    ui::InputInt("Max iterations", &lloydParams_.maxIterations);
     lloydParams_.maxIterations = std::max(1, lloydParams_.maxIterations);
-    ImGui::InputInt("Patience", &lloydParams_.patience);
+    ui::InputInt("Patience", &lloydParams_.patience);
     lloydParams_.patience = std::max(1, lloydParams_.patience);
     {
         float tol = float(lloydParams_.relTolerance);
-        if (ImGui::InputFloat("Rel. tolerance", &tol, 0.0f, 0.0f, "%.1e"))
+        if (ui::InputFloat("Rel. tolerance", &tol, 0.0f, 0.0f, "%.1e"))
             lloydParams_.relTolerance = std::max(0.0f, tol);
     }
 
     ImGui::SeparatorText("Border smoothing");
     {
         float lam = float(smoothParams_.lambda), kap = float(smoothParams_.kappa);
-        if (ImGui::SliderFloat("Lambda (perimeter)", &lam, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
+        if (ui::SliderFloat("Lambda (perimeter)", &lam, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
             smoothParams_.lambda = lam;
-        if (ImGui::SliderFloat("Kappa (crease)", &kap, 0.0f, 4.0f, "%.2f"))
+        if (ui::SliderFloat("Kappa (crease)", &kap, 0.0f, 4.0f, "%.2f"))
             smoothParams_.kappa = kap;
-        ImGui::SliderInt("Max sweeps", &smoothParams_.maxSweeps, 1, 30);
+        ui::SliderInt("Max sweeps", &smoothParams_.maxSweeps, 1, 30);
         ImGui::TextDisabled("lambda = 0: off. Applied after every partition in Run / Step.");
     }
     vsa_.smooth = smoothParams_;
     ImGui::BeginDisabled(!partitioned || running);
-    if (ImGui::Button("Smooth now")) {
+    if (ui::Button("Smooth now")) {
         const SmoothStats st = smoothLabels(vsaInput(), vsa_);
         char buf[96];
         std::snprintf(buf, sizeof(buf), "smoothing: %d flips in %d sweeps, perimeter %.3f -> %.3f", st.flips,
@@ -2282,11 +2268,11 @@ void App::drawVsaPanel()
 
     ImGui::SeparatorText("Proxy operations");
     ImGui::BeginDisabled(!partitioned || running);
-    if (ImGui::Button("Insert")) {
+    if (ui::Button("Insert")) {
         if (insertProxy(vsaInput(), vsa_)) { colorMode_ = 2; uploadMesh(); }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Delete cheapest")) {
+    if (ui::Button("Delete cheapest")) {
         RegionPair m;
         if (findBestMerge(vsaInput(), vsa_, m) && deleteProxy(vsaInput(), vsa_, m.a, m.b)) {
             colorMode_ = 2;
@@ -2294,13 +2280,13 @@ void App::drawVsaPanel()
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Teleport")) {
+    if (ui::Button("Teleport")) {
         if (teleportProxy(vsaInput(), vsa_, teleportParams_.ratio)) { colorMode_ = 2; uploadMesh(); }
         else lloydStatus_ = "teleport: no admissible move";
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(running);
-    if (ImGui::Button("Grow to k")) {
+    if (ui::Button("Grow to k")) {
         if (vsa_.k() == 0) {
             vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
             initFarthestSeeds(vsaInput(), vsa_, 1, uint64_t(vsaRngSeed_));
@@ -2309,23 +2295,23 @@ void App::drawVsaPanel()
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(vsa_.k() < 3);
-    if (ImGui::Button("Run + teleport")) startJob(RefineJob::Kind::Teleport);
+    if (ui::Button("Run + teleport")) startJob(RefineJob::Kind::Teleport);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     {
         float ratio = float(teleportParams_.ratio);
-        if (ImGui::SliderFloat("Teleport ratio", &ratio, 0.05f, 1.0f))
+        if (ui::SliderFloat("Teleport ratio", &ratio, 0.05f, 1.0f))
             teleportParams_.ratio = ratio;
-        ImGui::InputInt("Max teleports", &teleportParams_.maxTeleports);
+        ui::InputInt("Max teleports", &teleportParams_.maxTeleports);
         teleportParams_.maxTeleports = std::max(1, teleportParams_.maxTeleports);
     }
 
     ImGui::SeparatorText("Weights");
-    ImGui::Checkbox("Paint (Alt+drag rotates)", &paintMode_);
-    ImGui::SliderInt("Brush radius (px)", &brushRadius_, 2, 100);
-    ImGui::SliderFloat("Brush weight", &brushWeight_, 0.1f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-    ImGui::Checkbox("Erase (set to 1)", &eraseMode_);
-    if (ImGui::Button("Reset weights")) {
+    ui::Checkbox("Paint (Alt+drag rotates)", &paintMode_);
+    ui::SliderInt("Brush radius (px)", &brushRadius_, 2, 100);
+    ui::SliderFloat("Brush weight", &brushWeight_, 0.1f, 20.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ui::Checkbox("Erase (set to 1)", &eraseMode_);
+    if (ui::Button("Reset weights")) {
         std::fill(faceWeights_.begin(), faceWeights_.end(), 1.0f);
         rebuildMoments();
         if (colorMode_ == 2 || colorMode_ == 3) uploadMesh();
@@ -2425,23 +2411,23 @@ void App::drawMainMenu()
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open...", "Cmd+O"))
+            if (ui::MenuItem("Open...", "Cmd+O"))
                 openRequested = true;
             ImGui::Separator();
-            if (ImGui::MenuItem("Save", "Cmd+S", false, meshRenderer_.hasMesh())) requestSave();
-            if (ImGui::MenuItem("Save As...", "Cmd+Shift+S", false, meshRenderer_.hasMesh())) saveAsRequested_ = true;
-            ImGui::MenuItem("Binary PLY", nullptr, &binaryPly_);
+            if (ui::MenuItem("Save", "Cmd+S", false, meshRenderer_.hasMesh())) requestSave();
+            if (ui::MenuItem("Save As...", "Cmd+Shift+S", false, meshRenderer_.hasMesh())) saveAsRequested_ = true;
+            ui::MenuItem("Binary PLY", nullptr, &binaryPly_);
             ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Cmd+Q"))
+            if (ui::MenuItem("Quit", "Cmd+Q"))
                 glfwSetWindowShouldClose(window_, GLFW_TRUE);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Wireframe", nullptr, &wireframe_);
-            if (ImGui::MenuItem("Reset camera"))
+            ui::MenuItem("Wireframe", nullptr, &wireframe_);
+            if (ui::MenuItem("Reset camera"))
                 camera_.reset();
             ImGui::Separator();
-            ImGui::MenuItem("ImGui demo", nullptr, &showDemo_);
+            ui::MenuItem("ImGui demo", nullptr, &showDemo_);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -2507,11 +2493,11 @@ void App::drawUI()
         ImGui::Text("ImGui wants mouse: %s", io.WantCaptureMouse ? "yes" : "no");
         ImGui::Separator();
 
-        ImGui::ColorEdit3("Background", clearColor_);
-        ImGui::Checkbox("Debug triangle", &showTriangle_);
+        ui::ColorEdit3("Background", clearColor_);
+        ui::Checkbox("Debug triangle", &showTriangle_);
         ImGui::SameLine();
-        ImGui::Checkbox("Rotate", &rotate_);
-        ImGui::Checkbox("ImGui demo", &showDemo_);
+        ui::Checkbox("Rotate", &rotate_);
+        ui::Checkbox("ImGui demo", &showDemo_);
     }
     ImGui::End();
 
@@ -2520,26 +2506,26 @@ void App::drawUI()
     if (ImGui::Begin("Mesh")) {
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::Separator();
-        ImGui::Checkbox("Wireframe", &wireframe_);
-        ImGui::Checkbox("Cull back faces (faster on scans)", &cullBackFaces_);
+        ui::Checkbox("Wireframe", &wireframe_);
+        ui::Checkbox("Cull back faces (faster on scans)", &cullBackFaces_);
         {
             static const char* kAA[] = {"Off", "2x", "4x", "8x"};
             int idx = msaaSamples_ >= 8 ? 3 : msaaSamples_ >= 4 ? 2 : msaaSamples_ >= 2 ? 1 : 0;
-            if (ImGui::Combo("Anti-aliasing (MSAA)", &idx, kAA, 4)) msaaSamples_ = idx == 0 ? 0 : (1 << idx);
+            if (ui::Combo("Anti-aliasing (MSAA)", &idx, kAA, 4)) msaaSamples_ = idx == 0 ? 0 : (1 << idx);
         }
         if (!textureNote_.empty()) ImGui::TextDisabled("%s", textureNote_.c_str());
-        if (ImGui::RadioButton("Gray", &colorMode_, 0)) uploadMesh();
+        if (ui::RadioButton("Gray", &colorMode_, 0)) uploadMesh();
         ImGui::SameLine();
-        if (ImGui::RadioButton("Face normals", &colorMode_, 1)) uploadMesh();
+        if (ui::RadioButton("Face normals", &colorMode_, 1)) uploadMesh();
         ImGui::SameLine();
         ImGui::BeginDisabled(!hasSourceTexture_);
-        if (ImGui::RadioButton("Texture", &colorMode_, 10)) uploadMesh();
+        if (ui::RadioButton("Texture", &colorMode_, 10)) uploadMesh();
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::RadioButton("Regions", &colorMode_, 2)) uploadMesh();
+        if (ui::RadioButton("Regions", &colorMode_, 2)) uploadMesh();
         ImGui::SameLine();
-        if (ImGui::RadioButton("Weights", &colorMode_, 3)) uploadMesh();
-        if (ImGui::Button("Reset camera")) camera_.reset();
+        if (ui::RadioButton("Weights", &colorMode_, 3)) uploadMesh();
+        if (ui::Button("Reset camera")) camera_.reset();
         ImGui::Separator();
         if (meshRenderer_.hasMesh()) {
             ImGui::Text("Vertices : %d", diag_.vertices);
