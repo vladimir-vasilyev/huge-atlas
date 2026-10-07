@@ -6,6 +6,7 @@
 #include <zlib.h>
 
 #include <fstream>
+#include <chrono>
 #include <random>
 
 static const double kPi = 3.14159265358979323846;
@@ -534,6 +535,45 @@ static void testHoleFilterDoesNotChangeTheResult()
     }
 }
 
+// Many charts of very different sizes: the large ones through the horizon search, the small ones into the free cells.
+// The guarantee (no mip level reads a neighbour's texels) is checked by the independent checker, and the packing must not
+// be much worse than the one without the special path.
+static void testSmallChartPath()
+{
+    std::mt19937 rng(2024);
+    std::uniform_real_distribution<double> A(0.0, 2 * kPi), S(0.0, 0.5), big(0.8, 1.6), tiny(0.04, 0.16);
+    std::vector<StarChart> charts;
+    for (int i = 0; i < 12; ++i) charts.push_back(makeStar(rng, big(rng), 20, S(rng), A(rng)));
+    for (int i = 0; i < 520; ++i) charts.push_back(makeStar(rng, tiny(rng), 12, S(rng), A(rng)));
+    const std::vector<AtlasInput> in = inputsOf(charts);
+
+    HorizonOptions o;
+    o.resolution = 1024;
+    o.maxMipLevel = 1;
+    o.threads = 1;
+    o.packSmallCharts = false;
+    const auto t0 = std::chrono::steady_clock::now();
+    const AtlasResult legacy = packHorizon(in, o);
+    const double legacySeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    o.packSmallCharts = true;
+    const auto t1 = std::chrono::steady_clock::now();
+    const AtlasResult split = packHorizon(in, o);
+    const double splitSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+    CHECK(legacy.ok && split.ok);
+    std::printf("  %zu charts, 1024^2: legacy %.1f%% in %.2f s, small-chart path %.1f%% in %.2f s\n", charts.size(),
+                100 * legacy.efficiency, legacySeconds, 100 * split.efficiency, splitSeconds);
+    CHECK(split.efficiency > 0.85 * legacy.efficiency);
+
+    std::vector<std::vector<unsigned char>> bodies;
+    for (size_t i = 0; i < charts.size(); ++i) {
+        CHECK(split.uv[i].size() == charts[i].uv.size());
+        for (const auto& p : split.uv[i]) CHECK(p.x() >= -1e-9 && p.x() <= 1 + 1e-9 && p.y() >= -1e-9 && p.y() <= 1 + 1e-9);
+        bodies.push_back(atlascheck::bodyMask(charts[i].mesh, split.uv[i], o.resolution));
+    }
+    const atlascheck::Report rep = atlascheck::checkMipGuarantee(bodies, o.resolution, o.maxMipLevel, true);
+    CHECK(rep.conflicts == 0);
+}
+
 // ---- mask and PNG ---------------------------------------------------------------------------------
 static uint32_t be32(const unsigned char* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 
@@ -617,6 +657,7 @@ int main(int argc, char** argv)
     run("parallelholes", testParallelHoleSearchMatchesSequential);
     run("threads", testThreadCountDoesNotChangeTheResult);
     run("holefilter", testHoleFilterDoesNotChangeTheResult);
+    run("small", testSmallChartPath);
     run("bad", testBadInput);
     run("mask", testMaskAndPNG);
     std::printf(failures ? "FAILED (%d)\n" : "OK\n", failures);

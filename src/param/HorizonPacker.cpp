@@ -112,6 +112,7 @@ struct Outcome {
     bool fits = false;
     std::vector<Placed> placed;   // parallel to the chart order
     std::vector<int> horizon;
+    std::shared_ptr<HorizonOccupancy> occupancy;   // what the placed charts cover (filled when the pass fits)
 };
 
 std::vector<Segment2> toTexels(const Chart& c, double tau, double theta)
@@ -490,7 +491,147 @@ Outcome packAt(const std::vector<Chart>& order, double tau, const HorizonOptions
         out.placed[i] = {useHole ? cand[holeK].thetaO : cand[bestK].thetaH, pl.u - prof.firstColumn, pl.v};
     }
     out.fits = true;
+    out.occupancy = std::make_shared<HorizonOccupancy>(std::move(occ));
     return out;
+}
+
+// ---- small charts on a coarse bit grid ------------------------------------------------------------
+
+// Free cells of the usable area as bit rows (1 = free). A cell covers cell x cell texels and is free when no texel of it is used.
+class CoarseGrid {
+public:
+    CoarseGrid(int origin, int size, int cell) : origin_(origin), cell_(cell)
+    {
+        cols_ = rows_ = size / cell;
+        words_ = (cols_ + 63) / 64;
+        free_.assign(size_t(rows_) * words_, 0);
+        count_.assign(rows_, cols_);
+        for (int r = 0; r < rows_; ++r)
+            for (int c = 0; c < cols_; ++c) free_[size_t(r) * words_ + c / 64] |= uint64_t(1) << (c % 64);
+    }
+    int cols() const { return cols_; }
+    int rows() const { return rows_; }
+    int cell() const { return cell_; }
+    int origin() const { return origin_; }
+
+    void occupyTexels(const HorizonOccupancy& occ, int xBegin, int xEnd)
+    {
+        for (int x = xBegin; x < xEnd; ++x) {
+            const int c = (x - origin_) / cell_;
+            if (c < 0 || c >= cols_) continue;
+            for (const auto& iv : occ.column(x)) {
+                const int y0 = std::max(iv.first, origin_), y1 = std::min(iv.second, origin_ + rows_ * cell_);
+                if (y1 <= y0) continue;
+                for (int r = (y0 - origin_) / cell_; r <= (y1 - 1 - origin_) / cell_; ++r) clear(r, c);
+            }
+        }
+    }
+
+    // The lowest (then leftmost) w x h block of free cells, or false.
+    bool find(int w, int h, int& cx, int& cy) const
+    {
+        if (w <= 0 || h <= 0 || w > cols_ || h > rows_) return false;
+        std::vector<uint64_t> acc(words_);
+        for (int y = 0; y + h <= rows_;) {
+            int skipTo = -1;   // a row with too few free cells cannot be part of any window that contains it
+            for (int r = y + h - 1; r >= y; --r)
+                if (count_[r] < w) { skipTo = r + 1; break; }
+            if (skipTo >= 0) { y = skipTo; continue; }
+            std::copy(&free_[size_t(y) * words_], &free_[size_t(y) * words_] + words_, acc.begin());
+            bool any = true;
+            for (int r = 1; r < h && any; ++r) {
+                any = false;
+                const uint64_t* row = &free_[size_t(y + r) * words_];
+                for (int k = 0; k < words_; ++k) { acc[k] &= row[k]; any = any || acc[k]; }
+            }
+            if (any) {
+                int len = 1;   // acc bit i: cells i .. i + len - 1 are free in every row of the window
+                while (len < w && any) {
+                    const int step = std::min(len, w - len);
+                    shiftRightAnd(acc, step);
+                    len += step;
+                    any = false;
+                    for (int k = 0; k < words_ && !any; ++k) any = acc[k] != 0;
+                }
+                if (any) {
+                    for (int k = 0; k < words_; ++k)
+                        if (acc[k]) {
+                            cx = k * 64 + __builtin_ctzll(acc[k]);
+                            cy = y;
+                            return true;
+                        }
+                }
+            }
+            ++y;
+        }
+        return false;
+    }
+
+    void take(int cx, int cy, int w, int h)
+    {
+        for (int r = cy; r < cy + h; ++r)
+            for (int c = cx; c < cx + w; ++c) clear(r, c);
+    }
+
+private:
+    void clear(int r, int c)
+    {
+        uint64_t& word = free_[size_t(r) * words_ + c / 64];
+        const uint64_t bit = uint64_t(1) << (c % 64);
+        if (word & bit) { word &= ~bit; --count_[r]; }
+    }
+    // acc &= acc >> s (bit i of the result needs bits i and i + s)
+    void shiftRightAnd(std::vector<uint64_t>& acc, int s) const
+    {
+        const int ws = s / 64, bs = s % 64;
+        for (int k = 0; k < words_; ++k) {
+            uint64_t v = 0;
+            if (k + ws < words_) {
+                v = acc[k + ws] >> bs;
+                if (bs && k + ws + 1 < words_) v |= acc[k + ws + 1] << (64 - bs);
+            }
+            acc[k] &= v;   // in place is safe: reads only words at or after k, which are not yet changed
+        }
+    }
+
+    int origin_, cell_, cols_, rows_, words_;
+    std::vector<uint64_t> free_;
+    std::vector<int> count_;
+};
+
+// Puts the small charts, largest first, into the free cells left by `occ`. false when one does not fit.
+bool placeSmallCharts(const std::vector<Chart>& small, double tau, const HorizonOptions& o, int margin,
+                      const HorizonOccupancy& occ, std::vector<Placed>& placed)
+{
+    const int R = o.resolution, B = o.atlasBorder;
+    const int usable = R - 2 * B, cell = std::max(1, o.smallCell);
+    CoarseGrid grid(B, usable - usable % cell, cell);
+    grid.occupyTexels(occ, B, R - B);
+    placed.assign(small.size(), Placed());
+    for (size_t i = 0; i < small.size(); ++i) {
+        struct Option { HorizonProfile prof; double theta = 0; int w = 0, h = 0, minLo = 0, cx = 0, cy = 0; bool ok = false; } opt[2];
+        for (int k = 0; k < 2; ++k) {
+            Option& op = opt[k];
+            op.theta = small[i].baseAngle + 0.5 * kPi * k;
+            op.prof = computeProfile(toTexels(small[i], tau, op.theta), margin);
+            if (op.prof.width() <= 0) continue;
+            int lo = std::numeric_limits<int>::max(), hi = std::numeric_limits<int>::min();
+            for (int c = 0; c < op.prof.width(); ++c) { lo = std::min(lo, op.prof.lo[c]); hi = std::max(hi, op.prof.hi[c]); }
+            op.minLo = lo;
+            op.w = (op.prof.width() + cell - 1) / cell;
+            op.h = (hi - lo + cell - 1) / cell;
+            op.ok = grid.find(op.w, op.h, op.cx, op.cy);
+        }
+        int best = -1;
+        for (int k = 0; k < 2; ++k)
+            if (opt[k].ok && (best < 0 || opt[k].cy < opt[best].cy || (opt[k].cy == opt[best].cy && opt[k].cx < opt[best].cx))) best = k;
+        if (best < 0) return false;
+        const Option& op = opt[best];
+        grid.take(op.cx, op.cy, op.w, op.h);
+        const int u = grid.origin() + op.cx * cell, v = grid.origin() + op.cy * cell - op.minLo;
+        placed[i] = {op.theta, u - op.prof.firstColumn, v};
+    }
+    return true;
 }
 
 } // namespace
@@ -547,22 +688,78 @@ AtlasResult packHorizon(const std::vector<AtlasInput>& in, const HorizonOptions&
     }
     std::unique_ptr<ThreadPool> ownPool;
     ThreadPool* pool = poolFor(o, ownPool);
-    bool useHoles = false;
-    if (o.fillHoles && o.holeRotations > 0 && packAt(order, lo, o, margin, pool).fits) {   // never worse than without holes
-        useHoles = true;
-        double up = std::min(tauHi, lo * 1.6);
-        if (up > lo && packAt(order, up, o, margin, pool).fits) {
-            lo = up;
-        } else {
-            for (int i = 0; i < std::max(4, o.searchIterations - 5) && up > lo && (up - lo) > o.densityTolerance * lo; ++i) {
-                const double mid = 0.5 * (lo + up);
-                if (packAt(order, mid, o, margin, pool).fits) lo = mid;
-                else up = mid;
+
+    // many charts: the large ones through the horizon search, the small ones into the cells they leave free
+    std::vector<int> bigIdx, smallIdx;   // indices into `order`
+    if (o.packSmallCharts && o.fillHoles && order.size() >= size_t(std::max(2, o.smallMinCharts))) {
+        std::vector<int> byArea(order.size());
+        std::iota(byArea.begin(), byArea.end(), 0);
+        std::stable_sort(byArea.begin(), byArea.end(), [&](int a, int b) { return order[a].area3D > order[b].area3D; });
+        std::vector<char> big(order.size(), 0);
+        double acc = 0.0;
+        for (int i : byArea) {
+            if (acc >= o.bigAreaShare * totalArea) break;
+            big[i] = 1;
+            acc += order[i].area3D;
+        }
+        for (size_t i = 0; i < order.size(); ++i) (big[i] ? bigIdx : smallIdx).push_back(int(i));
+        if (bigIdx.empty() || smallIdx.size() < 100) { bigIdx.clear(); smallIdx.clear(); }
+    }
+    Outcome fin;
+    double tau = lo;
+    bool combinedOk = false;
+    if (!smallIdx.empty()) {
+        std::vector<Chart> bigCharts, smallCharts;
+        for (int i : bigIdx) bigCharts.push_back(order[i]);
+        for (int i : smallIdx) smallCharts.push_back(order[i]);
+        std::vector<Placed> smallPlaced;
+        auto attempt = [&](double d, Outcome* keep) {
+            Outcome ob = packAt(bigCharts, d, o, margin, pool);
+            if (!ob.fits) return false;
+            std::vector<Placed> sp;
+            if (!placeSmallCharts(smallCharts, d, o, margin, *ob.occupancy, sp)) return false;
+            if (keep) {
+                keep->fits = true;
+                keep->placed.assign(order.size(), Placed());
+                for (size_t k = 0; k < bigIdx.size(); ++k) keep->placed[bigIdx[k]] = ob.placed[k];
+                for (size_t k = 0; k < smallIdx.size(); ++k) keep->placed[smallIdx[k]] = sp[k];
+                keep->horizon = ob.horizon;
             }
+            return true;
+        };
+        if (attempt(lo, nullptr)) {
+            double dlo = lo, up = std::min(tauHi, lo * 1.6);
+            if (up > dlo && attempt(up, nullptr)) {
+                dlo = up;
+            } else {
+                for (int i = 0; i < std::max(4, o.searchIterations - 5) && up > dlo && (up - dlo) > o.densityTolerance * dlo; ++i) {
+                    const double mid = 0.5 * (dlo + up);
+                    if (attempt(mid, nullptr)) dlo = mid;
+                    else up = mid;
+                }
+            }
+            tau = dlo;
+            combinedOk = attempt(tau, &fin);
         }
     }
-    const double tau = lo;
-    const Outcome fin = packAt(order, tau, useHoles ? o : plain, margin, useHoles ? pool : nullptr);
+    bool useHoles = false;
+    if (!combinedOk) {
+        if (o.fillHoles && o.holeRotations > 0 && packAt(order, lo, o, margin, pool).fits) {   // never worse than without holes
+            useHoles = true;
+            double up = std::min(tauHi, lo * 1.6);
+            if (up > lo && packAt(order, up, o, margin, pool).fits) {
+                lo = up;
+            } else {
+                for (int i = 0; i < std::max(4, o.searchIterations - 5) && up > lo && (up - lo) > o.densityTolerance * lo; ++i) {
+                    const double mid = 0.5 * (lo + up);
+                    if (packAt(order, mid, o, margin, pool).fits) lo = mid;
+                    else up = mid;
+                }
+            }
+        }
+        tau = lo;
+        fin = packAt(order, tau, useHoles ? o : plain, margin, useHoles ? pool : nullptr);
+    }
 
     const double R = double(o.resolution);
     double used = 0.0;

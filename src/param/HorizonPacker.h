@@ -40,6 +40,13 @@ struct HorizonOptions {
     double densityTolerance = 0.002;   // stop bisecting when the bracket is this much (relative) wider than the density; 0 = use all steps
     bool fillHoles = true;        // put charts into the free space under the horizon (overhangs, gaps between charts)
     int  holeRotations = 4;       // orientations tried when looking for a hole (equally spaced, starting at the base one)
+    // Many small charts: the large ones (together bigAreaShare of the area) are packed as usual, the small ones are put
+    // into the free space they leave with a coarse bit grid (cell texels; bounding boxes rounded up, so the guarantee
+    // holds) instead of a position search per chart. Used when there are at least smallMinCharts charts.
+    bool   packSmallCharts = true;
+    double bigAreaShare = 0.9;
+    int    smallCell = 4;
+    int    smallMinCharts = 400;
     bool holeFilter = true;       // skip positions where some column of the chart finds no tall enough gap (same result, much faster)
     int  threads = 0;             // hole search threads: 0 = all cores, 1 = none. The result does not depend on it.
 };
