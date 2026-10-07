@@ -169,6 +169,9 @@ SmoothStats smoothLabels(const VSAInput& in, VSAState& s)
     for (int l : s.label) if (l >= 0) ++size[l];
 
     struct Flip { int face, to; };
+    // A decision only depends on the labels around the face, so a face is re-examined only after one of
+    // them changed ("dirty"); this is exact, a sweep without flips still means a fixed point.
+    std::vector<uint8_t> dirty(m.n_faces(), 1);
     for (int sweep = 0; sweep < s.smooth.maxSweeps; ++sweep) {
         int flips = 0;
         // Faces of one color share no vertex, so a decision (which reads the faces around its own face)
@@ -181,6 +184,8 @@ SmoothStats smoothLabels(const VSAInput& in, VSAState& s)
                 std::vector<int> ring;
                 for (size_t i = b; i < e; ++i) {
                     const TriMesh::FaceHandle f(faces[i]);
+                    if (!dirty[f.idx()]) continue;
+                    dirty[f.idx()] = 0;
                     const int a = s.label[f.idx()];
                     if (a < 0) continue;
 
@@ -229,6 +234,8 @@ SmoothStats smoothLabels(const VSAInput& in, VSAState& s)
                     --size[a];
                     ++size[fl.to];
                     ++flips;
+                    for (auto v : m.fv_range(TriMesh::FaceHandle(fl.face)))
+                        for (auto g : m.vf_range(v)) dirty[g.idx()] = 1;
                 }
         }
         st.flips += flips;
