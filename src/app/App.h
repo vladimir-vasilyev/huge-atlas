@@ -73,6 +73,8 @@ private:
     // Huge meshes: the file is read straight into flat arrays and processed on a background thread (flat pipeline)
     struct HugeJob;
     void startHuge(const std::string& path);
+    void startHugeFromLoaded();
+    void runHugeJob(const std::shared_ptr<HugeJob>& job);
     void drawHugeButtons();
     void drawHugeAtlas();
     bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it
@@ -211,6 +213,7 @@ private:
     bool             hugeTipShown_ = false;       // the explanation is shown once per run of the program
     bool             hugeTipHovered_ = false;
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
+    bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_
     int              hugeView_ = 0;               // 0 patches, 1 uv checker, 2 plain
     int              hugeCoarseFaces_ = 300000;   // size of the simplified mesh

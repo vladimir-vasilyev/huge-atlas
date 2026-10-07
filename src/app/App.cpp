@@ -123,6 +123,9 @@ struct App::HugeJob {
     std::vector<unsigned char> baked;    // the atlas texture, RGBA, row 0 = v = 0 (empty: the file had no texture)
     int bakedResolution = 0;
     std::string textureName;             // of the old texture (for the messages)
+    bool preloaded = false;              // mesh, surface and source texture were filled from the loaded TriMesh
+    std::vector<unsigned char> sourcePixels;   // the old texture, RGBA, row 0 = v = 0
+    int sourceW = 0, sourceH = 0, textureMaterial = -1;
     AtlasResult atlas;
     FlatLoadInfo loadInfo;
     double loadSeconds = 0, pipelineSeconds = 0, packSeconds = 0, bakeSeconds = 0;
@@ -152,7 +155,8 @@ void App::run()
             if (hugeFrame == 2) {
                 if (const char* envK = std::getenv("VSA_K")) hugeK_ = std::max(1, std::atoi(envK));
                 if (const char* envF = std::getenv("VSA_HUGE_FACES")) hugeCoarseFaces_ = std::max(1000, std::atoi(envF));
-                startHuge(autoHuge);
+                if (std::string(autoHuge) == "loaded") startHugeFromLoaded();   // VSA_AUTO_HUGE=loaded: the mesh of VSA_MESH
+                else startHuge(autoHuge);
             }
             if (hugeFrame > 3 && hugeJob_ && hugeJob_->done && hugeJob_->worker.joinable() == false && hugeJob_->saved == false) {
                 if (const char* view = std::getenv("VSA_HUGE_VIEW")) { hugeView_ = std::atoi(view); setHugeColors(); }
@@ -1286,6 +1290,46 @@ void App::startHuge(const std::string& path)
     if (atlasStage_ != AtlasStage::Idle || job_) { hugeStatus_ = "finish or cancel the running job first"; return; }
     auto job = std::make_shared<HugeJob>();
     job->path = path;
+    hugeFromLoaded_ = false;
+    runHugeJob(job);
+}
+
+// The mesh that is loaded (File > Open) goes through the huge pipeline as it is: flat arrays and the texture are filled from it.
+void App::startHugeFromLoaded()
+{
+    if (hugeJob_ && !hugeJob_->done) return;
+    if (atlasStage_ != AtlasStage::Idle || job_) { hugeStatus_ = "finish or cancel the running job first"; return; }
+    if (!meshRenderer_.hasMesh() || mesh_.n_faces() == 0 || (hugeShown_ && !hugeFromLoaded_)) return;
+    auto job = std::make_shared<HugeJob>();
+    job->path = "(the loaded mesh)";
+    job->preloaded = true;
+    hugeFromLoaded_ = true;
+    job->mesh = flatFromTriMesh(mesh_);        // corner k of a face = the k-th vertex of fv_range, as in objExtras_
+    job->transform = FlatTransform();          // the loaded mesh is already normalized: the saved coordinates are the normalized ones
+    if (objExtras_.hasUV() && objExtras_.cornerUV.size() == mesh_.n_faces() * 6) {
+        job->surface.cornerUV = objExtras_.cornerUV;
+        job->surface.materials = objExtras_.materials;
+        job->surface.directory = objExtras_.directory;
+        if (objExtras_.faceMaterial.size() == mesh_.n_faces()) {
+            job->surface.faceMaterial.resize(mesh_.n_faces());
+            for (size_t f = 0; f < mesh_.n_faces(); ++f) {
+                const int m = objExtras_.faceMaterial[f];
+                job->surface.faceMaterial[f] = m < 0 ? uint8_t(255) : uint8_t(std::min(m, 254));
+            }
+        }
+    }
+    if (hasSourceTexture_ && !sourcePixels_.empty() && job->surface.hasUV()) {
+        job->sourcePixels = sourcePixels_;
+        job->sourceW = sourceW_;
+        job->sourceH = sourceH_;
+        job->textureMaterial = textureMaterial_;
+        job->textureName = "the texture of the loaded mesh";
+    }
+    runHugeJob(job);
+}
+
+void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
+{
     job->options.simplify.targetFaces = size_t(std::max(1000, hugeCoarseFaces_));
     job->options.k = std::max(1, hugeK_);
     job->options.lloyd.maxIterations = 30;
@@ -1296,28 +1340,27 @@ void App::startHuge(const std::string& path)
         using Clock = std::chrono::steady_clock;
         auto since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
         std::string err;
-        raw->say("reading the mesh...");
         auto t = Clock::now();
-        if (!loadFlatMesh(raw->path, raw->mesh, &raw->loadInfo, &err, &raw->surface)) {
-            std::lock_guard<std::mutex> lock(raw->mutex);
-            raw->error = err;
-            raw->done = true;
-            return;
-        }
-        raw->transform = normalizeFlatToUnitBox(raw->mesh);
-        // the old texture: the first material with a map_Kd (OBJ) or the TextureFile comment (PLY)
-        int textureMaterial = -1;
-        std::vector<unsigned char> sourcePixels;
-        int sourceW = 0, sourceH = 0;
-        if (raw->surface.hasUV()) {
-            std::string name = raw->surface.textureFile;
-            for (size_t i = 0; i < raw->surface.materials.size() && name.empty(); ++i)
-                if (!raw->surface.materials[i].diffuseMap.empty()) { name = raw->surface.materials[i].diffuseMap; textureMaterial = int(i); }
-            if (!name.empty()) {
-                raw->say("reading the texture...");
-                std::string texErr;
-                if (loadImageRGBA(raw->surface.directory + "/" + name, sourceW, sourceH, sourcePixels, &texErr)) raw->textureName = name;
-                else { std::lock_guard<std::mutex> lock(raw->mutex); raw->warning = "texture " + name + " not read: " + texErr; sourcePixels.clear(); }
+        if (!raw->preloaded) {
+            raw->say("reading the mesh...");
+            if (!loadFlatMesh(raw->path, raw->mesh, &raw->loadInfo, &err, &raw->surface)) {
+                std::lock_guard<std::mutex> lock(raw->mutex);
+                raw->error = err;
+                raw->done = true;
+                return;
+            }
+            raw->transform = normalizeFlatToUnitBox(raw->mesh);
+            // the old texture: the first material with a map_Kd (OBJ) or the TextureFile comment (PLY)
+            if (raw->surface.hasUV()) {
+                std::string name = raw->surface.textureFile;
+                for (size_t i = 0; i < raw->surface.materials.size() && name.empty(); ++i)
+                    if (!raw->surface.materials[i].diffuseMap.empty()) { name = raw->surface.materials[i].diffuseMap; raw->textureMaterial = int(i); }
+                if (!name.empty()) {
+                    raw->say("reading the texture...");
+                    std::string texErr;
+                    if (loadImageRGBA(raw->surface.directory + "/" + name, raw->sourceW, raw->sourceH, raw->sourcePixels, &texErr)) raw->textureName = name;
+                    else { std::lock_guard<std::mutex> lock(raw->mutex); raw->warning = "texture " + name + " not read: " + texErr; raw->sourcePixels.clear(); }
+                }
             }
         }
         raw->loadSeconds = since(t);
@@ -1331,18 +1374,19 @@ void App::startHuge(const std::string& path)
         if (!raw->atlas.ok) {
             std::lock_guard<std::mutex> lock(raw->mutex);
             raw->error = "packing failed: " + raw->atlas.message;
-        } else if (!sourcePixels.empty()) {
+        } else if (!raw->sourcePixels.empty()) {
             raw->say("baking the atlas texture...");
             t = Clock::now();
-            BakeSource src{sourceW, sourceH, sourcePixels.data()};
+            BakeSource src{raw->sourceW, raw->sourceH, raw->sourcePixels.data()};
             BakeOptions bo;
             bo.resolution = raw->atlas.resolution;
             bo.margin = raw->atlas.margin;
-            raw->baked = bakeAtlasFlat(raw->mesh, raw->result, raw->surface.cornerUV, raw->surface.faceMaterial, textureMaterial, &src, bo);
+            raw->baked = bakeAtlasFlat(raw->mesh, raw->result, raw->surface.cornerUV, raw->surface.faceMaterial, raw->textureMaterial, &src, bo);
             raw->bakedResolution = bo.resolution;
             raw->bakeSeconds = since(t);
-            std::vector<float>().swap(raw->surface.cornerUV);   // the old uv are not needed any more
+            std::vector<float>().swap(raw->surface.cornerUV);   // the old uv and the old texture are not needed any more
             std::vector<uint8_t>().swap(raw->surface.faceMaterial);
+            std::vector<unsigned char>().swap(raw->sourcePixels);
         }
         raw->done = true;
     });
@@ -1526,17 +1570,29 @@ void App::drawHugeButtons()
     hugeCoarseFaces_ = std::max(10000, hugeCoarseFaces_);
     ImGui::InputInt("Patches to start from", &hugeK_, 100, 500);
     hugeK_ = std::max(1, hugeK_);
-    if (ImGui::Button("Make atlas (huge)...", ImVec2(-1, 34))) hugeOpenRequested_ = true;
+    // a loaded mesh is used as it is (flat arrays and texture are filled from it); with nothing loaded the file dialog opens
+    const bool haveLoaded = meshRenderer_.hasMesh() && mesh_.n_faces() > 0 && (!hugeShown_ || hugeFromLoaded_);
+    if (ImGui::Button(haveLoaded ? "Make atlas (huge)" : "Make atlas (huge)...", ImVec2(haveLoaded ? -130.0f : -1.0f, 34))) {
+        if (haveLoaded) startHugeFromLoaded();
+        else hugeOpenRequested_ = true;
+    }
+    const bool tipItem = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    if (haveLoaded) {
+        ImGui::SameLine();
+        if (ImGui::Button("from a file...", ImVec2(-1, 34))) hugeOpenRequested_ = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Process another mesh straight from a PLY or OBJ file (read into flat arrays)");
+    }
     ImGui::EndDisabled();
     // the explanation appears once per run of the program: the first time the mouse rests on the button
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !hugeTipShown_) {
+    if (tipItem && !hugeTipShown_) {
         ImGui::SetTooltip("%s",
             "Huge mode for dense scans (tens of millions of faces).\n"
-            "The file (PLY or OBJ) is read straight into compact arrays, not into the half-edge mesh,\n"
-            "simplified, segmented and unwrapped on the simplified mesh, and the result is lifted back\n"
-            "onto the full mesh; the patches that do not lift are repaired. Then the atlas is packed.\n"
-            "Memory stays around 100 bytes per face. The result is not shown in the 3D view; save it\n"
-            "as a PLY with the atlas UV (no texture baking in this mode). It cannot be cancelled.");
+            "Works without the half-edge mesh, on compact arrays (about 100 bytes per face): with a mesh\n"
+            "loaded this button takes it and its texture straight from memory, no file dialog (\"from a file\"\n"
+            "reads a PLY / OBJ directly). The mesh is simplified, segmented and unwrapped on the simplified\n"
+            "copy, the charts are lifted back onto the full mesh, the ones that do not lift are repaired,\n"
+            "and the atlas is packed. If there is a texture it is moved to the new atlas. The result is shown\n"
+            "in the 3D view and the UV view and saved as PLY + atlas PNG. It cannot be cancelled.");
         hugeTipHovered_ = true;
     } else if (hugeTipHovered_) {
         hugeTipShown_ = true;
