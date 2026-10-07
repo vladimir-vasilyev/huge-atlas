@@ -451,12 +451,16 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
         if (chart) {
             const LiftOptions lo = opt.lift;
             const PatchParam& cp = coarse.params[q];
-            ro.parameterize = [&cp, lo](const TriMesh& source, const Patch& patch, const ParamOptions& popt) {
-                if (patch.isDisk()) {
-                    PatchParam pp = liftPatch(patch, cp, lo, nullptr, &source);
-                    if (!pp.needsSplit || patch.faceToGlobal.size() > 64) return pp;
-                }
-                return parameterizePatch(source, patch, popt);
+            // A piece that does not lift is first tried with the ordinary ladder when it is small enough (that unwraps most
+            // of them whole: splitting them instead multiplies the patches and makes their number depend on the noise);
+            // the big ones are split, and every part is lifted from the same coarse chart again.
+            const size_t ladderLimit = size_t(opt.refine.splitAtOnceAboveFaces > 0 ? opt.refine.splitAtOnceAboveFaces : 30000);
+            ro.parameterize = [&cp, lo, ladderLimit](const TriMesh& source, const Patch& patch, const ParamOptions& popt) {
+                if (!patch.isDisk()) return parameterizePatch(source, patch, popt);
+                PatchParam pp = liftPatch(patch, cp, lo, nullptr, &source);
+                if (!pp.needsSplit) return pp;
+                if (patch.faceToGlobal.size() <= ladderLimit) return parameterizePatch(source, patch, popt);
+                return pp;
             };
         }
         SubMesh sm = buildSubMesh(fine, &faceList[start[j]], n);
@@ -492,6 +496,13 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
             }
             out[j].emplace_back();
             emitPatch(fine, sm, rr.params[i], res.cornerUV, out[j].back());
+        }
+        if (std::getenv("VSA_VERBOSE")) {
+            size_t smallest = SIZE_MAX, largest = 0;
+            for (const FlatPatch& fp : out[j]) { smallest = std::min(smallest, fp.faces.size()); largest = std::max(largest, fp.faces.size()); }
+            std::lock_guard<std::mutex> lock(statMutex);
+            std::fprintf(stderr, "[fallback] piece %d: %zu faces -> %zu patches (rounds %d, sizes %zu .. %zu)\n", j, n, out[j].size(),
+                         rr.stats.rounds, out[j].empty() ? size_t(0) : smallest, largest);
         }
         fallbackGate.release(held);
     });

@@ -29,6 +29,7 @@ struct CoarseOptions {
 struct CoarseStats {
     size_t coarseFaces = 0;
     int    coarsePatches = 0;
+    int    coarseInitialBad = 0, coarseSplits = 0, coarseRounds = 0, coarseUnresolved = 0;   // of the refinement of the simplified mesh
     int    finePatches = 0;              // after the lift, before the fallback
     int    lifted = 0;                   // lifted patches that passed the checks
     int    liftFailed = 0;               // lifted patches that did not

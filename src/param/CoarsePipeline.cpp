@@ -80,6 +80,10 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
     cs.result = refinePatches(cs.mesh, vs.label, opt.refine);
     st.coarseRefineSeconds = since(t);
     st.coarsePatches = int(cs.result.params.size());
+    st.coarseInitialBad = cs.result.stats.initialBad;
+    st.coarseSplits = cs.result.stats.splits;
+    st.coarseRounds = cs.result.stats.rounds;
+    st.coarseUnresolved = cs.result.stats.unresolved;
     return cs;
 }
 
