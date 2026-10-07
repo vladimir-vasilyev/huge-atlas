@@ -115,6 +115,8 @@ add_library(vsa_core STATIC
     src/param/UVMetrics.cpp
     src/param/MeshWriters.h
     src/param/MeshWriters.cpp
+    src/param/HierarchyMap.h
+    src/param/HierarchyMap.cpp
     src/param/MeshSimplify.h
     src/param/MeshSimplify.cpp
     src/param/Refinement.h
@@ -157,6 +159,10 @@ add_test(NAME parallel COMMAND test_parallel ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 add_executable(test_simplify tests/test_simplify.cpp)
 target_link_libraries(test_simplify PRIVATE vsa_core)
 add_test(NAME simplify COMMAND test_simplify ${CMAKE_SOURCE_DIR}/data/bunny.ply)
+
+add_executable(test_hierarchy tests/test_hierarchy.cpp)
+target_link_libraries(test_hierarchy PRIVATE vsa_core)
+add_test(NAME hierarchy COMMAND test_hierarchy ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
