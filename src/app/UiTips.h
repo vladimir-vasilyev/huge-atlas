@@ -4,11 +4,10 @@
 
 #include <utility>
 
-// Every control of the interface explains itself in a tooltip, once per run of the program: the first time the mouse
-// rests on it. The text comes from a table keyed by the label of the control (UiTips.cpp). `ui::X` are drop-in
+// Every control of the interface explains itself in a tooltip whenever the mouse rests on it. The text comes from a table keyed by the label of the control (UiTips.cpp). `ui::X` are drop-in
 // replacements for `ImGui::X` that call uiTip() right after the widget.
 
-// Shows the tooltip of `label` if it has one and has not been shown yet in this run. Call right after a widget.
+// Shows the tooltip of `label` if it has one. Call right after a widget.
 void uiTip(const char* label);
 
 namespace ui {

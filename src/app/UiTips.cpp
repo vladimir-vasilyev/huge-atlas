@@ -156,38 +156,17 @@ const std::unordered_map<std::string, const char*>& table()
     return t;
 }
 
-std::unordered_set<std::string>& shown()
-{
-    static std::unordered_set<std::string> s;
-    return s;
-}
-
-std::string& active()
-{
-    static std::string a;
-    return a;
-}
-
 } // namespace
 
 void uiTip(const char* label)
 {
-    const std::string key(label);
-    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-    if (hovered && !shown().count(key)) {
-        const auto it = table().find(key);
-        if (it == table().end()) {
-            // a control without a text: remember it so that a developer sees it once
-            if (std::getenv("VSA_VERBOSE") && !shown().count("?" + key)) {
-                std::fprintf(stderr, "[ui] no tooltip for \"%s\"\n", label);
-                shown().insert("?" + key);
-            }
-            return;
-        }
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) return;
+    const auto it = table().find(label);
+    if (it != table().end()) {
         ImGui::SetTooltip("%s", it->second);
-        active() = key;
-    } else if (!hovered && active() == key) {
-        shown().insert(key);   // the mouse left: this explanation was seen
-        active().clear();
+        return;
     }
+    // a control without a text: tell a developer once
+    static std::unordered_set<std::string> reported;
+    if (std::getenv("VSA_VERBOSE") && reported.insert(label).second) std::fprintf(stderr, "[ui] no tooltip for \"%s\"\n", label);
 }
