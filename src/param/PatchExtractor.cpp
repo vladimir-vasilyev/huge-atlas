@@ -1,6 +1,8 @@
 #include "param/PatchExtractor.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -30,6 +32,72 @@ double edgeLength(const TriMesh& m, TriMesh::HalfedgeHandle h)
 // Shortest interior path from the longest boundary loop to any other boundary loop.
 // Intermediate vertices are interior, so the cut joins exactly two loops.
 // Returns the path as patch vertex indices (outer loop first); empty if there is none.
+// The edges of a cut that turns a patch with handles (and borders) into a disk: tree-cotree decomposition for a surface with
+// border. The border is the root of the tree: a shortest-path forest grows from all border vertices (as if every border
+// loop were capped by a cone, whose apex is the root and whose edges are in the tree), so the tree never uses a border
+// edge. A spanning tree C of the dual graph of the faces takes edges that are not in the forest. The remaining edges are
+// 2 genus + loops - 1; each of them, with the forest paths from its two ends down to the border, is an arc from the border
+// to the border. Cutting along these arcs gives a disk.
+// Returns edge indices of `m`; empty when there is nothing to cut or no forest exists.
+std::vector<int> cutGraphEdges(const TriMesh& m, const PatchTopology&)
+{
+    const size_t nV = m.n_vertices(), nE = m.n_edges();
+    if (nV == 0 || m.n_faces() == 0) return {};
+    std::vector<char> inTree(nE, 0), inCotree(nE, 0);
+    std::vector<int> parentEdge(nV, -1), parentVertex(nV, -1);
+    std::vector<double> dist(nV, std::numeric_limits<double>::infinity());
+    using Item = std::pair<double, int>;
+    std::priority_queue<Item, std::vector<Item>, std::greater<Item>> q;
+    int roots = 0;
+    for (auto v : m.vertices())
+        if (m.is_boundary(v)) { dist[v.idx()] = 0.0; q.push({0.0, v.idx()}); ++roots; }
+    if (roots == 0) return {};   // a closed patch has no border to cut towards
+    while (!q.empty()) {
+        const auto [d, u] = q.top();
+        q.pop();
+        if (d > dist[u]) continue;
+        for (auto h : m.voh_range(TriMesh::VertexHandle(u))) {
+            if (m.is_boundary(m.edge_handle(h))) continue;
+            const int w = m.to_vertex_handle(h).idx();
+            const double nd = d + edgeLength(m, h);
+            if (nd < dist[w]) { dist[w] = nd; parentEdge[w] = m.edge_handle(h).idx(); parentVertex[w] = u; q.push({nd, w}); }
+        }
+    }
+    for (size_t v = 0; v < nV; ++v) {
+        if (m.is_boundary(TriMesh::VertexHandle(int(v)))) continue;
+        if (parentEdge[v] < 0) return {};   // an interior vertex the forest cannot reach
+        inTree[parentEdge[v]] = 1;
+    }
+
+    // dual spanning tree of the faces (border edges lead nowhere)
+    const int F = int(m.n_faces());
+    std::vector<char> seen(F, 0);
+    std::vector<int> queue{0};
+    seen[0] = 1;
+    for (size_t head = 0; head < queue.size(); ++head)
+        for (auto h : m.fh_range(TriMesh::FaceHandle(queue[head]))) {
+            const auto e = m.edge_handle(h);
+            if (inTree[e.idx()] || m.is_boundary(e)) continue;
+            const int g = m.face_handle(m.opposite_halfedge_handle(h)).idx();
+            if (!seen[g]) { seen[g] = 1; inCotree[e.idx()] = 1; queue.push_back(g); }
+        }
+    for (int f = 0; f < F; ++f) if (!seen[f]) return {};   // more than one component
+
+    std::vector<char> cut(nE, 0);
+    bool any = false;
+    for (auto e : m.edges()) {
+        if (inTree[e.idx()] || inCotree[e.idx()] || m.is_boundary(e)) continue;
+        any = true;
+        cut[e.idx()] = 1;
+        for (auto v : {m.from_vertex_handle(m.halfedge_handle(e, 0)), m.to_vertex_handle(m.halfedge_handle(e, 0))})
+            for (int x = v.idx(); parentEdge[x] >= 0; x = parentVertex[x]) cut[parentEdge[x]] = 1;
+    }
+    if (!any) return {};
+    std::vector<int> out;
+    for (size_t e = 0; e < nE; ++e) if (cut[e]) out.push_back(int(e));
+    return out;
+}
+
 std::vector<int> pathBetweenLoops(const TriMesh& m, const PatchTopology& topo)
 {
     std::vector<double> len(topo.loops.size(), 0.0);
@@ -208,21 +276,66 @@ ExtractionResult extractPatches(const TriMesh& mesh, std::vector<int> label, con
         }
         const PatchKind before = p.topology.kind;
 
-        int guard = p.topology.boundaryLoops;   // every cut removes one loop
-        while (opt.cutMultiBoundary && p.topology.kind == PatchKind::MultiBoundary && guard-- > 0) {
-            const std::vector<int> path = pathBetweenLoops(p.mesh, p.topology);
-            if (path.size() < 2) { p.note = "no cut path between boundary loops"; break; }
-            for (size_t i = 0; i + 1 < path.size(); ++i) {
-                const auto gu = TriMesh::VertexHandle(p.vertexToGlobal[path[i]]);
-                const auto gw = TriMesh::VertexHandle(p.vertexToGlobal[path[i + 1]]);
-                const auto h = mesh.find_halfedge(gu, gw);
-                if (h.is_valid()) cuts.push_back(mesh.edge_handle(h).idx());
+        // every cut path between two boundary loops removes one loop
+        auto cutRings = [&](Patch& patch, std::vector<int>& cutList) {
+            int guard = patch.topology.boundaryLoops;
+            while (opt.cutMultiBoundary && patch.topology.kind == PatchKind::MultiBoundary && guard-- > 0) {
+                const std::vector<int> path = pathBetweenLoops(patch.mesh, patch.topology);
+                if (path.size() < 2) { patch.note = "no cut path between boundary loops"; break; }
+                for (size_t i = 0; i + 1 < path.size(); ++i) {
+                    const auto gu = TriMesh::VertexHandle(patch.vertexToGlobal[path[i]]);
+                    const auto gw = TriMesh::VertexHandle(patch.vertexToGlobal[path[i + 1]]);
+                    const auto h = mesh.find_halfedge(gu, gw);
+                    if (h.is_valid()) cutList.push_back(mesh.edge_handle(h).idx());
+                }
+                const int done = patch.cuts + 1;
+                Patch next;
+                if (!buildPatch(mesh, faces[r], cutList, next)) { patch.note = next.note; break; }
+                next.cuts = done;
+                patch = std::move(next);
             }
-            const int done = p.cuts + 1;
+        };
+        cutRings(p, cuts);
+        // handles: open them along a cut graph (a patch with a handle cannot be a disk, and splitting it again and again
+        // may never separate the handle)
+        if (opt.cutHandles && p.topology.kind == PatchKind::Handles && p.topology.vertexManifold) {
+            const std::vector<int> local = cutGraphEdges(p.mesh, p.topology);
+            std::vector<int> more = cuts;
+            for (int le : local) {
+                const auto he = p.mesh.halfedge_handle(TriMesh::EdgeHandle(le), 0);
+                const auto gu = TriMesh::VertexHandle(p.vertexToGlobal[p.mesh.from_vertex_handle(he).idx()]);
+                const auto gw = TriMesh::VertexHandle(p.vertexToGlobal[p.mesh.to_vertex_handle(he).idx()]);
+                const auto h = mesh.find_halfedge(gu, gw);
+                if (h.is_valid()) more.push_back(mesh.edge_handle(h).idx());
+            }
             Patch next;
-            if (!buildPatch(mesh, faces[r], cuts, next)) { p.note = next.note; break; }
-            next.cuts = done;
-            p = std::move(next);
+            bool built = !local.empty() && buildPatch(mesh, faces[r], more, next);
+            if (built && next.topology.kind == PatchKind::MultiBoundary) { next.cuts = p.cuts + int(local.size()); cutRings(next, more); }
+            if (std::getenv("VSA_VERBOSE") && !(built && next.topology.kind == PatchKind::Disk))
+                std::fprintf(stderr, "[handles] patch of %zu faces (genus %d, %d loops): cut graph %zu edges, built %d, kind after %s (euler %d, loops %d, components %d, manifold %d)\n",
+                             faces[r].size(), p.topology.genus, p.topology.boundaryLoops, local.size(), int(built),
+                             built ? patchKindName(next.topology.kind) : "-", built ? next.topology.euler : 0,
+                             built ? next.topology.boundaryLoops : 0, built ? next.topology.components : 0, built ? int(next.topology.vertexManifold) : 0);
+            if (std::getenv("VSA_DUMP_HANDLES") && !(built && next.topology.kind == PatchKind::Disk)) {
+                static int dumped = 0;
+                if (dumped < 6) {
+                    const std::string path = std::string(std::getenv("VSA_DUMP_HANDLES")) + "/handles_" + std::to_string(dumped++) + ".obj";
+                    if (FILE* f = std::fopen(path.c_str(), "w")) {
+                        for (auto v : p.mesh.vertices()) std::fprintf(f, "v %.9g %.9g %.9g\n", p.mesh.point(v)[0], p.mesh.point(v)[1], p.mesh.point(v)[2]);
+                        for (auto fh : p.mesh.faces()) {
+                            std::fprintf(f, "f");
+                            for (auto v : p.mesh.fv_range(fh)) std::fprintf(f, " %d", v.idx() + 1);
+                            std::fprintf(f, "\n");
+                        }
+                        std::fclose(f);
+                    }
+                }
+            }
+            if (built && next.topology.kind == PatchKind::Disk) {
+                next.cuts = std::max(next.cuts, p.cuts + int(local.size()));
+                next.note = "handles opened along " + std::to_string(local.size()) + " cut edges";
+                p = std::move(next);
+            }
         }
         p.kindBeforeCuts = before;
         p.region = r;

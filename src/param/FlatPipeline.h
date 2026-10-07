@@ -29,6 +29,9 @@ struct FlatStats {
     size_t liftedPieces = 0;
     size_t fallbackPieces = 0;       // went through the ordinary pipeline
     size_t facesWithoutUV = 0;       // not parameterized (faces OpenMesh refused, unresolved patches)
+    size_t facesRefused = 0;         // of those: refused by the half-edge mesh (non-manifold edges)
+    size_t facesUnresolved = 0;      // of those: in patches that stayed bad after the refinement
+    size_t patchesUnresolved = 0;
     double adjacencySeconds = 0, cleanSeconds = 0, liftSeconds = 0, fallbackSeconds = 0;
 };
 

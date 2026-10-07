@@ -25,6 +25,7 @@ struct Patch {
 struct PatchOptions {
     int  minFaces = 3;      // regions with fewer faces are merged into the neighbour sharing the longest border
     bool cutMultiBoundary = true;
+    bool cutHandles = true;   // open patches with handles along a cut graph (tree-cotree) so that they become disks
 };
 
 struct ExtractionResult {

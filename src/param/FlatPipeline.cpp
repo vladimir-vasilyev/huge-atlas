@@ -431,6 +431,7 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
     }
     st.fallbackPieces = redo.size();
     Gate fallbackGate(faceBudget);
+    std::mutex statMutex;
     ThreadPool::shared().parallelFor(int(redo.size()), [&](int w) {
         const int j = redo[w];
         const size_t n = start[j + 1] - start[j];
@@ -455,8 +456,20 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
         }
         SubMesh sm = buildSubMesh(fine, &faceList[start[j]], n);
         RefineResult rr = refinePatches(sm.mesh, std::vector<int>(sm.mesh.n_faces(), 0), ro);
+        {
+            std::lock_guard<std::mutex> lock(statMutex);
+            st.facesRefused += n - sm.keptFaces.size();
+        }
         for (size_t i = 0; i < rr.params.size(); ++i) {
-            if (rr.params[i].uv.empty()) continue;   // unresolved: its faces keep no UV
+            if (rr.params[i].uv.empty()) {   // unresolved: its faces keep no UV
+                std::lock_guard<std::mutex> lock(statMutex);
+                ++st.patchesUnresolved;
+                st.facesUnresolved += rr.extraction.patches[i].faceToGlobal.size();
+                if (std::getenv("VSA_VERBOSE"))
+                    std::fprintf(stderr, "[flat] piece %d: unresolved patch of %zu faces, kind %s: %s", j, rr.extraction.patches[i].faceToGlobal.size(),
+                                 patchKindName(rr.extraction.patches[i].topology.kind), rr.params[i].log.c_str());
+                continue;
+            }
             out[j].emplace_back();
             emitPatch(fine, sm, rr.params[i], res.cornerUV, out[j].back());
         }

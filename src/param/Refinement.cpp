@@ -180,11 +180,17 @@ bool Refiner::splitPatch(int pi)
     const PatchParam& param = result_.params[pi];
     const std::vector<int>& faces = patch.faceToGlobal;
     const int depth = faceDepth_[faces[0]];
-    if (depth >= opt_.maxDepth || int(faces.size()) < 2 * opt_.minFaces) return false;
+    auto why = [&](const char* reason) {
+        if (std::getenv("VSA_VERBOSE") && patch.topology.kind == PatchKind::Handles)
+            std::fprintf(stderr, "[split] handles patch of %zu faces (genus %d, depth %d) not split: %s\n", faces.size(), patch.topology.genus, depth, reason);
+        return false;
+    };
+    if (depth >= opt_.maxDepth) return why("max depth");
+    if (int(faces.size()) < 2 * opt_.minFaces) return why("too few faces");
 
     // the whole patch without slits: the flooding needs the original adjacency
     Patch sub;
-    if (!buildPatch(mesh_, faces, {}, sub)) return false;
+    if (!buildPatch(mesh_, faces, {}, sub)) return why("buildPatch failed");
     const FaceData fd = computeFaceData(sub.mesh);
     const std::vector<Moments> fm = computeFaceMoments(sub.mesh, fd);
     const VSAInput in{sub.mesh, fd, fm};
@@ -234,7 +240,7 @@ bool Refiner::splitPatch(int pi)
     } else {
         std::tie(seedA, seedB) = farthestPair(sub.mesh, fd);
     }
-    if (seedA == seedB || seedA < 0) return false;
+    if (seedA == seedB || seedA < 0) return why("no seeds");
 
     auto sizes = [&](const std::vector<int>& lab) {
         int n[2] = {0, 0};
@@ -246,7 +252,7 @@ bool Refiner::splitPatch(int pi)
     // balanced fallbacks are tried. `balanced` is false for the last fallback, which only needs minFaces.
     const int total = int(faces.size());
     auto acceptable = [&](const std::vector<int>& lab, int k, bool balanced = true) {
-        if (k != 2) return false;
+        if (k != 2) return why("local VSA did not give two parts");
         const auto [n0, n1] = sizes(lab);
         const int share = (balanced && total >= 2000) ? std::max(opt_.minFaces, total / 10) : opt_.minFaces;
         return n0 >= share && n1 >= share;
@@ -276,7 +282,7 @@ bool Refiner::splitPatch(int pi)
         dualDistances(sub.mesh, fd, {seedA, seedB}, &nearest);
         if (acceptable(nearest, 2, false)) { split = nearest; kind = 2; }
     }
-    if (split.empty()) return false;
+    if (split.empty()) return why("empty split");
 
     const int newLabel = nextLabel_++;
     for (size_t i = 0; i < split.size(); ++i) {

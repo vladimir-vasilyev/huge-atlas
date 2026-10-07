@@ -192,11 +192,22 @@ static void testTorus()
     label[0] = label[1] = label[2] = label[3] = 1;
     PatchOptions keep;
     keep.minFaces = 1;
+    keep.cutHandles = false;
     r = extractPatches(m, label, keep);
     CHECK(r.patches.size() == 2);
     CHECK(r.patches[0].topology.kind == PatchKind::Handles && r.patches[0].topology.genus == 1);
     CHECK(r.patches[0].cuts == 0 && !r.patches[0].isDisk());
     CHECK(r.patches[1].isDisk());
+    checkGeometry(m, r);
+
+    // by default the handle is opened along a cut graph: a disk with the same faces
+    keep.cutHandles = true;
+    r = extractPatches(m, label, keep);
+    CHECK(r.patches.size() == 2);
+    CHECK(r.patches[0].isDisk());
+    CHECK(r.patches[0].cuts > 0);
+    CHECK(r.patches[0].kindBeforeCuts == PatchKind::Handles);
+    CHECK(r.patches[0].faceToGlobal.size() == m.n_faces() - 4);
     checkGeometry(m, r);
 }
 
