@@ -113,6 +113,8 @@ add_library(vsa_core STATIC
     src/param/AtlasBake.cpp
     src/param/UVMetrics.h
     src/param/UVMetrics.cpp
+    src/param/MipSafety.h
+    src/param/MipSafety.cpp
     src/param/MeshWriters.h
     src/param/MeshWriters.cpp
     src/core/TextParse.h

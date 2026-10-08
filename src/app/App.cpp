@@ -210,7 +210,12 @@ void App::run()
             ++benchDone;
         }
         if (autoAtlas) {
-            if (autoFrame == 2) startMakeAtlas();
+            if (autoFrame == 2) {
+                if (std::getenv("VSA_MATCH_ORIGINAL")) matchAtlasToOriginal();
+                if (const char* r = std::getenv("VSA_ATLAS_RES")) horizonOptions_.resolution = std::atoi(r);
+                if (const char* ml = std::getenv("VSA_ATLAS_MIP")) horizonOptions_.maxMipLevel = std::atoi(ml);
+                startMakeAtlas();
+            }
             if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle && !autoDone) {
                 std::printf("AUTO ATLAS: %s\n", makeAtlasStatus_.c_str());
                 if (std::getenv("VSA_AUTO_BADPATCH")) saveBadPatches();
@@ -221,6 +226,12 @@ void App::run()
                                 o.charts, 100 * o.seamRatio(), o.flipped, o.l2Mean, o.l2P95, o.conformalP95, o.densityP05, o.densityP95, 100 * o.covered);
                     std::printf("AUTO LAYOUT new     : charts %d seams %.2f%% flipped %d L2 mean %.3f p95 %.3f conformal p95 %.3f density [%.2f, %.2f] covered %.1f%%\n",
                                 n.charts, 100 * n.seamRatio(), n.flipped, n.l2Mean, n.l2P95, n.conformalP95, n.densityP05, n.densityP95, 100 * n.covered);
+                    for (const auto* r : {&mipOriginal_, &mipOurs_}) {
+                        std::printf("AUTO MIP %s: R=%d charts %d, gap min %d / p01 %d / p05 %d / median %d texels, level by 5%% gap %d; conflicting charts per mip level:",
+                                    r == &mipOriginal_ ? "original" : "new     ", r->resolution, r->charts, r->gapMin, r->gapP01, r->gapP05, r->gapP50, r->levelByGapP05);
+                        for (int c : r->conflictCharts) std::printf(" %d", c);
+                        std::printf("\n");
+                    }
                     std::printf("AUTO RETEXTURE: PSNR %.1f dB (%.1f dB against the full resolution source), %zu samples\n", retexture_.psnr,
                                 retexture_.psnrFull, retexture_.samples);
                     colorMode_ = 11;
@@ -1472,6 +1483,9 @@ void App::drawParamPanel()
         maxLevel = std::max(0, maxLevel - 2);
         ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
         ui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
+        ImGui::BeginDisabled(!objExtras_.hasUV());
+        if (ui::Button("Match the original layout")) matchAtlasToOriginal();
+        ImGui::EndDisabled();
         ui::SliderInt("Extra margin (texels)", &ho.extraTexels, 0, 16);
         ui::SliderInt("Atlas border (texels)", &ho.atlasBorder, 0, 32);
         ui::SliderInt("Rotations tried per chart", &ho.rotations, 1, 16);
@@ -2003,6 +2017,9 @@ void App::drawMakeAtlasPanel()
         maxLevel = std::max(0, maxLevel - 2);
         ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
         ui::SliderInt("Max mip level", &ho.maxMipLevel, 0, maxLevel);
+        ImGui::BeginDisabled(!objExtras_.hasUV());
+        if (ui::Button("Match the original layout")) matchAtlasToOriginal();
+        ImGui::EndDisabled();
         ImGui::TextDisabled("gap between charts: %d texels", chartGutter(ho.maxMipLevel, ho.extraTexels));
     }
     ui::Checkbox("Improve the partition with teleportation (slower)", &makeAtlasTeleport_);
@@ -2060,6 +2077,16 @@ void App::drawMakeAtlasPanel()
                 num("texel density, p95", "%.3f", o.densityP95, n.densityP95);
                 num("texture covered, %", "%.1f", 100 * o.covered, 100 * n.covered);
                 num("texels used twice, %", "%.3f", 100 * o.overlap, 100 * n.overlap);
+                num("gap between charts, min (texels)", "%.0f", mipOriginal_.gapMin, mipOurs_.gapMin);
+                num("gap between charts, 5% (texels)", "%.0f", mipOriginal_.gapP05, mipOurs_.gapP05);
+                num("gap between charts, median", "%.0f", mipOriginal_.gapP50, mipOurs_.gapP50);
+                num("mip level the 5% gap allows", "%.0f", mipOriginal_.levelByGapP05, mipOurs_.levelByGapP05);
+                auto conf = [&](int lv, const MipSafetyResult& r) { return lv < int(r.conflictCharts.size()) ? double(r.conflictCharts[lv]) : -1.0; };
+                for (int lv = 0; lv <= 3; ++lv) {
+                    char nm[64];
+                    std::snprintf(nm, sizeof(nm), "charts mixed at mip %d", lv);
+                    num(nm, "%.0f", conf(lv, mipOriginal_), conf(lv, mipOurs_));
+                }
                 ImGui::EndTable();
             }
             if (retexture_.samples > 0)
@@ -2121,6 +2148,29 @@ void App::bakeAtlasPreview()
     status_ = buf;
 }
 
+// The original layout's gutters decide which mip levels its texture can use: take the level that fits 95% of the places where two
+// charts face each other, and the texture size of the source.
+void App::matchAtlasToOriginal()
+{
+    if (!objExtras_.hasUV()) { status_ = "the mesh has no texture coordinates to match"; return; }
+    int R = 256;
+    while (R < std::max(sourceW_, sourceH_) && R < 8192) R *= 2;
+    std::vector<float> original = objExtras_.cornerUV;
+    if (original.size() == mesh_.n_faces() * 6 && objExtras_.faceMaterial.size() == mesh_.n_faces())
+        for (size_t f = 0; f < mesh_.n_faces(); ++f)
+            if (objExtras_.faceMaterial[f] != textureMaterial_)
+                for (int k = 0; k < 6; ++k) original[f * 6 + k] = std::nanf("");
+    mipOriginal_ = measureMipSafety(mesh_, original, R, true, 7, false);
+    const int level = std::max(0, mipLevelForGap(std::max(0, mipOriginal_.gapP05)));
+    horizonOptions_.resolution = R;
+    horizonOptions_.maxMipLevel = level;
+    char buf[300];
+    std::snprintf(buf, sizeof(buf), "original layout: %d charts, gap between charts min %d / 5%% %d / median %d texels (at %d x %d) -> atlas "
+                  "set to %d x %d, mip level %d", mipOriginal_.charts, mipOriginal_.gapMin, mipOriginal_.gapP05, mipOriginal_.gapP50, R, R, R, R, level);
+    status_ = buf;
+    std::printf("MATCH: %s\n", buf);
+}
+
 void App::measureLayouts()
 {
     if (!atlasValid_) return;
@@ -2134,6 +2184,8 @@ void App::measureLayouts()
                 for (int k = 0; k < 6; ++k) { original[f * 6 + k] = std::nanf(""); ours[f * 6 + k] = std::nanf(""); }
     layoutOriginal_ = objExtras_.hasUV() ? analyzeUVLayout(mesh_, original, R) : UVLayoutStats();
     layoutOurs_ = analyzeUVLayout(mesh_, ours, R);
+    mipOriginal_ = objExtras_.hasUV() ? measureMipSafety(mesh_, original, R, true, 7, false) : MipSafetyResult();
+    mipOurs_ = measureMipSafety(mesh_, ours, R, true, 7, false);
     retexture_ = RetextureReport();
     if (hasSourceTexture_ && !sourcePixels_.empty()) {
         BakeSource src{sourceW_, sourceH_, sourcePixels_.data()};

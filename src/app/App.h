@@ -9,6 +9,7 @@
 #include "param/AnglesToUV.h"
 #include "param/AtlasBake.h"
 #include "param/AtlasMask.h"
+#include "param/MipSafety.h"
 #include "param/UVMetrics.h"
 #include "param/AtlasPacker.h"
 #include "param/HorizonPacker.h"
@@ -66,6 +67,7 @@ private:
     void extractPatchesNow();              // patches of vsa_.label (the Extract button)
     void drawExportDialogs();
     void bakeAtlasPreview();               // retexture: the source texture baked into the atlas layout
+    void matchAtlasToOriginal();           // texture size and max mip level of the packer = what the original layout allows
     void measureLayouts();                 // original layout vs ours, and the quality of the retexturing
     std::vector<BakeChart> bakeCharts() const;
     const Patch& patchAt(size_t i) const;  // the patch to draw / solve: the parameterized (maybe cut) one, else the extracted one
@@ -146,6 +148,7 @@ private:
     int              textureOwner_ = 0;          // what the renderer holds: 0 nothing, 1 the source, 2 the baked atlas texture
     bool             layoutMeasured_ = false;
     UVLayoutStats    layoutOriginal_, layoutOurs_;
+    MipSafetyResult  mipOriginal_, mipOurs_;
     RetextureReport  retexture_;
     bool             saveAsRequested_ = false;
     bool             binaryPly_ = true;

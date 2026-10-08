@@ -52,6 +52,7 @@ const std::unordered_map<std::string, const char*>& table()
         {"Kappa (crease)", "Makes the smoothing cheaper along creases: borders prefer to run where the surface bends. 0 ignores the bend."},
         {"Normal iterations", "Smooths the face normals before the partition (the paper's normal field smoothing): every normal becomes the mean of its neighbours' normals, but a neighbour across a sharp crease hardly counts. Helps noisy scans, where ragged normals give ragged, small regions. 0 = off."},
         {"Normal sigma (deg)", "Angle between two neighbouring normals at which the neighbour's weight falls to 1/e. Creases sharper than this stay sharp; gentler bends are averaged out."},
+        {"Match the original layout", "Measures the gaps between the charts of the layout stored in the file and sets the texture size and the max mip level of the packer to what that layout allows (the highest level whose gutter fits into 95% of the places where two charts face each other)."},
         {"Max sweeps", "Upper limit of passes over all faces in one smoothing step."},
         {"Smooth now", "Apply the border smoothing once to the current partition."},
         {"Insert", "Add a region: take the face with the largest error out of the worst region and make it a new seed."},
