@@ -181,6 +181,8 @@ void App::run()
             if (hugeFrame == 2) {
                 if (const char* envK = std::getenv("VSA_K")) hugeK_ = std::max(1, std::atoi(envK));
                 if (const char* envF = std::getenv("VSA_HUGE_FACES")) hugeCoarseFaces_ = std::max(1000, std::atoi(envF));
+                if (const char* r = std::getenv("VSA_ATLAS_RES")) horizonOptions_.resolution = std::atoi(r);
+                if (const char* ml = std::getenv("VSA_ATLAS_MIP")) horizonOptions_.maxMipLevel = std::atoi(ml);
                 if (std::string(autoHuge) == "loaded") startHugeFromLoaded();   // VSA_AUTO_HUGE=loaded: the mesh of VSA_MESH
                 else startHuge(autoHuge);
             }
