@@ -17,6 +17,7 @@ const std::unordered_map<std::string, const char*>& table()
         {"Save As...", "Choose the file name and format (OBJ or PLY) for the mesh with the atlas UV and texture."},
         {"Binary PLY", "Write PLY files in binary form: smaller and much faster for big meshes than the text form."},
         {"Save Bad Patch", "Write the patches that did not unfold well (not a disk, overlapping or too stretched) as OBJ files with the faulty UV in vt to DebugOut/BadPatch/ in the project folder. If a bad patch is selected in the Patches list, only that one. Works for the loaded mesh and for the huge result."},
+        {"Load Bad Patch...", "Open a patch saved by Save Bad Patch as the only patch of the mesh: the .preset next to the OBJ is applied to the panels, the patch is unfolded with it and the problems (flipped triangles, border crossings, folds) show in the UV view. Change a setting and press Parameterize selected to try again."},
         {"Quit", "Close the program."},
         {"Wireframe", "Draw the triangle edges over the shaded surface. Slow on meshes of millions of faces."},
         {"Reset camera", "Return the orbit camera to the starting view of the whole model."},

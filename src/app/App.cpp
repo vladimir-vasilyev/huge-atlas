@@ -4,6 +4,7 @@
 #include "param/AtlasMask.h"   // writePNG
 #include "param/MeshWriters.h"
 #include "render/ImageFile.h"
+#include "app/Preset.h"
 #include "app/UiTips.h"
 
 #include <GLFW/glfw3.h>
@@ -153,8 +154,16 @@ void App::run()
     // VSA_AUTO_HUGE=file: "Make atlas (huge)" on that file by itself, save the PLY to VSA_AUTO_SAVE, print the outcome and quit
     const char* autoHuge = std::getenv("VSA_AUTO_HUGE");
     int hugeFrame = 0;
+    // VSA_AUTO_LOADBAD=file.obj: Debug > Load Bad Patch on that file, print what happened and quit (VSA_SCREENSHOT keeps the window)
+    const char* autoLoadBad = std::getenv("VSA_AUTO_LOADBAD");
+    int badFrame = 0;
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+        if (autoLoadBad) {
+            if (badFrame == 2) loadBadPatch(autoLoadBad);
+            if (badFrame > 3 && !std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            ++badFrame;
+        }
         if (autoHuge) {
             if (hugeFrame == 2) {
                 if (const char* envK = std::getenv("VSA_K")) hugeK_ = std::max(1, std::atoi(envK));
@@ -726,6 +735,79 @@ bool writeBadPatchObj(const std::string& path, const std::vector<std::string>& n
 // Debug > Save Bad Patch: every patch that is not a disk, overlaps itself or is too stretched (or only the selected one, when
 // it is bad) goes to DebugOut/BadPatch/ as an OBJ with the faulty uv in vt, a name that cannot repeat (kind, patch, size,
 // time, running number). Works on the patches of the loaded mesh and on the result of the huge mode.
+// The settings that unfold a patch, as one preset (see Preset.h): what the interface holds now.
+Preset App::currentPreset() const
+{
+    Preset p;
+    p.metric = vsaMetric_; p.k = vsaK_; p.seeding = seedMethod_; p.rngSeed = vsaRngSeed_;
+    p.lloydMaxIterations = lloydParams_.maxIterations; p.lloydRelTolerance = lloydParams_.relTolerance; p.lloydPatience = lloydParams_.patience;
+    p.smoothLambda = smoothParams_.lambda; p.smoothKappa = smoothParams_.kappa; p.smoothMaxSweeps = smoothParams_.maxSweeps;
+    p.patchMinFaces = patchOptions_.minFaces; p.patchCutMultiBoundary = patchOptions_.cutMultiBoundary; p.patchCutHandles = patchOptions_.cutHandles;
+    p.param = paramOptions_;
+    p.refinePolicy = refineOptions_.policy == RefinePolicy::FixFirst ? 0 : 1;
+    p.refineMaxDepth = refineOptions_.maxDepth; p.refineMinFaces = refineOptions_.minFaces; p.refineMaxRounds = refineOptions_.maxRounds;
+    p.refineSplitAtOnceAboveFaces = refineOptions_.splitAtOnceAboveFaces; p.refineSmoothLambda = refineOptions_.smooth.lambda;
+    return p;
+}
+
+void App::applyPreset(const Preset& p)
+{
+    vsaMetric_ = p.metric; vsaK_ = p.k; seedMethod_ = p.seeding; vsaRngSeed_ = p.rngSeed;
+    lloydParams_.maxIterations = p.lloydMaxIterations; lloydParams_.relTolerance = p.lloydRelTolerance; lloydParams_.patience = p.lloydPatience;
+    smoothParams_.lambda = p.smoothLambda; smoothParams_.kappa = p.smoothKappa; smoothParams_.maxSweeps = p.smoothMaxSweeps;
+    patchOptions_.minFaces = p.patchMinFaces; patchOptions_.cutMultiBoundary = p.patchCutMultiBoundary; patchOptions_.cutHandles = p.patchCutHandles;
+    paramOptions_ = p.param;
+    linabfParams_ = p.param.lin;
+    refineOptions_.policy = p.refinePolicy == 0 ? RefinePolicy::FixFirst : RefinePolicy::SplitImmediately;
+    refineOptions_.maxDepth = p.refineMaxDepth; refineOptions_.minFaces = p.refineMinFaces; refineOptions_.maxRounds = p.refineMaxRounds;
+    refineOptions_.splitAtOnceAboveFaces = p.refineSplitAtOnceAboveFaces; refineOptions_.smooth.lambda = p.refineSmoothLambda;
+}
+
+// Debug > Load Bad Patch: an OBJ saved by Save Bad Patch becomes the loaded mesh and its only patch; the preset next to it (same
+// name, .preset) is applied to the panels, the patch is unfolded with it, and the problems are shown in the UV view. From
+// there the settings can be changed and "Parameterize selected" pressed again.
+void App::loadBadPatch(const std::string& path)
+{
+    openMesh(path);
+    if (!meshRenderer_.hasMesh() || mesh_.n_faces() == 0) return;
+    std::string presetNote = "no preset next to the file: the current settings are used";
+    const size_t dot = path.find_last_of('.');
+    const std::string presetPath = (dot == std::string::npos ? path : path.substr(0, dot)) + ".preset";
+    Preset preset;
+    std::string err;
+    if (readPreset(presetPath, preset, &err)) {
+        applyPreset(preset);
+        presetNote = "preset applied: " + presetPath;
+    }
+    // the whole mesh is one region: one patch
+    vsa_ = VSAState();
+    vsa_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
+    vsa_.smooth = smoothParams_;
+    vsa_.proxies.push_back(fitProxy(vsa_.metric, wholeMesh_));
+    vsa_.label.assign(mesh_.n_faces(), 0);
+    vsa_.regions.assign(1, wholeMesh_);
+    extractPatchesNow();
+    selectedPatch_ = 0;
+    runParam(true);
+    colorMode_ = 9;   // problems
+    uvShowAtlas_ = false;
+    uploadMesh();
+    char buf[400];
+    if (!patches_.patches.empty() && paramDone_[0] && params_[0].method != ParamMethod::None) {
+        const PatchParam& pp = params_[0];
+        std::snprintf(buf, sizeof buf, "bad patch loaded (%zu faces): %s. Unfolded with %s: %s, %d flipped, %zu crossings, %zu folds, L2 mean %.3f, bad area %.4f%s",
+                      mesh_.n_faces(), presetNote.c_str(), paramMethodName(pp.method), pp.injective ? "injective" : "NOT injective",
+                      pp.distortion.flipped, pp.report.uv.crossings.size(), pp.report.angles.foldVertices.size(), pp.distortion.l2Mean,
+                      pp.badAreaFraction, pp.needsSplit ? ", needs a split" : "");
+    } else {
+        std::snprintf(buf, sizeof buf, "bad patch loaded (%zu faces): %s. It is %s: nothing to unfold", mesh_.n_faces(), presetNote.c_str(),
+                      patches_.patches.empty() ? "empty" : patchKindName(patches_.patches[0].topology.kind));
+    }
+    status_ = buf;
+    paramStatus_ = buf;
+    std::printf("%s\n", buf);
+}
+
 void App::saveBadPatches()
 {
     namespace fs = std::filesystem;
@@ -773,7 +855,14 @@ void App::saveBadPatches()
                           i, p.faces.size(), paramMethodName(p.method), int(p.injective), int(p.needsSplit), p.distortion.flipped,
                           p.badAreaFraction, p.distortion.l2Mean);
             notes.push_back(line);
-            if (writeBadPatchObj(fileName("huge", i, p.faces.size(), p.injective ? "stretch" : "overlap"), notes, pos, uv, tri)) ++saved;
+            const std::string objPath = fileName("huge", i, p.faces.size(), p.injective ? "stretch" : "overlap");
+            if (writeBadPatchObj(objPath, notes, pos, uv, tri)) {
+                ++saved;
+                Preset preset = currentPreset();
+                preset.note = std::string(line) + "\nlifted from a coarse chart in the huge mode; loading it unfolds it again with the ladder";
+                std::string perr;
+                writePreset(objPath.substr(0, objPath.size() - 4) + ".preset", preset, &perr);
+            }
         }
     } else if (patchesValid_ && params_.size() == patches_.patches.size()) {
         for (size_t i = 0; i < params_.size(); ++i) {
@@ -788,7 +877,10 @@ void App::saveBadPatches()
                 const Patch& spatch = patchAt(selectedPatch_);
                 if (!spatch.isDisk() || sp.needsSplit || !sp.injective) continue;   // the selected patch is bad: only it
             }
-            const TriMesh& m = hasUV ? pp.patch.mesh : patch.mesh;
+            // what was unfolded: the extracted patch (before the slits of the ladder), so that loading it again gives the same problem
+            const Patch& extracted = patches_.patches[i];
+            const TriMesh& m = extracted.mesh.n_faces() > 0 ? extracted.mesh : (hasUV ? pp.patch.mesh : patch.mesh);
+            const bool sameAsUnfolded = hasUV && m.n_faces() == pp.patch.mesh.n_faces() && m.n_vertices() == pp.patch.mesh.n_vertices();
             std::vector<Eigen::Vector3d> pos;
             for (auto v : m.vertices()) { const auto q = m.point(v); pos.emplace_back(q[0], q[1], q[2]); }
             std::vector<int> tri;
@@ -796,7 +888,7 @@ void App::saveBadPatches()
             for (auto fh : m.faces())
                 for (auto v : m.fv_range(fh)) {
                     tri.push_back(v.idx());
-                    if (hasUV) { uv.push_back(float(pp.uv[v.idx()].x())); uv.push_back(float(pp.uv[v.idx()].y())); }
+                    if (sameAsUnfolded) { uv.push_back(float(pp.uv[v.idx()].x())); uv.push_back(float(pp.uv[v.idx()].y())); }
                 }
             std::vector<std::string> notes{"bad patch of the loaded mesh (uv are the patch uv, not the atlas)"};
             char line[240];
@@ -808,8 +900,16 @@ void App::saveBadPatches()
                               i, patch.faceToGlobal.size(), paramMethodName(pp.method), int(pp.injective), int(pp.needsSplit), pp.distortion.flipped,
                               pp.report.uv.crossings.size(), pp.report.angles.foldVertices.size(), pp.distortion.l2Mean, pp.distortion.l2Max, pp.badAreaFraction);
             notes.push_back(line);
+            if (!sameAsUnfolded && hasUV) notes.push_back("the ladder cut slits into this patch: the vt of the bad uv are not saved, load the patch to see them");
             const char* why = notDisk ? "notdisk" : (!pp.injective ? (pp.distortion.flipped ? "flipped" : "crossing") : "stretch");
-            if (writeBadPatchObj(fileName("mesh", i, patch.faceToGlobal.size(), why), notes, pos, uv, tri)) ++saved;
+            const std::string objPath = fileName("mesh", i, patch.faceToGlobal.size(), why);
+            if (writeBadPatchObj(objPath, notes, pos, uv, tri)) {
+                ++saved;
+                Preset preset = currentPreset();
+                preset.note = line;
+                std::string perr;
+                writePreset(objPath.substr(0, objPath.size() - 4) + ".preset", preset, &perr);
+            }
         }
     } else {
         status_ = "no patches yet: make the atlas or extract and parameterize the patches first";
@@ -1138,6 +1238,24 @@ void App::stopRefine(bool wait)
         refineStop_ = false;
     }
     refiner_.reset();
+}
+
+void App::drawBadPatchDialog()
+{
+    static const char* kBadKey = "BadPatchOpenKey";
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    if (loadBadRequested_) {
+        loadBadRequested_ = false;
+        IGFD::FileDialogConfig cfg;
+        cfg.path = std::filesystem::exists("DebugOut/BadPatch") ? std::filesystem::absolute("DebugOut/BadPatch").string() : lastDir_;
+        cfg.countSelectionMax = 1;
+        cfg.flags = ImGuiFileDialogFlags_Modal;
+        ImGuiFileDialog::Instance()->OpenDialog(kBadKey, "Load a bad patch (OBJ; the .preset next to it is applied)", ".obj", cfg);
+    }
+    if (ImGuiFileDialog::Instance()->Display(kBadKey, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
+        if (ImGuiFileDialog::Instance()->IsOk()) loadBadPatch(ImGuiFileDialog::Instance()->GetFilePathName());
+        ImGuiFileDialog::Instance()->Close();
+    }
 }
 
 void App::drawRefineModal()
@@ -2563,6 +2681,7 @@ void App::drawMainMenu()
         if (ImGui::BeginMenu("Debug")) {
             if (ui::MenuItem("Save Bad Patch", nullptr, false, patchesValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done)))
                 saveBadPatches();
+            if (ui::MenuItem("Load Bad Patch...")) loadBadRequested_ = true;
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -2704,6 +2823,7 @@ void App::drawUI()
     drawExportDialogs();
     drawHugeUI();
     drawRefineModal();
+    drawBadPatchDialog();
 
     handleSceneInput();
 

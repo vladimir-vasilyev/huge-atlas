@@ -82,6 +82,10 @@ private:
     void drawRefineModal();
     void drawHugeAtlas();
     void saveBadPatches();
+    void loadBadPatch(const std::string& path);
+    void drawBadPatchDialog();
+    struct Preset currentPreset() const;
+    void applyPreset(const struct Preset& preset);
     bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it
     void showHugeResult();                 // the result of the huge mode in the 3D view (flat arrays -> GPU)
     void setHugeColors();
@@ -217,6 +221,7 @@ private:
     // "Make atlas (huge)"
     std::shared_ptr<HugeJob> hugeJob_;
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
+    bool             loadBadRequested_ = false;
     bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_
     int              hugeCheckerSquares_ = 40;    // size of a checker square: 1 / this of the model

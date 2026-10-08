@@ -190,6 +190,10 @@ add_executable(test_flatload tests/test_flatload.cpp)
 target_link_libraries(test_flatload PRIVATE vsa_core)
 add_test(NAME flatload COMMAND test_flatload ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 
+add_executable(test_preset tests/test_preset.cpp src/app/Preset.cpp)
+target_link_libraries(test_preset PRIVATE vsa_core)
+add_test(NAME preset COMMAND test_preset)
+
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
 add_test(NAME linabf COMMAND test_linabf)
@@ -246,6 +250,8 @@ set(APP_SOURCES
     src/app/main.cpp
     src/app/App.h
     src/app/App.cpp
+    src/app/Preset.h
+    src/app/Preset.cpp
     src/app/UiTips.h
     src/app/UiTips.cpp
     src/render/GL.h
