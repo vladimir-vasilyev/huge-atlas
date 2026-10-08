@@ -36,7 +36,7 @@ struct RefineOptions {
     Metric       metric = Metric::L21;
     SmoothParams smooth{0.1, 0.0, 10};   // border smoothing of the local VSA
     LloydParams  lloyd;              // the local Lloyd (maxIterations is lowered below)
-    int maxDepth = 6;                // how many times a face may be re-split
+    int maxDepth = 10;                // how many times a face may be re-split
     int minFaces = 8;                // both parts of a split need at least this many faces
     int maxRounds = 12;
     int maxPatches = 100000;
@@ -46,6 +46,9 @@ struct RefineOptions {
     // A candidate split of a patch with at most this many faces is scored by unfolding its two parts (plain LinABF); bigger ones
     // are judged by the VSA energy alone.
     int scoreSplitsUpToFaces = 20000;
+    // Patches that are split for the first time (depth below this) get the cheap split: one start of the two-proxy VSA. A patch
+    // that comes out bad again after splitting is treated carefully: several starts, parts tried by unfolding. 0 = always careful.
+    int carefulSplitFromDepth = 2;
     // Replaces parameterizePatch (the coarse-to-fine pipeline lifts a chart instead). Called from several threads.
     std::function<PatchParam(const TriMesh& source, const Patch& patch, const ParamOptions& options)> parameterize;
     ThreadPool* pool = nullptr;      // for the parallel loops inside (null = the shared pool); a worker of the shared pool must pass its own

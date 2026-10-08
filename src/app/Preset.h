@@ -26,7 +26,7 @@ struct Preset {
     ParamOptions param;
     // refinement
     int    refinePolicy = 0;            // 0 fix first, 1 split immediately
-    int    refineMaxDepth = 6, refineMinFaces = 8, refineMaxRounds = 12, refineSplitAtOnceAboveFaces = 40000;
+    int    refineMaxDepth = 10, refineMinFaces = 8, refineMaxRounds = 12, refineSplitAtOnceAboveFaces = 40000;
     double refineSmoothLambda = 0.1;
     // what the preset was saved for: informative, written as comments
     std::string note;

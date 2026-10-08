@@ -286,11 +286,14 @@ bool Refiner::splitPatch(int pi)
         // of that first face.
         struct Start { int a, b, tag; };
         std::vector<Start> starts{{seedA, seedB, seedKind == Hint ? int(ByHint) : int(ByFarthest)}};
-        if (seedKind == Hint) {
+        // The careful way (several starts, parts tried by unfolding) is only for the stubborn patches: those that were split
+        // already and came out bad again. A patch seen for the first time gets the cheap split from one start.
+        const bool careful = depth >= opt_.carefulSplitFromDepth;
+        if (careful && seedKind == Hint) {
             const auto far = farthestPair(sub.mesh, fd);
             if (far.first >= 0 && far.first != far.second) starts.push_back({far.first, far.second, int(ByFarthest)});
         }
-        {
+        if (careful) {
             Moments whole;
             for (const Moments& m : fm) whole += m;
             const Proxy single = fitProxy(opt_.metric, whole);
@@ -338,7 +341,7 @@ bool Refiner::splitPatch(int pi)
             // The energy only says how flat the parts are. What matters is that they unfold: for patches of moderate size the
             // parts are tried with plain LinABF, and a split whose parts both unfold beats one with a part that does not.
             int badParts = 0;
-            if (total <= opt_.scoreSplitsUpToFaces) {
+            if (careful && total <= opt_.scoreSplitsUpToFaces) {
                 for (int part = 0; part < 2; ++part) {
                     std::vector<int> partFaces;
                     for (size_t i = 0; i < s.label.size(); ++i) if (s.label[i] == part) partFaces.push_back(int(i));
