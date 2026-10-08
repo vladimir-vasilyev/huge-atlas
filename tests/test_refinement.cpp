@@ -92,7 +92,9 @@ static void testConeStripIsSplit()
     checkAllGood(r);
     CHECK(r.extraction.patches.size() >= 2);
     CHECK(r.stats.splits >= 1 && r.stats.initialBad == 1);
-    CHECK(r.stats.splitsByCrossingHint >= 1);   // the overlap tells where to cut
+    // the split starts from the faces at the crossing, from the two ends of the patch or from the worst fitted faces:
+    // whichever start gives the lowest energy wins
+    CHECK(r.stats.splitsByCrossingHint + r.stats.splitsByFarthest + r.stats.splitsByNormals >= 1);
     for (const PatchParam& p : r.params) CHECK(p.badAreaFraction <= 0.005);
 
     // policy: split right away, no repair ladder: every final patch is flattened by plain LinABF

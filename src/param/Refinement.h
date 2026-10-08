@@ -43,6 +43,9 @@ struct RefineOptions {
     // A patch of more faces than this is only tried with plain LinABF when it can still be split: the repair ladder is slow on
     // big patches (a factorization of tens of seconds per step) and the split fixes most of them anyway. 0 = never.
     int splitAtOnceAboveFaces = 40000;
+    // A candidate split of a patch with at most this many faces is scored by unfolding its two parts (plain LinABF); bigger ones
+    // are judged by the VSA energy alone.
+    int scoreSplitsUpToFaces = 20000;
     // Replaces parameterizePatch (the coarse-to-fine pipeline lifts a chart instead). Called from several threads.
     std::function<PatchParam(const TriMesh& source, const Patch& patch, const ParamOptions& options)> parameterize;
     ThreadPool* pool = nullptr;      // for the parallel loops inside (null = the shared pool); a worker of the shared pool must pass its own
@@ -54,6 +57,7 @@ struct RefineStats {
     int rounds = 0;
     int initialBad = 0;
     int splits = 0;
+    int splitsByNormals = 0;   // split from the two faces that the single plane fits worst
     int splitsByCrossingHint = 0, splitsByFarthest = 0, splitsByFlood = 0, splitsByVoronoi = 0;
     int unresolved = 0;                 // bad patches that stayed bad (limits or a split that did not work)
     std::vector<int> depthHistogram;    // patches by depth of re-splitting

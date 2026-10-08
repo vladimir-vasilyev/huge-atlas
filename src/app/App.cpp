@@ -157,11 +157,22 @@ void App::run()
     // VSA_AUTO_LOADBAD=file.obj: Debug > Load Bad Patch on that file, print what happened and quit (VSA_SCREENSHOT keeps the window)
     const char* autoLoadBad = std::getenv("VSA_AUTO_LOADBAD");
     int badFrame = 0;
+    bool badRefineStarted = false, loadBadReady = autoLoadBad == nullptr;   // VSA_AUTO_REFINE=1: also run the refinement on it
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
         if (autoLoadBad) {
-            if (badFrame == 2) loadBadPatch(autoLoadBad);
-            if (badFrame > 3 && !std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            if (badFrame == 2) {
+                loadBadPatch(autoLoadBad);
+                if (const char* cm = std::getenv("VSA_COLOR_MODE")) { colorMode_ = std::atoi(cm); uploadMesh(); }   // testing hook
+                if (const char* px = std::getenv("VSA_CAMERA_PAN_X")) camera_.pan(std::atof(px), 0.0, 1000);          // testing hook
+            }
+            if (badFrame == 3 && std::getenv("VSA_AUTO_REFINE")) { startRefine(); badRefineStarted = true; }
+            if (badFrame > 3 && !loadBadReady && (!badRefineStarted || !refiner_)) {
+                if (badRefineStarted) std::printf("AUTO REFINE: %zu patches, %d bad\n", patches_.patches.size(), refineStats_.unresolved);
+                if (const char* cm = std::getenv("VSA_COLOR_MODE")) { colorMode_ = std::atoi(cm); uploadMesh(); }
+                loadBadReady = true;
+            }
+            if (badFrame > 3 && loadBadReady && !std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
             ++badFrame;
         }
         if (autoHuge) {
@@ -246,7 +257,7 @@ void App::run()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         if (const char* shot = std::getenv("VSA_SCREENSHOT")) {   // testing hook: write the 8th frame to a PNG and quit
             static int frame = 0;
-            const bool hugeReady = !autoHuge || (hugeJob_ && hugeJob_->done && hugeShown_);
+            const bool hugeReady = (!autoHuge || (hugeJob_ && hugeJob_->done && hugeShown_)) && loadBadReady;
             if ((!autoAtlas || autoDone) && hugeReady && ++frame == 8) {
                 std::vector<unsigned char> px(size_t(fbW) * fbH * 4), flipped(px.size());
                 glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -2829,13 +2840,17 @@ void App::drawUI()
     ImGui::End();
 
     makeAtlasTick();
-    drawMakeAtlasPanel();
-    drawVsaPanel();
-    drawPatchPanel();
-    drawLinabfPanel();
-    drawParamPanel();
-    drawRefinePanel();
-    drawUvPanel();
+    if (!std::getenv("VSA_NO_PANELS")) {   // testing hook: a clean 3D view for screenshots
+        drawMakeAtlasPanel();
+        drawVsaPanel();
+        drawPatchPanel();
+        drawLinabfPanel();
+        drawParamPanel();
+        drawRefinePanel();
+        drawUvPanel();
+    } else {
+        refineTick();
+    }
     drawExportDialogs();
     drawHugeUI();
     drawRefineModal();

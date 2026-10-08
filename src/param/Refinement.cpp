@@ -276,15 +276,93 @@ bool Refiner::splitPatch(int pi)
     };
 
     std::vector<int> split;
-    int kind = 0;   // 0 Lloyd (hint/farthest), 1 flood, 2 Voronoi
+    int kind = 0;   // 0 Lloyd (hint/farthest/normals), 1 flood, 2 Voronoi
+    enum { ByHint, ByFarthest, ByNormals } seedsOfSplit = seedKind == Hint ? ByHint : ByFarthest;
     {
-        VSAState s;
-        s.pool = opt_.pool;
-        s.metric = opt_.metric;
-        s.smooth = opt_.smooth;
-        setSeeds(in, s, {seedA, seedB});
-        runLloyd(in, s, opt_.lloyd);
-        if (acceptable(s.label, s.k())) split = s.label;
+        // Several starts of the same two-proxy VSA, the best energy wins. Lloyd only finds a local minimum, and where it ends
+        // depends on the seeds: faces on both sides of a crossing, or the two ends of the patch, may both lie on the same
+        // smooth sheet, and then the two proxies never separate the sheets that a crease joins. The third start is the way
+        // VSA itself adds a proxy: the face that the best single plane fits worst, and the face that is worst for the plane
+        // of that first face.
+        struct Start { int a, b, tag; };
+        std::vector<Start> starts{{seedA, seedB, seedKind == Hint ? int(ByHint) : int(ByFarthest)}};
+        if (seedKind == Hint) {
+            const auto far = farthestPair(sub.mesh, fd);
+            if (far.first >= 0 && far.first != far.second) starts.push_back({far.first, far.second, int(ByFarthest)});
+        }
+        {
+            Moments whole;
+            for (const Moments& m : fm) whole += m;
+            const Proxy single = fitProxy(opt_.metric, whole);
+            int worst = -1;
+            double worstError = -1.0;
+            for (size_t f = 0; f < fm.size(); ++f) {
+                if (fd.degenerate[f]) continue;
+                const double e = metricError(opt_.metric, fm[f], single);
+                if (e > worstError) { worstError = e; worst = int(f); }
+            }
+            int other = -1;
+            if (worst >= 0) {
+                const Proxy first = fitProxy(opt_.metric, fm[worst]);
+                worstError = -1.0;
+                for (size_t f = 0; f < fm.size(); ++f) {
+                    if (fd.degenerate[f] || int(f) == worst) continue;
+                    const double e = metricError(opt_.metric, fm[f], first);
+                    if (e > worstError) { worstError = e; other = int(f); }
+                }
+            }
+            if (worst >= 0 && other >= 0) starts.push_back({worst, other, int(ByNormals)});
+        }
+        double bestEnergy = 0.0;
+        int bestBad = 3;
+        for (const Start& st : starts) {
+            bool duplicate = false;
+            for (const Start& earlier : starts)
+                if (&earlier != &st && &earlier < &st && ((earlier.a == st.a && earlier.b == st.b) || (earlier.a == st.b && earlier.b == st.a))) duplicate = true;
+            if (duplicate) continue;
+            VSAState s;
+            s.pool = opt_.pool;
+            s.metric = opt_.metric;
+            s.smooth = opt_.smooth;
+            setSeeds(in, s, {st.a, st.b});
+            const LloydResult lr = runLloyd(in, s, opt_.lloyd);
+            const double energy = s.energyHistory.empty() ? 0.0 : s.energyHistory.back();
+            if (std::getenv("VSA_VERBOSE")) {
+                int n[2] = {0, 0};
+                for (int l : s.label) if (l == 0 || l == 1) ++n[l];
+                std::fprintf(stderr, "[split] patch %d: start %s (faces %d, %d): Lloyd %d iterations, parts %d + %d, energy %.5g\n", pi,
+                             st.tag == ByHint ? "crossings" : (st.tag == ByFarthest ? "farthest pair" : "worst faces"), st.a, st.b,
+                             lr.iterations, n[0], n[1], energy);
+            }
+            if (!acceptable(s.label, s.k())) continue;
+            // The energy only says how flat the parts are. What matters is that they unfold: for patches of moderate size the
+            // parts are tried with plain LinABF, and a split whose parts both unfold beats one with a part that does not.
+            int badParts = 0;
+            if (total <= opt_.scoreSplitsUpToFaces) {
+                for (int part = 0; part < 2; ++part) {
+                    std::vector<int> partFaces;
+                    for (size_t i = 0; i < s.label.size(); ++i) if (s.label[i] == part) partFaces.push_back(int(i));
+                    Patch pp;
+                    bool bad = true;
+                    if (buildPatch(sub.mesh, partFaces, {}, pp) && pp.isDisk()) {
+                        ParamOptions plain = opt_.param;
+                        plain.useActiveSet = false;
+                        plain.allowCut = false;
+                        plain.allowTutte = false;
+                        const PatchParam r = parameterizePatch(sub.mesh, pp, plain);
+                        bad = r.needsSplit;
+                    }
+                    badParts += bad;
+                }
+            }
+            if (std::getenv("VSA_VERBOSE")) std::fprintf(stderr, "[split] patch %d:   parts that do not unfold with plain LinABF: %d\n", pi, badParts);
+            if (split.empty() || badParts < bestBad || (badParts == bestBad && energy < bestEnergy)) {
+                split = s.label;
+                bestEnergy = energy;
+                bestBad = badParts;
+                seedsOfSplit = st.tag == ByHint ? ByHint : (st.tag == ByFarthest ? ByFarthest : ByNormals);
+            }
+        }
     }
     if (split.empty()) {
         VSAState s;
@@ -310,7 +388,8 @@ bool Refiner::splitPatch(int pi)
     ++result_.stats.splits;
     if (kind == 1) ++result_.stats.splitsByFlood;
     else if (kind == 2) ++result_.stats.splitsByVoronoi;
-    else if (seedKind == Hint) ++result_.stats.splitsByCrossingHint;
+    else if (seedsOfSplit == ByHint) ++result_.stats.splitsByCrossingHint;
+    else if (seedsOfSplit == ByNormals) ++result_.stats.splitsByNormals;
     else ++result_.stats.splitsByFarthest;
     return true;
 }
