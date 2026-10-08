@@ -53,6 +53,7 @@ const std::unordered_map<std::string, const char*>& table()
         {"Normal iterations", "Smooths the face normals before the partition (the paper's normal field smoothing): every normal becomes the mean of its neighbours' normals, but a neighbour across a sharp crease hardly counts. Helps noisy scans, where ragged normals give ragged, small regions. 0 = off."},
         {"Normal sigma (deg)", "Angle between two neighbouring normals at which the neighbour's weight falls to 1/e. Creases sharper than this stay sharp; gentler bends are averaged out."},
         {"Match the original layout", "Measures the gaps between the charts of the layout stored in the file and sets the texture size and the max mip level of the packer to what that layout allows (the highest level whose gutter fits into 95% of the places where two charts face each other)."},
+        {"Compare with the original layout (huge)", "Measures the layout stored in the file and the new atlas with the same measures (distortion, seams, texel density, gaps between charts, charts mixed by mip levels) on the full mesh, in the background, and shows the table."},
         {"Max sweeps", "Upper limit of passes over all faces in one smoothing step."},
         {"Smooth now", "Apply the border smoothing once to the current partition."},
         {"Insert", "Add a region: take the face with the largest error out of the worst region and make it a new seed."},
@@ -140,7 +141,7 @@ const std::unordered_map<std::string, const char*>& table()
         {"View the baked atlas texture", "Show the baked texture on the model."},
 
         // ---- Huge mode
-        {"Simplified mesh, faces", "Size of the simplified copy that is segmented and unwrapped first. About 300 thousand faces works for most scans; bigger is slower and more exact."},
+        {"Simplified mesh, %", "Size of the simplified copy that is segmented and unwrapped first, as a share of the faces of the full mesh: 10% means 10 times fewer faces, 50% means 2 times fewer. Fewer faces is faster; more faces follows the surface more exactly. The copy never has fewer than 1000 faces."},
         {"Patches to start from", "Number of regions on the simplified mesh. The patch count of the result is larger (patches that do not unfold are split)."},
         {"Make atlas (huge)", "Huge mode for dense scans (tens of millions of faces). It works on compact arrays (about 100 bytes per face): with a mesh loaded this button takes it and its texture from memory, no file dialog. The mesh is simplified, segmented and unwrapped on the simplified copy, the charts are lifted back onto the full mesh, the ones that do not lift are repaired, the atlas is packed and the texture moved to it. It cannot be cancelled."},
         {"Make atlas (huge)...", "Huge mode for dense scans (tens of millions of faces). Pick a PLY or OBJ file: it is read straight into compact arrays, simplified, segmented and unwrapped on the simplified copy, the charts are lifted back onto the full mesh, the atlas is packed and the texture moved to it. It cannot be cancelled."},

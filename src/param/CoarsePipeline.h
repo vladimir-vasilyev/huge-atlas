@@ -16,7 +16,8 @@
 //             -> fine labels (closest coarse triangle) -> border smoothing -> fine patches
 //             -> lifted UV per patch -> Refiner on the fine mesh for the patches that did not survive
 struct CoarseOptions {
-    SimplifyOptions simplify;            // targetFaces is the size of the coarse mesh
+    SimplifyOptions simplify;            // targetFaces is the size of the coarse mesh ...
+    double       simplifyPercent = 0.0;  // ... unless this is > 0: the coarse mesh has this percent of the faces of the full one (10 = 10 times fewer)
     int          k = 100;                // proxies of the coarse VSA
     Metric       metric = Metric::L21;
     SmoothParams smooth{0.1, 0.0, 10};

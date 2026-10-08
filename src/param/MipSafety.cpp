@@ -1,5 +1,7 @@
 #include "param/MipSafety.h"
 
+#include "param/FlatAdjacency.h"
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -51,8 +53,15 @@ int mipLevelForGap(int gap)
     return best;
 }
 
-MipSafetyResult measureMipSafety(const TriMesh& m, const std::vector<float>& uv, int R, bool wrap, int maxLevelToTry,
+MipSafetyResult measureMipSafety(const TriMesh& mesh, const std::vector<float>& uv, int R, bool wrap, int maxLevelToTry,
                                  bool stopAtFirstConflict, int gapLimit)
+{
+    const FlatMesh flat = flatFromTriMesh(mesh);
+    return measureMipSafety(flat, buildFaceNeighbors(flat), uv, R, wrap, maxLevelToTry, stopAtFirstConflict, gapLimit);
+}
+
+MipSafetyResult measureMipSafety(const FlatMesh& m, const std::vector<int32_t>& nbr, const std::vector<float>& uv, int R, bool wrap,
+                                 int maxLevelToTry, bool stopAtFirstConflict, int gapLimit)
 {
     MipSafetyResult res;
     res.resolution = R;
@@ -60,28 +69,26 @@ MipSafetyResult measureMipSafety(const TriMesh& m, const std::vector<float>& uv,
     int top = 0;
     while ((1 << (top + 1)) <= R) ++top;
     res.maxLevel = top;
-    const size_t nF = m.n_faces();
+    const size_t nF = m.faceCount();
     if (R < 1 || uv.size() != nF * 6) return res;
     auto hasUV = [&](size_t f) { return std::isfinite(uv[f * 6]) && std::isfinite(uv[f * 6 + 1]); };
 
     // charts: faces joined through interior edges whose uv match at both ends
     Sets ds(nF);
-    for (auto e : m.edges()) {
-        if (m.is_boundary(e)) continue;
-        const auto h = m.halfedge_handle(e, 0);
-        const int f0 = m.face_handle(h).idx(), f1 = m.face_handle(m.opposite_halfedge_handle(h)).idx();
-        if (!hasUV(f0) || !hasUV(f1)) continue;
-        bool same = true;
-        for (int vi : {m.from_vertex_handle(h).idx(), m.to_vertex_handle(h).idx()}) {
-            double c0[2] = {0, 0}, c1[2] = {0, 0};
-            int slot = 0;
-            for (auto fv : m.fv_range(TriMesh::FaceHandle(f0))) { if (fv.idx() == vi) { c0[0] = uv[f0 * 6 + slot * 2]; c0[1] = uv[f0 * 6 + slot * 2 + 1]; } ++slot; }
-            slot = 0;
-            for (auto fv : m.fv_range(TriMesh::FaceHandle(f1))) { if (fv.idx() == vi) { c1[0] = uv[f1 * 6 + slot * 2]; c1[1] = uv[f1 * 6 + slot * 2 + 1]; } ++slot; }
-            if (std::abs(c0[0] - c1[0]) > 1e-6 || std::abs(c0[1] - c1[1]) > 1e-6) { same = false; break; }
+    for (size_t f = 0; f < nF; ++f)
+        for (int k = 0; k < 3; ++k) {
+            const int g = nbr[3 * f + k];
+            if (g < 0 || size_t(g) < f || !hasUV(f) || !hasUV(size_t(g))) continue;
+            bool same = true;
+            for (int slot : {k, (k + 1) % 3}) {
+                const uint32_t vi = m.idx[3 * f + slot];
+                int slotG = -1;
+                for (int j = 0; j < 3; ++j) if (m.idx[3 * size_t(g) + j] == vi) slotG = j;
+                if (slotG < 0 || std::abs(double(uv[f * 6 + slot * 2]) - uv[size_t(g) * 6 + slotG * 2]) > 1e-6 ||
+                    std::abs(double(uv[f * 6 + slot * 2 + 1]) - uv[size_t(g) * 6 + slotG * 2 + 1]) > 1e-6) { same = false; break; }
+            }
+            if (same) ds.unite(int(f), g);
         }
-        if (same) ds.unite(f0, f1);
-    }
     for (size_t f = 0; f < nF; ++f) if (hasUV(f) && ds.find(int(f)) == int(f)) ++res.charts;
 
     // texels touched by each chart's triangles (-1 none, -2 several charts)

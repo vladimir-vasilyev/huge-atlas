@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/MeshTypes.h"
+#include "param/MeshSimplify.h"
 
 #include <vector>
 
@@ -39,3 +40,7 @@ struct UVLayoutStats {
 };
 
 UVLayoutStats analyzeUVLayout(const TriMesh& mesh, const std::vector<float>& cornerUV, int resolution);
+
+// The same on flat arrays (corner k of face f is vertex idx[3 f + k]); `neighbors` as buildFaceNeighbors of FlatAdjacency.h.
+UVLayoutStats analyzeUVLayout(const FlatMesh& mesh, const std::vector<int32_t>& neighbors, const std::vector<float>& cornerUV,
+                              int resolution);

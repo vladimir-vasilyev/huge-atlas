@@ -1,5 +1,7 @@
 #include "param/UVMetrics.h"
 
+#include "param/FlatAdjacency.h"
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -16,21 +18,6 @@ struct DisjointSets {
     }
     void unite(int a, int b) { parent[find(a)] = find(b); }
 };
-
-// u, v of the corner of face f that sits at vertex vi
-bool cornerAt(const TriMesh& m, const std::vector<float>& uv, int f, int vi, double& u, double& v)
-{
-    int slot = 0;
-    for (auto fv : m.fv_range(TriMesh::FaceHandle(f))) {
-        if (fv.idx() == vi) {
-            u = uv[size_t(f) * 6 + slot * 2];
-            v = uv[size_t(f) * 6 + slot * 2 + 1];
-            return true;
-        }
-        ++slot;
-    }
-    return false;
-}
 
 struct Weighted { double value, weight; };
 
@@ -50,12 +37,23 @@ double weightedPercentile(std::vector<Weighted>& v, double q)
 
 } // namespace
 
-UVLayoutStats analyzeUVLayout(const TriMesh& m, const std::vector<float>& uv, int R)
+UVLayoutStats analyzeUVLayout(const TriMesh& mesh, const std::vector<float>& uv, int R)
+{
+    const FlatMesh flat = flatFromTriMesh(mesh);
+    return analyzeUVLayout(flat, buildFaceNeighbors(flat), uv, R);
+}
+
+UVLayoutStats analyzeUVLayout(const FlatMesh& m, const std::vector<int32_t>& nbr, const std::vector<float>& uv, int R)
 {
     UVLayoutStats st;
-    st.faces = m.n_faces();
+    const size_t nFaces = m.faceCount();
+    auto point = [&](size_t f, int k) {
+        const float* q = &m.pos[3 * size_t(m.idx[3 * f + k])];
+        return Vec3(q[0], q[1], q[2]);
+    };
+    st.faces = nFaces;
     st.resolution = R;
-    if (uv.size() != m.n_faces() * 6) { st.facesWithoutUV = st.faces; return st; }
+    if (uv.size() != nFaces * 6) { st.facesWithoutUV = st.faces; return st; }
 
     auto hasUV = [&](size_t f) {
         for (int k = 0; k < 6; ++k) if (std::isnan(uv[f * 6 + k])) return false;
@@ -65,7 +63,7 @@ UVLayoutStats analyzeUVLayout(const TriMesh& m, const std::vector<float>& uv, in
     // the orientation of the layout: a layout that is mirrored as a whole (negative total signed area) is
     // measured as its mirror image, and only the faces against the majority count as flipped
     double signedTotal = 0.0;
-    for (size_t f = 0; f < m.n_faces(); ++f) {
+    for (size_t f = 0; f < nFaces; ++f) {
         if (!hasUV(f)) continue;
         const float* q = &uv[f * 6];
         signedTotal += 0.5 * (double(q[2] - q[0]) * double(q[5] - q[1]) - double(q[3] - q[1]) * double(q[4] - q[0]));
@@ -74,31 +72,28 @@ UVLayoutStats analyzeUVLayout(const TriMesh& m, const std::vector<float>& uv, in
     const double sgn = st.mirrored ? -1.0 : 1.0;
 
     // areas and the global scale
-    std::vector<double> area3(m.n_faces(), 0.0), areaUV(m.n_faces(), 0.0);
+    std::vector<double> area3(nFaces, 0.0), areaUV(nFaces, 0.0);
     double total3 = 0.0, totalUV = 0.0;
-    for (auto f : m.faces()) {
+    for (size_t f = 0; f < nFaces; ++f) {
         Vec3 p[3];
-        int k = 0;
-        for (auto v : m.fv_range(f)) p[k++] = m.point(v);
-        area3[f.idx()] = 0.5 * ((p[1] - p[0]) % (p[2] - p[0])).norm();
-        if (!hasUV(f.idx())) { ++st.facesWithoutUV; continue; }
-        const float* q = &uv[size_t(f.idx()) * 6];
-        areaUV[f.idx()] = sgn * 0.5 * (double(q[2] - q[0]) * double(q[5] - q[1]) - double(q[3] - q[1]) * double(q[4] - q[0]));
-        if (areaUV[f.idx()] <= 0.0) ++st.flipped;
-        total3 += area3[f.idx()];
-        totalUV += std::abs(areaUV[f.idx()]);
+        for (int k = 0; k < 3; ++k) p[k] = point(f, k);
+        area3[f] = 0.5 * ((p[1] - p[0]) % (p[2] - p[0])).norm();
+        if (!hasUV(f)) { ++st.facesWithoutUV; continue; }
+        const float* q = &uv[f * 6];
+        areaUV[f] = sgn * 0.5 * (double(q[2] - q[0]) * double(q[5] - q[1]) - double(q[3] - q[1]) * double(q[4] - q[0]));
+        if (areaUV[f] <= 0.0) ++st.flipped;
+        total3 += area3[f];
+        totalUV += std::abs(areaUV[f]);
     }
     const double scale = (totalUV > 0.0 && total3 > 0.0) ? std::sqrt(total3 / totalUV) : 1.0;
 
     // distortion per face
     std::vector<Weighted> l2, conf, density;
     double l2Sq = 0.0, wSum = 0.0;
-    for (auto f : m.faces()) {
-        const size_t i = size_t(f.idx());
+    for (size_t i = 0; i < nFaces; ++i) {
         if (!hasUV(i) || area3[i] <= 0.0 || areaUV[i] <= 0.0) continue;
         Vec3 p[3];
-        int k = 0;
-        for (auto v : m.fv_range(f)) p[k++] = m.point(v);
+        for (int k = 0; k < 3; ++k) p[k] = point(i, k);
         const Vec3 e1 = p[1] - p[0], e2 = p[2] - p[0];
         const double l1 = e1.norm(), cross = (e1 % e2).norm();
         if (l1 <= 0.0 || cross <= 0.0) continue;
@@ -133,31 +128,34 @@ UVLayoutStats analyzeUVLayout(const TriMesh& m, const std::vector<float>& uv, in
     st.densityP95 = weightedPercentile(density, 0.95);
 
     // charts and seams
-    DisjointSets ds(m.n_faces());
-    for (auto e : m.edges()) {
-        if (m.is_boundary(e)) continue;
-        const auto h = m.halfedge_handle(e, 0);
-        const int f0 = m.face_handle(h).idx(), f1 = m.face_handle(m.opposite_halfedge_handle(h)).idx();
-        const int va = m.from_vertex_handle(h).idx(), vb = m.to_vertex_handle(h).idx();
-        const double len = m.calc_edge_length(e);
-        st.edgeLength += len;
-        bool same = hasUV(f0) && hasUV(f1);
-        if (same)
-            for (int vi : {va, vb}) {
-                double u0, v0, u1, v1;
-                if (!cornerAt(m, uv, f0, vi, u0, v0) || !cornerAt(m, uv, f1, vi, u1, v1) ||
-                    std::abs(u0 - u1) > 1e-6 || std::abs(v0 - v1) > 1e-6) { same = false; break; }
-            }
-        if (same) ds.unite(f0, f1);
-        else st.seamLength += len;
-    }
-    for (size_t f = 0; f < m.n_faces(); ++f)
+    DisjointSets ds(nFaces);
+    for (size_t f = 0; f < nFaces; ++f)
+        for (int k = 0; k < 3; ++k) {
+            const int g = nbr[3 * f + k];
+            if (g < 0 || size_t(g) < f) continue;   // border / non-manifold edge, or seen from the other face
+            const uint32_t va = m.idx[3 * f + k], vb = m.idx[3 * f + (k + 1) % 3];
+            const double len = (point(f, k) - point(f, (k + 1) % 3)).norm();
+            st.edgeLength += len;
+            bool same = hasUV(f) && hasUV(size_t(g));
+            if (same)
+                for (int slot : {k, (k + 1) % 3}) {
+                    const uint32_t vi = m.idx[3 * f + slot];
+                    int slotG = -1;
+                    for (int j = 0; j < 3; ++j) if (m.idx[3 * size_t(g) + j] == vi) slotG = j;
+                    if (slotG < 0 || std::abs(double(uv[f * 6 + slot * 2]) - uv[size_t(g) * 6 + slotG * 2]) > 1e-6 ||
+                        std::abs(double(uv[f * 6 + slot * 2 + 1]) - uv[size_t(g) * 6 + slotG * 2 + 1]) > 1e-6) { same = false; break; }
+                }
+            (void)va; (void)vb;
+            if (same) ds.unite(int(f), g);
+            else st.seamLength += len;
+        }
+    for (size_t f = 0; f < nFaces; ++f)
         if (hasUV(f) && ds.find(int(f)) == int(f)) ++st.charts;
 
     // texture coverage by the texel centers
     if (R > 0) {
         std::vector<unsigned char> count(size_t(R) * R, 0);
-        for (size_t f = 0; f < m.n_faces(); ++f) {
+        for (size_t f = 0; f < nFaces; ++f) {
             if (!hasUV(f)) continue;
             const float* q = &uv[f * 6];
             double tx[3], ty[3];

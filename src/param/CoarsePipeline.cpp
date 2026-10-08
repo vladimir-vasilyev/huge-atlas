@@ -58,6 +58,8 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
     auto t = Clock::now();
     SimplifyOptions so = opt.simplify;
     so.prune = so.prune || opt.pruneSmallParts;
+    if (opt.simplifyPercent > 0.0)
+        so.targetFaces = std::max<size_t>(1000, size_t(double(fineFlat.faceCount()) * std::min(100.0, opt.simplifyPercent) / 100.0));
     const SimplifyResult simp = simplifyMesh(fineFlat, so);
     st.simplifySeconds = since(t);
     st.coarseFaces = simp.mesh.faceCount();

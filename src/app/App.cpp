@@ -2,6 +2,7 @@
 
 #include "render/GL.h"   // strictly before GLFW (GLFW_INCLUDE_NONE is set in CMake)
 #include "param/AtlasMask.h"   // writePNG
+#include "param/FlatAdjacency.h"
 #include "param/MeshWriters.h"
 #include "render/ImageFile.h"
 #include "app/Preset.h"
@@ -138,9 +139,66 @@ struct App::HugeJob {
     double loadSeconds = 0, pipelineSeconds = 0, packSeconds = 0, bakeSeconds = 0;
     std::string warning;                 // guarded by mutex
     bool saved = false;
-    ~HugeJob() { if (worker.joinable()) worker.join(); }
+    // comparison of the original layout and ours (flat arrays), in a thread of its own
+    std::thread compareWorker;
+    std::atomic<bool> comparing{false}, compared{false};
+    UVLayoutStats layoutOriginal, layoutOurs;
+    MipSafetyResult mipOriginal, mipOurs;
+    bool hadOriginal = false;
+    double compareSeconds = 0;
+    ~HugeJob() { if (worker.joinable()) worker.join(); if (compareWorker.joinable()) compareWorker.join(); }
     void say(const std::string& s) { std::lock_guard<std::mutex> lock(mutex); stage = s; }
 };
+
+namespace {
+
+// The comparison table of the original layout and ours (regular and huge mode).
+void drawLayoutTable(const UVLayoutStats& o, const UVLayoutStats& n, const MipSafetyResult& mipOriginal_, const MipSafetyResult& mipOurs_)
+{
+    if (ImGui::BeginTable("layouts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("");
+        ImGui::TableSetupColumn("original");
+        ImGui::TableSetupColumn("new atlas");
+        ImGui::TableHeadersRow();
+        auto row = [&](const char* name, const char* a, const char* b) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(name);
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(a);
+            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(b);
+        };
+        char a[64], b[64];
+        auto num = [&](const char* name, const char* fmt, double x, double y) {
+            std::snprintf(a, sizeof(a), fmt, x);
+            std::snprintf(b, sizeof(b), fmt, y);
+            row(name, a, b);
+        };
+        num("charts", "%.0f", o.charts, n.charts);
+        num("seams, % of edge length", "%.2f", 100 * o.seamRatio(), 100 * n.seamRatio());
+        num("flipped faces", "%.0f", o.flipped, n.flipped);
+        num("faces without uv", "%.0f", double(o.facesWithoutUV), double(n.facesWithoutUV));
+        num("L2 stretch, mean", "%.3f", o.l2Mean, n.l2Mean);
+        num("L2 stretch, p95", "%.3f", o.l2P95, n.l2P95);
+        num("L2 stretch, p99", "%.3f", o.l2P99, n.l2P99);
+        num("conformal, p95", "%.3f", o.conformalP95, n.conformalP95);
+        num("texel density, p05", "%.3f", o.densityP05, n.densityP05);
+        num("texel density, p95", "%.3f", o.densityP95, n.densityP95);
+        num("texture covered, %", "%.1f", 100 * o.covered, 100 * n.covered);
+        num("texels used twice, %", "%.3f", 100 * o.overlap, 100 * n.overlap);
+        num("gap between charts, min (texels)", "%.0f", mipOriginal_.gapMin, mipOurs_.gapMin);
+        num("gap between charts, 5% (texels)", "%.0f", mipOriginal_.gapP05, mipOurs_.gapP05);
+        num("gap between charts, median", "%.0f", mipOriginal_.gapP50, mipOurs_.gapP50);
+        num("mip level the 5% gap allows", "%.0f", mipOriginal_.levelByGapP05, mipOurs_.levelByGapP05);
+        auto conf = [&](int lv, const MipSafetyResult& r) { return lv < int(r.conflictCharts.size()) ? double(r.conflictCharts[lv]) : -1.0; };
+        for (int lv = 0; lv <= 3; ++lv) {
+            char nm[64];
+            std::snprintf(nm, sizeof(nm), "charts mixed at mip %d", lv);
+            num(nm, "%.0f", conf(lv, mipOriginal_), conf(lv, mipOurs_));
+        }
+        ImGui::EndTable();
+    }
+}
+
+} // namespace
 
 void App::run()
 {
@@ -180,7 +238,8 @@ void App::run()
         if (autoHuge) {
             if (hugeFrame == 2) {
                 if (const char* envK = std::getenv("VSA_K")) hugeK_ = std::max(1, std::atoi(envK));
-                if (const char* envF = std::getenv("VSA_HUGE_FACES")) hugeCoarseFaces_ = std::max(1000, std::atoi(envF));
+                if (const char* envP = std::getenv("VSA_HUGE_PERCENT")) hugeSimplifyPercent_ = std::atof(envP);
+                if (const char* envF = std::getenv("VSA_HUGE_FACES")) { hugeCoarseFaces_ = std::max(1000, std::atoi(envF)); hugeSimplifyPercent_ = 0.0; }
                 if (const char* r = std::getenv("VSA_ATLAS_RES")) horizonOptions_.resolution = std::atoi(r);
                 if (const char* ml = std::getenv("VSA_ATLAS_MIP")) horizonOptions_.maxMipLevel = std::atoi(ml);
                 if (std::string(autoHuge) == "loaded") startHugeFromLoaded();   // VSA_AUTO_HUGE=loaded: the mesh of VSA_MESH
@@ -190,6 +249,27 @@ void App::run()
                 if (const char* view = std::getenv("VSA_HUGE_VIEW")) { hugeView_ = std::atoi(view); setHugeColors(); }
                 std::printf("AUTO HUGE: %s\n", hugeStatus_.c_str());
                 if (std::getenv("VSA_AUTO_BADPATCH")) saveBadPatches();
+                if (std::getenv("VSA_AUTO_BAKE")) {   // compare with the original layout
+                    compareHuge();
+                    if (hugeJob_->compareWorker.joinable()) hugeJob_->compareWorker.join();
+                    const HugeJob& hj = *hugeJob_;
+                    if (hj.hadOriginal) {
+                        const UVLayoutStats &o = hj.layoutOriginal, &n = hj.layoutOurs;
+                        std::printf("AUTO LAYOUT original: charts %d seams %.2f%% flipped %d L2 mean %.3f p95 %.3f conformal p95 %.3f density [%.2f, %.2f] covered %.1f%%\n",
+                                    o.charts, 100 * o.seamRatio(), o.flipped, o.l2Mean, o.l2P95, o.conformalP95, o.densityP05, o.densityP95, 100 * o.covered);
+                        std::printf("AUTO LAYOUT new     : charts %d seams %.2f%% flipped %d L2 mean %.3f p95 %.3f conformal p95 %.3f density [%.2f, %.2f] covered %.1f%%\n",
+                                    n.charts, 100 * n.seamRatio(), n.flipped, n.l2Mean, n.l2P95, n.conformalP95, n.densityP05, n.densityP95, 100 * n.covered);
+                        for (const auto* r : {&hj.mipOriginal, &hj.mipOurs}) {
+                            std::printf("AUTO MIP %s: R=%d charts %d, gap min %d / p01 %d / p05 %d / median %d texels, level by 5%% gap %d; conflicting charts per mip level:",
+                                        r == &hj.mipOriginal ? "original" : "new     ", r->resolution, r->charts, r->gapMin, r->gapP01, r->gapP05, r->gapP50, r->levelByGapP05);
+                            for (int c : r->conflictCharts) std::printf(" %d", c);
+                            std::printf("\n");
+                        }
+                    } else {
+                        std::printf("AUTO LAYOUT: the file has no texture coordinates to compare with\n");
+                    }
+                    std::printf("AUTO COMPARE: %.0f s\n", hj.compareSeconds);
+                }
                 if (const char* save = std::getenv("VSA_AUTO_SAVE")) {
                     const bool ok = saveHuge(save);
                     std::printf("AUTO HUGE SAVE: %s (%s)\n", ok ? "ok" : "failed", hugeStatus_.c_str());
@@ -1682,6 +1762,7 @@ void App::startHugeFromLoaded()
 void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
 {
     job->options.simplify.targetFaces = size_t(std::max(1000, hugeCoarseFaces_));
+    job->options.simplifyPercent = hugeSimplifyPercent_;
     job->options.k = std::max(1, hugeK_);
     job->options.lloyd.maxIterations = 30;
     job->options.normals = normalSmoothing_;
@@ -1736,8 +1817,12 @@ void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
             raw->baked = bakeAtlasFlat(raw->mesh, raw->result, raw->surface.cornerUV, raw->surface.faceMaterial, raw->textureMaterial, &src, bo);
             raw->bakedResolution = bo.resolution;
             raw->bakeSeconds = since(t);
-            std::vector<float>().swap(raw->surface.cornerUV);   // the old uv and the old texture are not needed any more
-            std::vector<uint8_t>().swap(raw->surface.faceMaterial);
+            // the old texture is not needed any more; the old uv stay (24 bytes per face) for the comparison with the original
+            // layout, unless the mesh is so big that they would cost gigabytes
+            if (raw->mesh.faceCount() > 30000000) {
+                std::vector<float>().swap(raw->surface.cornerUV);
+                std::vector<uint8_t>().swap(raw->surface.faceMaterial);
+            }
             std::vector<unsigned char>().swap(raw->sourcePixels);
         }
         raw->done = true;
@@ -1936,12 +2021,48 @@ void App::showHugeResult()
     setHugeColors();
 }
 
+// Original layout vs ours on flat arrays: the same measures as the regular mode (analyzeUVLayout, measureMipSafety).
+void App::compareHuge()
+{
+    if (!hugeJob_ || !hugeJob_->done || !hugeJob_->error.empty() || hugeJob_->comparing) return;
+    HugeJob* raw = hugeJob_.get();
+    if (raw->compareWorker.joinable()) raw->compareWorker.join();
+    raw->comparing = true;
+    raw->compared = false;
+    raw->compareWorker = std::thread([raw]() {
+        const auto t0 = std::chrono::steady_clock::now();
+        const int R = std::max(256, raw->atlas.resolution);
+        const std::vector<int32_t> nbr = buildFaceNeighbors(raw->mesh);
+        std::vector<float> ours = raw->result.cornerUV, original = raw->surface.cornerUV;
+        raw->hadOriginal = original.size() == raw->mesh.faceCount() * 6;
+        const bool masked = raw->surface.faceMaterial.size() == raw->mesh.faceCount();   // only the faces of the texture's material
+        for (size_t f = 0; masked && f < raw->mesh.faceCount(); ++f)
+            if (raw->surface.faceMaterial[f] != raw->textureMaterial)
+                for (int k = 0; k < 6; ++k) {
+                    ours[f * 6 + k] = std::nanf("");
+                    if (raw->hadOriginal) original[f * 6 + k] = std::nanf("");
+                }
+        raw->layoutOurs = analyzeUVLayout(raw->mesh, nbr, ours, R);
+        raw->mipOurs = measureMipSafety(raw->mesh, nbr, ours, R, true, 7, false);
+        if (raw->hadOriginal) {
+            raw->layoutOriginal = analyzeUVLayout(raw->mesh, nbr, original, R);
+            raw->mipOriginal = measureMipSafety(raw->mesh, nbr, original, R, true, 7, false);
+        }
+        raw->compareSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        raw->compared = true;
+        raw->comparing = false;
+    });
+}
+
 void App::drawHugeButtons()
 {
     const bool busy = hugeJob_ && !hugeJob_->done;
     ImGui::BeginDisabled(busy);
-    ui::InputInt("Simplified mesh, faces", &hugeCoarseFaces_, 50000, 200000);
-    hugeCoarseFaces_ = std::max(10000, hugeCoarseFaces_);
+    {
+        float pct = float(hugeSimplifyPercent_);
+        if (ui::SliderFloat("Simplified mesh, %", &pct, 1.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_Logarithmic)) hugeSimplifyPercent_ = pct;
+        hugeSimplifyPercent_ = std::max(1.0, std::min(100.0, hugeSimplifyPercent_));
+    }
     ui::InputInt("Patches to start from", &hugeK_, 100, 500);
     hugeK_ = std::max(1, hugeK_);
     // a loaded mesh is used as it is (flat arrays and texture are filled from it); with nothing loaded the file dialog opens
@@ -1980,6 +2101,14 @@ void App::drawHugeButtons()
         ImGui::BeginDisabled(busy);
         if (ui::Button("Save the huge result (PLY)...")) hugeSaveRequested_ = true;
         ImGui::EndDisabled();
+        ImGui::BeginDisabled(busy || hugeJob_->comparing || !hugeJob_->surface.hasUV());
+        if (ui::Button("Compare with the original layout (huge)")) compareHuge();
+        ImGui::EndDisabled();
+        if (hugeJob_->comparing) ImGui::TextDisabled("comparing the layouts...");
+        if (hugeJob_->compared && hugeJob_->hadOriginal) {
+            drawLayoutTable(hugeJob_->layoutOriginal, hugeJob_->layoutOurs, hugeJob_->mipOriginal, hugeJob_->mipOurs);
+            ImGui::TextDisabled("Measured in %.0f s on the full mesh. Lower stretch, a tighter density, fewer seams and a wider gap between charts are better.", hugeJob_->compareSeconds);
+        }
     }
     if (!hugeStatus_.empty()) ImGui::TextWrapped("%s", hugeStatus_.c_str());
 }
@@ -2050,47 +2179,7 @@ void App::drawMakeAtlasPanel()
         if (layoutMeasured_ && bakedVersion_ == atlasVersion_) {
             const UVLayoutStats& o = layoutOriginal_;
             const UVLayoutStats& n = layoutOurs_;
-            if (ImGui::BeginTable("layouts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-                ImGui::TableSetupColumn("");
-                ImGui::TableSetupColumn("original");
-                ImGui::TableSetupColumn("new atlas");
-                ImGui::TableHeadersRow();
-                auto row = [&](const char* name, const char* a, const char* b) {
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(name);
-                    ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(a);
-                    ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(b);
-                };
-                char a[64], b[64];
-                auto num = [&](const char* name, const char* fmt, double x, double y) {
-                    std::snprintf(a, sizeof(a), fmt, x);
-                    std::snprintf(b, sizeof(b), fmt, y);
-                    row(name, a, b);
-                };
-                num("charts", "%.0f", o.charts, n.charts);
-                num("seams, % of edge length", "%.2f", 100 * o.seamRatio(), 100 * n.seamRatio());
-                num("flipped faces", "%.0f", o.flipped, n.flipped);
-                num("faces without uv", "%.0f", double(o.facesWithoutUV), double(n.facesWithoutUV));
-                num("L2 stretch, mean", "%.3f", o.l2Mean, n.l2Mean);
-                num("L2 stretch, p95", "%.3f", o.l2P95, n.l2P95);
-                num("L2 stretch, p99", "%.3f", o.l2P99, n.l2P99);
-                num("conformal, p95", "%.3f", o.conformalP95, n.conformalP95);
-                num("texel density, p05", "%.3f", o.densityP05, n.densityP05);
-                num("texel density, p95", "%.3f", o.densityP95, n.densityP95);
-                num("texture covered, %", "%.1f", 100 * o.covered, 100 * n.covered);
-                num("texels used twice, %", "%.3f", 100 * o.overlap, 100 * n.overlap);
-                num("gap between charts, min (texels)", "%.0f", mipOriginal_.gapMin, mipOurs_.gapMin);
-                num("gap between charts, 5% (texels)", "%.0f", mipOriginal_.gapP05, mipOurs_.gapP05);
-                num("gap between charts, median", "%.0f", mipOriginal_.gapP50, mipOurs_.gapP50);
-                num("mip level the 5% gap allows", "%.0f", mipOriginal_.levelByGapP05, mipOurs_.levelByGapP05);
-                auto conf = [&](int lv, const MipSafetyResult& r) { return lv < int(r.conflictCharts.size()) ? double(r.conflictCharts[lv]) : -1.0; };
-                for (int lv = 0; lv <= 3; ++lv) {
-                    char nm[64];
-                    std::snprintf(nm, sizeof(nm), "charts mixed at mip %d", lv);
-                    num(nm, "%.0f", conf(lv, mipOriginal_), conf(lv, mipOurs_));
-                }
-                ImGui::EndTable();
-            }
+            drawLayoutTable(o, n, mipOriginal_, mipOurs_);
             if (retexture_.samples > 0)
                 ImGui::Text("Retexturing: PSNR %.1f dB (%.1f dB against the full resolution source), %zu samples", retexture_.psnr,
                             retexture_.psnrFull, retexture_.samples);

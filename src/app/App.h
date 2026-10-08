@@ -80,6 +80,7 @@ private:
     void startHugeFromLoaded();
     void runHugeJob(const std::shared_ptr<HugeJob>& job);
     void drawHugeButtons();
+    void compareHuge();                    // original layout vs ours for the huge result (a thread; fills HugeJob::layout*)
     void stopRefine(bool wait);
     void drawRefineModal();
     void drawHugeAtlas();
@@ -231,7 +232,8 @@ private:
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_
     int              hugeCheckerSquares_ = 40;    // size of a checker square: 1 / this of the model
     int              hugeView_ = 0;               // 0 patches, 1 uv checker, 2 plain
-    int              hugeCoarseFaces_ = 300000;   // size of the simplified mesh
+    double           hugeSimplifyPercent_ = 10.0; // size of the simplified mesh, % of the faces (10 = 10 times fewer); 0 = hugeCoarseFaces_
+    int              hugeCoarseFaces_ = 300000;   // size of the simplified mesh when the percent is 0 (testing hook)
     int              hugeK_ = 1000;               // patches to start from on the simplified mesh
     std::string      hugeStatus_;
 

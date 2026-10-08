@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/MeshTypes.h"
+#include "param/MeshSimplify.h"
 
 #include <vector>
 
@@ -36,3 +37,8 @@ int mipLevelForGap(int gapTexels);
 // `wrap` as in the struct. The cost is about 2 passes over resolution^2 per level examined.
 MipSafetyResult measureMipSafety(const TriMesh& mesh, const std::vector<float>& cornerUV, int resolution, bool wrap = true,
                                  int maxLevelToTry = 13, bool stopAtFirstConflict = true, int gapLimit = 128);
+
+// The same on flat arrays (corner k of face f is vertex idx[3 f + k]); `neighbors` as buildFaceNeighbors of FlatAdjacency.h.
+MipSafetyResult measureMipSafety(const FlatMesh& mesh, const std::vector<int32_t>& neighbors, const std::vector<float>& cornerUV,
+                                 int resolution, bool wrap = true, int maxLevelToTry = 13, bool stopAtFirstConflict = true,
+                                 int gapLimit = 128);
