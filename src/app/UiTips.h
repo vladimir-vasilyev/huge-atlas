@@ -9,6 +9,7 @@
 
 // Shows the tooltip of `label` if it has one. Call right after a widget.
 void uiTip(const char* label);
+void uiTipPreview(const char* label, float x, float y);   // testing hook (VSA_TIP_PREVIEW)
 
 namespace ui {
 

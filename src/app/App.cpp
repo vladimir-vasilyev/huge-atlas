@@ -2824,6 +2824,7 @@ void App::drawUI()
     drawHugeUI();
     drawRefineModal();
     drawBadPatchDialog();
+    if (const char* preview = std::getenv("VSA_TIP_PREVIEW")) uiTipPreview(preview, 560.0f, 120.0f);
 
     handleSceneInput();
 

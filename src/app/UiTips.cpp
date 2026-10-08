@@ -160,12 +160,30 @@ const std::unordered_map<std::string, const char*>& table()
 
 } // namespace
 
+// Testing hook: shows the tooltip of `label` at a fixed place, as it looks when the mouse rests on the control.
+void uiTipPreview(const char* label, float x, float y)
+{
+    const auto it = table().find(label);
+    if (it == table().end()) return;
+    ImGui::SetNextWindowPos(ImVec2(x, y));
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34.0f);
+    ImGui::TextUnformatted(it->second);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
 void uiTip(const char* label)
 {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) return;
     const auto it = table().find(label);
     if (it != table().end()) {
-        ImGui::SetTooltip("%s", it->second);
+        // wrapped text: a long explanation must not run out of the window
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34.0f);
+        ImGui::TextUnformatted(it->second);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
         return;
     }
     // a control without a text: tell a developer once
