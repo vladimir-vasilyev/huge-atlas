@@ -269,6 +269,26 @@ void App::run()
                         std::printf("AUTO LAYOUT: the file has no texture coordinates to compare with\n");
                     }
                     std::printf("AUTO COMPARE: %.0f s\n", hj.compareSeconds);
+                    if (std::getenv("VSA_AUTO_METHODS")) {   // the distortion of our layout split by the method that unfolded the patch
+                        const std::vector<int32_t> nbr = buildFaceNeighbors(hj.mesh);
+                        for (int m = 0; m <= int(ParamMethod::Lifted); ++m) {
+                            std::vector<float> sub(hj.result.cornerUV.size(), std::nanf(""));
+                            size_t faces = 0, count = 0;
+                            for (const FlatPatch& fp : hj.result.patches) {
+                                if (int(fp.method) != m) continue;
+                                ++count;
+                                for (uint32_t f : fp.faces) {
+                                    ++faces;
+                                    for (int k = 0; k < 6; ++k) sub[size_t(f) * 6 + k] = hj.result.cornerUV[size_t(f) * 6 + k];
+                                }
+                            }
+                            if (!count) continue;
+                            const UVLayoutStats s = analyzeUVLayout(hj.mesh, nbr, sub, hj.atlas.resolution);
+                            std::printf("AUTO METHOD %-10s: %zu patches, %zu faces (%.1f%%), L2 mean %.3f p95 %.3f, conformal p50 %.3f p95 %.3f, flipped %d\n",
+                                        paramMethodName(ParamMethod(m)), count, faces, 100.0 * faces / hj.mesh.faceCount(), s.l2Mean, s.l2P95,
+                                        s.conformalP50, s.conformalP95, s.flipped);
+                        }
+                    }
                 }
                 if (const char* save = std::getenv("VSA_AUTO_SAVE")) {
                     const bool ok = saveHuge(save);
