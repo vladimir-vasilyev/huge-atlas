@@ -42,6 +42,16 @@ void Camera::pan(double dx, double dy, int h)
     panY_ -= dy * s;
 }
 
+void Camera::zoomAt(double wheelDelta, double ndcX, double ndcY, double aspect)
+{
+    const double before = dist_;
+    zoom(wheelDelta);
+    const double t = std::tan(0.5 * 0.7854), change = dist_ - before;
+    // the view space point on the centre plane under the cursor is (ndcX t aspect dist, ndcY t dist, -dist) for any dist
+    panX_ += ndcX * t * aspect * change;
+    panY_ += ndcY * t * change;
+}
+
 void Camera::view(float m[16]) const
 {
     const double w = q_[0], x = q_[1], y = q_[2], z = q_[3];

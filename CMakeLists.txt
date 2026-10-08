@@ -194,6 +194,11 @@ add_executable(test_preset tests/test_preset.cpp src/app/Preset.cpp)
 target_link_libraries(test_preset PRIVATE vsa_core)
 add_test(NAME preset COMMAND test_preset)
 
+add_executable(test_camera tests/test_camera.cpp src/render/Camera.cpp)
+target_include_directories(test_camera PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_camera PRIVATE vsa_core)
+add_test(NAME camera COMMAND test_camera)
+
 add_executable(test_linabf tests/test_linabf.cpp)
 target_link_libraries(test_linabf PRIVATE vsa_core)
 add_test(NAME linabf COMMAND test_linabf)

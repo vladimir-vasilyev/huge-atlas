@@ -937,7 +937,13 @@ void App::drawHugeAtlas()
     ImGui::InvisibleButton("hugeuvcanvas", canvas, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     if (ImGui::IsItemHovered()) {
         const ImGuiIO& io = ImGui::GetIO();
-        if (io.MouseWheel != 0.0f) uvZoom_ = std::max(0.05f, uvZoom_ * std::pow(1.15f, io.MouseWheel));
+        if (io.MouseWheel != 0.0f) {   // the point under the cursor stays where it is
+            const float zoomed = std::max(0.05f, uvZoom_ * std::pow(1.15f, io.MouseWheel)), ratio = zoomed / uvZoom_;
+            const ImVec2 c(io.MousePos.x - (origin.x + canvas.x * 0.5f), io.MousePos.y - (origin.y + canvas.y * 0.5f));
+            uvPan_.x = c.x - (c.x - uvPan_.x) * ratio;
+            uvPan_.y = c.y - (c.y - uvPan_.y) * ratio;
+            uvZoom_ = zoomed;
+        }
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
             uvPan_.x += io.MouseDelta.x;
             uvPan_.y += io.MouseDelta.y;
@@ -1040,7 +1046,13 @@ void App::drawUvPanel()
     ImGui::InvisibleButton("uvcanvas", canvas, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     if (ImGui::IsItemHovered()) {
         const ImGuiIO& io = ImGui::GetIO();
-        if (io.MouseWheel != 0.0f) uvZoom_ = std::max(0.05f, uvZoom_ * std::pow(1.15f, io.MouseWheel));
+        if (io.MouseWheel != 0.0f) {   // the point under the cursor stays where it is
+            const float zoomed = std::max(0.05f, uvZoom_ * std::pow(1.15f, io.MouseWheel)), ratio = zoomed / uvZoom_;
+            const ImVec2 c(io.MousePos.x - (origin.x + canvas.x * 0.5f), io.MousePos.y - (origin.y + canvas.y * 0.5f));
+            uvPan_.x = c.x - (c.x - uvPan_.x) * ratio;
+            uvPan_.y = c.y - (c.y - uvPan_.y) * ratio;
+            uvZoom_ = zoomed;
+        }
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
             uvPan_.x += io.MouseDelta.x;
             uvPan_.y += io.MouseDelta.y;
@@ -1174,6 +1186,7 @@ void App::startRefine()
 {
     refineOptions_.param = paramOptions_;
     refineOptions_.patch = patchOptions_;
+    if (const char* d = std::getenv("VSA_REFINE_DEPTH")) refineOptions_.maxDepth = std::atoi(d);   // testing hook
     refineOptions_.metric = vsaMetric_ == 0 ? Metric::L21 : Metric::L2;
     stopRefine(true);
     refineRounds_ = 0;
@@ -2657,7 +2670,10 @@ void App::handleSceneInput()
 
     if (dragging_) camera_.rotateTo(x, y, w, h);
     if (panning_) camera_.pan(io.MouseDelta.x, io.MouseDelta.y, h);
-    if (io.MouseWheel != 0.0f) camera_.zoom(io.MouseWheel);
+    if (io.MouseWheel != 0.0f) {   // towards the point under the cursor
+        const double ndcX = 2.0 * x / std::max(1, w) - 1.0, ndcY = 1.0 - 2.0 * y / std::max(1, h);
+        camera_.zoomAt(io.MouseWheel, ndcX, ndcY, double(w) / std::max(1, h));
+    }
 }
 
 void App::drawMainMenu()

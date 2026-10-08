@@ -197,8 +197,9 @@ bool Refiner::splitPatch(int pi)
     const std::vector<int>& faces = patch.faceToGlobal;
     const int depth = faceDepth_[faces[0]];
     auto why = [&](const char* reason) {
-        if (std::getenv("VSA_VERBOSE") && patch.topology.kind == PatchKind::Handles)
-            std::fprintf(stderr, "[split] handles patch of %zu faces (genus %d, depth %d) not split: %s\n", faces.size(), patch.topology.genus, depth, reason);
+        if (std::getenv("VSA_VERBOSE"))
+            std::fprintf(stderr, "[split] patch %d (%zu faces, %s, genus %d, depth %d) not split: %s\n", pi, faces.size(),
+                         patchKindName(patch.topology.kind), patch.topology.genus, depth, reason);
         return false;
     };
     if (depth >= opt_.maxDepth) return why("max depth");
