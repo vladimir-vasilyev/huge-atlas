@@ -170,6 +170,8 @@ private:
 
     // Border smoothing (applied after every partition of a Lloyd step) and raggedness of the borders
     SmoothParams     smoothParams_{0.1, 0.0, 10};
+    NormalSmoothing  normalSmoothing_;      // smoothing of the face normal field before the VSA (0 iterations = off)
+    void applyNormalSmoothing();            // recompute the face normals of the loaded mesh with normalSmoothing_, rebuild moments
     BoundaryStats    boundaryStats_;
     bool             boundaryStatsValid_ = false;
 

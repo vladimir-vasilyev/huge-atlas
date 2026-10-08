@@ -50,6 +50,8 @@ const std::unordered_map<std::string, const char*>& table()
         {"Rel. tolerance", "Relative change of the energy below which an iteration counts as 'no progress'."},
         {"Lambda (perimeter)", "Border smoothing: how much a shorter, straighter region border is worth against the fit error. 0 keeps the ragged border of the flooding; 0.1 is a good start."},
         {"Kappa (crease)", "Makes the smoothing cheaper along creases: borders prefer to run where the surface bends. 0 ignores the bend."},
+        {"Normal iterations", "Smooths the face normals before the partition (the paper's normal field smoothing): every normal becomes the mean of its neighbours' normals, but a neighbour across a sharp crease hardly counts. Helps noisy scans, where ragged normals give ragged, small regions. 0 = off."},
+        {"Normal sigma (deg)", "Angle between two neighbouring normals at which the neighbour's weight falls to 1/e. Creases sharper than this stay sharp; gentler bends are averaged out."},
         {"Max sweeps", "Upper limit of passes over all faces in one smoothing step."},
         {"Smooth now", "Apply the border smoothing once to the current partition."},
         {"Insert", "Add a region: take the face with the largest error out of the worst region and make it a new seed."},

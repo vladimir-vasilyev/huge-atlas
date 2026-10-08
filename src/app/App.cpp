@@ -100,6 +100,8 @@ bool App::init(int width, int height, const char* title)
     }
     showTriangle_ = false;
     rotate_ = false;
+    if (const char* d = std::getenv("VSA_NORMAL_ITER")) normalSmoothing_.iterations = std::atoi(d);   // testing hooks
+    if (const char* d = std::getenv("VSA_NORMAL_SIGMA")) normalSmoothing_.sigmaDegrees = std::atof(d);
     const char* envMesh = std::getenv("VSA_MESH");   // testing hooks: VSA_MESH, VSA_K, VSA_AUTO_ATLAS
     openMesh(envMesh ? envMesh : "data/cube.obj");   // default file; on failure only a status message
     if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
@@ -293,6 +295,7 @@ void App::openMesh(const std::string& path)
     normalizeToUnitBox(m);
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
+    smoothFaceNormals(mesh_, faceData_, normalSmoothing_);
     diag_ = diagnose(mesh_, faceData_);
     faceWeights_.assign(mesh_.n_faces(), 1.0f);
     faceMoments_ = computeFaceMoments(mesh_, faceData_);
@@ -753,6 +756,7 @@ Preset App::currentPreset() const
     p.metric = vsaMetric_; p.k = vsaK_; p.seeding = seedMethod_; p.rngSeed = vsaRngSeed_;
     p.lloydMaxIterations = lloydParams_.maxIterations; p.lloydRelTolerance = lloydParams_.relTolerance; p.lloydPatience = lloydParams_.patience;
     p.smoothLambda = smoothParams_.lambda; p.smoothKappa = smoothParams_.kappa; p.smoothMaxSweeps = smoothParams_.maxSweeps;
+    p.normalSmoothIterations = normalSmoothing_.iterations; p.normalSmoothSigma = normalSmoothing_.sigmaDegrees;
     p.patchMinFaces = patchOptions_.minFaces; p.patchCutMultiBoundary = patchOptions_.cutMultiBoundary; p.patchCutHandles = patchOptions_.cutHandles;
     p.param = paramOptions_;
     p.refinePolicy = refineOptions_.policy == RefinePolicy::FixFirst ? 0 : 1;
@@ -766,6 +770,7 @@ void App::applyPreset(const Preset& p)
     vsaMetric_ = p.metric; vsaK_ = p.k; seedMethod_ = p.seeding; vsaRngSeed_ = p.rngSeed;
     lloydParams_.maxIterations = p.lloydMaxIterations; lloydParams_.relTolerance = p.lloydRelTolerance; lloydParams_.patience = p.lloydPatience;
     smoothParams_.lambda = p.smoothLambda; smoothParams_.kappa = p.smoothKappa; smoothParams_.maxSweeps = p.smoothMaxSweeps;
+    normalSmoothing_.iterations = p.normalSmoothIterations; normalSmoothing_.sigmaDegrees = p.normalSmoothSigma;
     patchOptions_.minFaces = p.patchMinFaces; patchOptions_.cutMultiBoundary = p.patchCutMultiBoundary; patchOptions_.cutHandles = p.patchCutHandles;
     paramOptions_ = p.param;
     linabfParams_ = p.param.lin;
@@ -1663,6 +1668,7 @@ void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
     job->options.simplify.targetFaces = size_t(std::max(1000, hugeCoarseFaces_));
     job->options.k = std::max(1, hugeK_);
     job->options.lloyd.maxIterations = 30;
+    job->options.normals = normalSmoothing_;
     job->horizon = horizonOptions_;
     HugeJob* raw = job.get();
     job->options.onStage = [raw](const std::string& s) { raw->say(s); };
@@ -1773,7 +1779,9 @@ void App::drawHugeUI()
             ImGui::Separator();
             ImGui::TextUnformatted(stage.c_str());
             const float t = float(ImGui::GetTime());
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.25f, 0.65f, 1.0f, 1.0f));   // light blue slider
             ImGui::ProgressBar(-t, ImVec2(-1, 0), "");
+            ImGui::PopStyleColor();
             ImGui::TextDisabled("This cannot be cancelled. Large scans take minutes.");
             ImGui::EndPopup();
         }
@@ -1788,9 +1796,9 @@ void App::drawHugeUI()
             const FlatStats& s = hugeJob_->result.stats;
             char buf[560];
             std::snprintf(buf, sizeof(buf),
-                          "huge mesh: %zu faces -> %zu patches, %zu faces without UV, atlas %d x %d, efficiency %.1f%%%s "
+                          "huge mesh: %zu faces -> %zu patches (%zu still bad), %zu faces without UV, atlas %d x %d, efficiency %.1f%%%s "
                           "(read %.0f s, pipeline %.0f s, pack %.0f s, bake %.0f s)",
-                          hugeJob_->mesh.faceCount(), hugeJob_->result.patches.size(), s.facesWithoutUV, hugeJob_->atlas.resolution,
+                          hugeJob_->mesh.faceCount(), hugeJob_->result.patches.size(), s.patchesUnresolved, s.facesWithoutUV, hugeJob_->atlas.resolution,
                           hugeJob_->atlas.resolution, 100.0 * hugeJob_->atlas.efficiency,
                           hugeJob_->baked.empty() ? "" : ", texture baked", hugeJob_->loadSeconds, hugeJob_->pipelineSeconds,
                           hugeJob_->packSeconds, hugeJob_->bakeSeconds);
@@ -2406,6 +2414,13 @@ const Patch& App::patchAt(size_t i) const
     return patches_.patches[i];
 }
 
+void App::applyNormalSmoothing()
+{
+    faceData_ = computeFaceData(mesh_);
+    smoothFaceNormals(mesh_, faceData_, normalSmoothing_);
+    rebuildMoments();
+}
+
 void App::rebuildMoments()
 {
     faceMoments_ = computeFaceMoments(mesh_, faceData_);   // the unweighted moments are cheap to recompute: no second copy is kept
@@ -2521,6 +2536,15 @@ void App::drawVsaPanel()
         float tol = float(lloydParams_.relTolerance);
         if (ui::InputFloat("Rel. tolerance", &tol, 0.0f, 0.0f, "%.1e"))
             lloydParams_.relTolerance = std::max(0.0f, tol);
+    }
+
+    ImGui::SeparatorText("Normal smoothing");
+    {
+        bool changed = ui::SliderInt("Normal iterations", &normalSmoothing_.iterations, 0, 10);
+        float sig = float(normalSmoothing_.sigmaDegrees);
+        if (ui::SliderFloat("Normal sigma (deg)", &sig, 1.0f, 90.0f, "%.0f")) { normalSmoothing_.sigmaDegrees = sig; changed = true; }
+        ImGui::TextDisabled("0 iterations: off. Smooths the face normals the L2,1 metric reads, before the partition.");
+        if (changed && mesh_.n_faces() > 0) applyNormalSmoothing();
     }
 
     ImGui::SeparatorText("Border smoothing");

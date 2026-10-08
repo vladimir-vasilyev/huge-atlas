@@ -23,6 +23,16 @@ void normalizeToUnitBox(TriMesh& mesh);
 
 FaceData computeFaceData(const TriMesh& mesh, double degenerateAreaEps = 1e-14);
 
+// Smoothing of the face normal field (VSA paper, "Smoothing the normal field"): before the segmentation every face normal is
+// replaced by the area-weighted mean of the normals of its edge neighbours, where a neighbour counts with
+// exp(-(angle / sigma)^2), so a crease sharper than sigma is not blurred. A noisy scan gives a ragged normal field that makes
+// ragged, small regions; the L2,1 metric reads these normals. Only fd.normal changes (positions, areas and the L2 moments don't).
+struct NormalSmoothing {
+    int    iterations = 0;       // 0 = off
+    double sigmaDegrees = 25.0;  // angle at which a neighbour's weight falls to 1/e
+};
+void smoothFaceNormals(const TriMesh& mesh, FaceData& fd, const NormalSmoothing& opt);
+
 MeshDiagnostics diagnose(const TriMesh& mesh, const FaceData& fd);
 
 // Closes the small boundary loops of a mesh (holes of at most `maxEdges` edges): a triangle for a loop of three edges, a fan

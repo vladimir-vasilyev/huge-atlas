@@ -22,6 +22,8 @@ void visit(Preset& p, F&& f)
     f("vsa.smoothLambda", p.smoothLambda);
     f("vsa.smoothKappa", p.smoothKappa);
     f("vsa.smoothMaxSweeps", p.smoothMaxSweeps);
+    f("vsa.normalSmoothIterations", p.normalSmoothIterations);
+    f("vsa.normalSmoothSigma", p.normalSmoothSigma);
     f("patches.minFaces", p.patchMinFaces);
     f("patches.cutMultiBoundary", p.patchCutMultiBoundary);
     f("patches.cutHandles", p.patchCutHandles);

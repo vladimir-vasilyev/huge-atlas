@@ -70,7 +70,8 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
 
     say("segmenting the simplified mesh (VSA)...");
     t = Clock::now();
-    const FaceData cfd = computeFaceData(cs.mesh);
+    FaceData cfd = computeFaceData(cs.mesh);
+    smoothFaceNormals(cs.mesh, cfd, opt.normals);
     const std::vector<Moments> cfm = computeFaceMoments(cs.mesh, cfd);
     const VSAInput cin{cs.mesh, cfd, cfm};
     VSAState vs;
@@ -113,7 +114,7 @@ CoarseResult runCoarsePipeline(const TriMesh& fine, const CoarseOptions& opt)
     int nLabels = 0;
     for (int l : label) nLabels = std::max(nLabels, l + 1);
     if (opt.fineSmoothing > 0.0 && nLabels >= 2) {
-        const FaceData fd = computeFaceData(fine);
+        const FaceData fd = computeFaceData(fine);   // raw normals: the labels come from the (smoothed) coarse VSA, and the serial smoothing costs seconds per pass here
         const std::vector<Moments> fm = computeFaceMoments(fine, fd);
         const VSAInput fin{fine, fd, fm};
         VSAState fs;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/MeshPrep.h"
 #include "core/Partition.h"
 
 #include <functional>
@@ -22,6 +23,7 @@ struct CoarseOptions {
     LloydParams  lloyd;
     bool         pruneSmallParts = true;   // the simplified mesh drops tiny floating pieces
     int          fillHolesUpTo = 24;       // holes of the simplified mesh up to this many edges are closed (0 = leave them)
+    NormalSmoothing normals;             // smoothing of the face normals before the VSA (the coarse mesh; 0 iterations = off)
     double       fineSmoothing = 0.1;    // border smoothing of the transferred labels on the fine mesh (0 = off)
     RefineOptions refine;                // coarse refinement, extraction and the fine fallback
     LiftOptions  lift;

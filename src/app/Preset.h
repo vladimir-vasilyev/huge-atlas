@@ -19,6 +19,8 @@ struct Preset {
     int    lloydPatience = 3;
     double smoothLambda = 0.1, smoothKappa = 0.0;
     int    smoothMaxSweeps = 10;
+    int    normalSmoothIterations = 0;
+    double normalSmoothSigma = 25.0;
     // extraction of the patches
     int    patchMinFaces = 3;
     bool   patchCutMultiBoundary = true, patchCutHandles = true;

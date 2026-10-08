@@ -77,6 +77,31 @@ FaceData computeFaceData(const TriMesh& mesh, double eps)
     return fd;
 }
 
+void smoothFaceNormals(const TriMesh& mesh, FaceData& fd, const NormalSmoothing& opt)
+{
+    if (opt.iterations <= 0 || opt.sigmaDegrees <= 0.0) return;
+    const double invSigma = 1.0 / (opt.sigmaDegrees * 3.14159265358979323846 / 180.0);
+    const long n = long(mesh.n_faces());
+    std::vector<Vec3> next(size_t(n), Vec3(0, 0, 0));
+    for (int it = 0; it < opt.iterations; ++it) {
+        for (long i = 0; i < n; ++i) {
+            if (fd.degenerate[i]) { next[i] = fd.normal[i]; continue; }
+            const Vec3 ni = fd.normal[i];
+            Vec3 sum = ni * fd.area[i];
+            for (auto g : mesh.ff_range(TriMesh::FaceHandle(int(i)))) {
+                const int j = g.idx();
+                if (fd.degenerate[j]) continue;
+                const double c = std::min(1.0, std::max(-1.0, double(ni | fd.normal[j])));
+                const double a = std::acos(c) * invSigma;
+                sum += fd.normal[j] * (fd.area[j] * std::exp(-a * a));
+            }
+            const double len = sum.norm();
+            next[i] = len > 1e-12 ? sum / len : ni;
+        }
+        fd.normal.swap(next);
+    }
+}
+
 MeshDiagnostics diagnose(const TriMesh& mesh, const FaceData& fd)
 {
     MeshDiagnostics d;
