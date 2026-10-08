@@ -178,6 +178,10 @@ add_executable(test_hierarchy tests/test_hierarchy.cpp)
 target_link_libraries(test_hierarchy PRIVATE vsa_core)
 add_test(NAME hierarchy COMMAND test_hierarchy ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 
+add_executable(test_liftrepair tests/test_liftrepair.cpp)
+target_link_libraries(test_liftrepair PRIVATE vsa_core)
+add_test(NAME liftrepair COMMAND test_liftrepair)
+
 add_executable(test_coarse tests/test_coarse.cpp)
 target_link_libraries(test_coarse PRIVATE vsa_core)
 add_test(NAME coarse COMMAND test_coarse ${CMAKE_SOURCE_DIR}/data/bunny.ply)

@@ -124,7 +124,166 @@ bool straightenBorder(const TriMesh& fm, const std::vector<int>& loop, const std
     return boundaryCrossings(fm, uv).empty();
 }
 
+
+// ---- ABF++ (section 4.2) tools for a lifted map: placement in the kernel of the vertex link and flip-guarded relaxation.
+
+// Clips the convex polygon `poly` to the half plane left of the directed line a -> b.
+void clipLeft(std::vector<Eigen::Vector2d>& poly, const Eigen::Vector2d& a, const Eigen::Vector2d& b)
+{
+    std::vector<Eigen::Vector2d> out;
+    const Eigen::Vector2d d = b - a;
+    auto side = [&](const Eigen::Vector2d& p) { return d.x() * (p.y() - a.y()) - d.y() * (p.x() - a.x()); };
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const Eigen::Vector2d& p = poly[i];
+        const Eigen::Vector2d& q = poly[(i + 1) % poly.size()];
+        const double sp = side(p), sq = side(q);
+        if (sp >= 0.0) out.push_back(p);
+        if ((sp > 0.0 && sq < 0.0) || (sp < 0.0 && sq > 0.0)) out.push_back(p + (q - p) * (sp / (sp - sq)));
+    }
+    poly.swap(out);
+}
+
+// The edges a -> b of the link of v: (v, a, b) are its triangles, counterclockwise. Works for border vertices (open chain).
+void linkEdges(const TriMesh& m, TriMesh::VertexHandle v, std::vector<std::pair<int, int>>& edges)
+{
+    edges.clear();
+    for (auto h : m.voh_range(v)) {
+        if (m.is_boundary(h)) continue;
+        edges.push_back({m.to_vertex_handle(h).idx(), m.to_vertex_handle(m.next_halfedge_handle(h)).idx()});
+    }
+}
+
+// The point of the kernel of the link polygon that keeps all triangles around v positively oriented; false when the kernel is
+// empty (or too thin to be trusted).
+bool kernelPoint(const std::vector<std::pair<int, int>>& link, const std::vector<Eigen::Vector2d>& uv, Eigen::Vector2d& out)
+{
+    Eigen::Vector2d lo = uv[link[0].first], hi = lo;
+    for (const auto& e : link) {
+        lo = lo.cwiseMin(uv[e.first]).cwiseMin(uv[e.second]);
+        hi = hi.cwiseMax(uv[e.first]).cwiseMax(uv[e.second]);
+    }
+    const double ext = std::max((hi - lo).maxCoeff(), 1e-300);
+    std::vector<Eigen::Vector2d> poly = {lo, {hi.x(), lo.y()}, hi, {lo.x(), hi.y()}};   // an open chain (border vertex) has an unbounded kernel
+    for (size_t i = 0; i < link.size() && poly.size() >= 3; ++i) clipLeft(poly, uv[link[i].first], uv[link[i].second]);
+    if (poly.size() < 3) return false;
+    double area = 0.0;
+    Eigen::Vector2d c = Eigen::Vector2d::Zero();
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const Eigen::Vector2d& p = poly[i];
+        const Eigen::Vector2d& q = poly[(i + 1) % poly.size()];
+        const double cr = p.x() * q.y() - p.y() * q.x();
+        area += cr;
+        c += (p + q) * cr;
+    }
+    if (area <= 1e-12 * ext * ext) return false;
+    out = c / (3.0 * area);
+    return true;
+}
+
+bool starPositive(const TriMesh& m, TriMesh::VertexHandle v, const std::vector<Eigen::Vector2d>& uv, const Eigen::Vector2d& pos)
+{
+    for (auto h : m.voh_range(v)) {
+        const auto h2 = m.next_halfedge_handle(h);
+        if (m.is_boundary(h)) continue;
+        const Eigen::Vector2d& a = uv[m.to_vertex_handle(h).idx()];
+        const Eigen::Vector2d& b = uv[m.to_vertex_handle(h2).idx()];
+        if ((a - pos).x() * (b - pos).y() - (a - pos).y() * (b - pos).x() <= 0.0) return false;
+    }
+    return true;
+}
+
+// Every interior vertex of a flipped face is moved to the centre of the kernel of its link when that clears its triangles;
+// repeated while it helps. Returns the vertices that moved.
+std::vector<int> kernelRepair(const TriMesh& m, std::vector<Eigen::Vector2d>& uv, std::vector<int> flipped, int maxPasses)
+{
+    std::vector<int> moved;
+    std::vector<std::pair<int, int>> link;
+    for (int pass = 0; pass < maxPasses && !flipped.empty(); ++pass) {
+        bool any = false;
+        std::vector<int> still;
+        for (int f : flipped) {
+            bool fixed = false;
+            for (int borderPass = 0; borderPass < 2 && !fixed; ++borderPass)   // interior vertices first, then the border ones
+                for (auto v : m.fv_range(TriMesh::FaceHandle(f))) {
+                    if (m.is_isolated(v) || m.is_boundary(v) != (borderPass == 1)) continue;
+                    linkEdges(m, v, link);
+                    if (link.empty()) continue;
+                    Eigen::Vector2d pos;
+                    if (!kernelPoint(link, uv, pos) || !starPositive(m, v, uv, pos)) continue;
+                    uv[v.idx()] = pos;
+                    moved.push_back(v.idx());
+                    any = fixed = true;
+                    break;
+                }
+            if (!fixed) still.push_back(f);
+        }
+        if (!any) break;
+        // faces the moves have not cleared: look again from the current map
+        std::vector<int> next;
+        for (int f : still) {
+            const auto fh = TriMesh::FaceHandle(f);
+            auto it = m.cfv_iter(fh);
+            const Eigen::Vector2d& a = uv[it->idx()]; ++it;
+            const Eigen::Vector2d& b = uv[it->idx()]; ++it;
+            const Eigen::Vector2d& c = uv[it->idx()];
+            if ((b - a).x() * (c - a).y() - (b - a).y() * (c - a).x() <= 0.0) next.push_back(f);
+        }
+        flipped.swap(next);
+    }
+    return moved;
+}
+
+// One Gauss-Seidel sweep of the mean value weighted average over `vertices` (interior only); a vertex stays when the move
+// would flip a triangle. Mean value weights come from the 3D mesh (positive, no matter how obtuse the triangles are).
+void relaxGuarded(const TriMesh& m, const std::vector<int>& vertices, std::vector<Eigen::Vector2d>& uv, int sweeps)
+{
+    for (int s = 0; s < sweeps; ++s)
+        for (int vi : vertices) {
+            const auto v = TriMesh::VertexHandle(vi);
+            if (m.is_boundary(v) || m.is_isolated(v)) continue;
+            const Vec3 p = m.point(v);
+            Eigen::Vector2d sum = Eigen::Vector2d::Zero();
+            double wsum = 0.0;
+            for (auto h : m.voh_range(v)) {
+                const auto w = m.to_vertex_handle(h);
+                const Vec3 q = m.point(w) - p;
+                const double len = q.norm();
+                if (len < 1e-300) continue;
+                auto halfTan = [&](const Vec3& a, const Vec3& b) {   // tan(angle between a and b / 2)
+                    const double na = a.norm(), nb = b.norm();
+                    if (na < 1e-300 || nb < 1e-300) return 0.0;
+                    const double c = std::max(-1.0, std::min(1.0, (a | b) / (na * nb)));
+                    return std::sqrt((1.0 - c) / (1.0 + c + 1e-300));
+                };
+                const auto hn = m.next_halfedge_handle(h);                          // next edge of the face left of v->w
+                const auto hp = m.prev_halfedge_handle(m.opposite_halfedge_handle(h));   // face right of v->w
+                double tw = 0.0;
+                if (!m.is_boundary(h)) tw += halfTan(q, m.point(m.to_vertex_handle(hn)) - p);
+                if (!m.is_boundary(m.opposite_halfedge_handle(h))) tw += halfTan(q, m.point(m.from_vertex_handle(hp)) - p);
+                const double wt = tw / len;
+                sum += wt * uv[w.idx()];
+                wsum += wt;
+            }
+            if (wsum <= 0.0) continue;
+            const Eigen::Vector2d target = uv[vi] + 0.5 * (sum / wsum - uv[vi]);
+            if (starPositive(m, v, uv, target)) uv[vi] = target;
+        }
+}
 } // namespace
+
+int repairFlipsByKernel(const TriMesh& mesh, std::vector<Eigen::Vector2d>& uv, const std::vector<int>& flippedFaces, int relaxSweeps)
+{
+    const std::vector<int> moved = kernelRepair(mesh, uv, flippedFaces, 6);
+    if (moved.empty() || relaxSweeps <= 0) return int(moved.size());
+    std::vector<char> mark(mesh.n_vertices(), 0);
+    std::vector<int> near;
+    for (int v : moved)
+        for (auto w : mesh.vv_range(TriMesh::VertexHandle(v)))
+            for (int x : {v, w.idx()})
+                if (!mark[x]) { mark[x] = 1; near.push_back(x); }
+    relaxGuarded(mesh, near, uv, relaxSweeps);
+    return int(moved.size());
+}
 
 PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& opt, LiftStats* stats,
                      const TriMesh* source)
@@ -181,6 +340,27 @@ PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const Lif
     // a few flipped triangles (the fine surface folds against the coarse one): solve the neighbourhood again,
     // growing it until the map is clean. Also used after the border was straightened.
     auto repair = [&](std::vector<Eigen::Vector2d>& uvv, UVReport& report) {
+        // ABF++: a few flipped faces are first cleared by moving their vertices into the kernel of their link, then the
+        // neighbourhood is relaxed without letting a triangle flip
+        if (opt.kernelRepair && !report.flippedFaces.empty()) {
+            std::vector<Eigen::Vector2d> trial = uvv;
+            const std::vector<int> moved = kernelRepair(fm, trial, report.flippedFaces, 6);
+            if (!moved.empty()) {
+                std::vector<char> mark(nV, 0);
+                std::vector<int> near;
+                for (int v : moved)
+                    for (auto w : fm.vv_range(TriMesh::VertexHandle(v)))
+                        for (int x : {v, w.idx()})
+                            if (!mark[x]) { mark[x] = 1; near.push_back(x); }
+                relaxGuarded(fm, near, trial, 3);
+                const UVReport rep = checkUV(fm, trial);
+                if (rep.flippedFaces.size() + rep.crossings.size() < report.flippedFaces.size() + report.crossings.size()) {
+                    uvv = std::move(trial);
+                    report = rep;
+                    local.kernelMoves += int(moved.size());
+                }
+            }
+        }
         for (int ring : {1, 2, 4, 8}) {
             if (report.ok()) break;
             std::vector<char> region(nV, 0);

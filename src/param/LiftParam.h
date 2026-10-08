@@ -11,6 +11,7 @@
 struct LiftOptions {
     ParamOptions param;              // thresholds of the check (maxStretch, maxBadAreaFraction)
     double       outsideTolerance = 1e-6;   // barycentric weight below which a point counts as lying on an edge
+    bool         kernelRepair = true;       // ABF++: put the vertices of flipped faces into the kernel of their link, relax locally
     double       regularization = 1e-6;     // pull of the solved vertices towards their clamped position
 };
 
@@ -18,6 +19,7 @@ struct LiftStats {
     int vertices = 0;
     int outside = 0;        // vertices that had to be solved again
     int bandFaces = 0;      // faces of that solve
+    int kernelMoves = 0;    // vertices moved into the kernel of their link
     int repairs = 0;        // local re-solves around flipped triangles that helped
 };
 
@@ -26,3 +28,8 @@ struct LiftStats {
 // `source` (the mesh finePatch was cut from), when given, lets a failed lift suggest where to split (hintFaceA/B).
 PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& options = {},
                      LiftStats* stats = nullptr, const TriMesh* source = nullptr);
+
+// ABF++ tools, exposed for tests: every interior vertex of a flipped face (indices into `mesh`) is moved into the kernel of its
+// link polygon when that clears its triangles (repeated up to a few passes), then the moved vertices and their neighbours are
+// relaxed with mean value weights, a vertex staying put when the move would flip a triangle. Returns the number of moved vertices.
+int repairFlipsByKernel(const TriMesh& mesh, std::vector<Eigen::Vector2d>& uv, const std::vector<int>& flippedFaces, int relaxSweeps = 3);
