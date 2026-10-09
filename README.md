@@ -55,7 +55,7 @@ VSA_AUTO_ATLAS=1 VSA_MESH=data/bunny.ply VSA_K=8 ./build-xcode/Release/vsa_app
 VSA_AUTO_HUGE=data/car/FIN_CAR_D.obj VSA_K=200 VSA_HUGE_PERCENT=10 VSA_ATLAS_RES=8192 VSA_ATLAS_MIP=1 VSA_AUTO_BAKE=1 ./build-xcode/Release/vsa_app
 ```
 
-See `CLAUDE.md` for the list of hooks and the development log (in Russian) and `docs/PLAN.md` for the plan.
+The hooks are read in `src/app/App.cpp` (search for `getenv("VSA_`); the plan is in `docs/PLAN.md`.
 
 ## Layout
 

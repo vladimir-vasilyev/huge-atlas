@@ -9,3 +9,6 @@ DebugOut/
 # large test scans are downloaded separately
 data/car/
 data/doom-combat-scene_obj/
+
+# private development log
+CLAUDE.md
