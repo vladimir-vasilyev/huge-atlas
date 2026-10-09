@@ -292,3 +292,16 @@ set_target_properties(vsa_app PROPERTIES
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# Tests live in their own group (folder) of the IDE project, and one target builds them all.
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+get_property(ALL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+set(TEST_TARGETS "")
+foreach(tgt ${ALL_TARGETS})
+    if(tgt MATCHES "^test_")
+        set_target_properties(${tgt} PROPERTIES FOLDER "Tests")
+        list(APPEND TEST_TARGETS ${tgt})
+    endif()
+endforeach()
+add_custom_target(all_tests DEPENDS ${TEST_TARGETS})
+set_target_properties(all_tests PROPERTIES FOLDER "Tests")
