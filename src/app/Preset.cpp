@@ -31,6 +31,9 @@ void visit(Preset& p, F&& f)
     f("param.allowCut", p.param.allowCut);
     f("param.maxCuts", p.param.maxCuts);
     f("param.cutKappa", p.param.cutKappa);
+    f("param.repairNearMisses", p.param.repairNearMisses);
+    f("param.repairMaxProblems", p.param.repairMaxProblems);
+    f("param.allowLscm", p.param.allowLscm);
     f("param.allowTutte", p.param.allowTutte);
     f("param.maxStretch", p.param.maxStretch);
     f("param.maxBadAreaFraction", p.param.maxBadAreaFraction);

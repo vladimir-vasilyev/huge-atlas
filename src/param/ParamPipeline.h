@@ -18,7 +18,7 @@
 // A patch that stays non-injective, comes from the Tutte fallback, or is too stretched, is marked needsSplit: it has
 // to be split by VSA again (the loop of stage 10).
 
-enum class ParamMethod { None, LinABF, ActiveSet, Cut, Tutte, Lifted };
+enum class ParamMethod { None, LinABF, ActiveSet, Cut, Tutte, Lifted, Lscm, Repaired };
 const char* paramMethodName(ParamMethod method);
 
 struct ParamOptions {
@@ -28,6 +28,9 @@ struct ParamOptions {
     bool   allowCut = true;
     int    maxCuts = 2;
     double cutKappa = 1.0;
+    bool   repairNearMisses = true;   // a LinABF / active set map with a few flips or crossings is repaired locally before slits and Tutte
+    int    repairMaxProblems = 64;    // ... when it has at most this many flipped faces + crossings
+    bool   allowLscm = true;          // before Tutte: least squares conformal map (free border, much less angle distortion), kept when injective
     bool   allowTutte = true;
     double maxStretch = 4.0;   // a triangle with a larger L2 stretch (or a flipped one) is "too distorted" (0 = ignore)
     double maxBadAreaFraction = 0.005;   // needsSplit when the too distorted triangles cover more than this share of the area

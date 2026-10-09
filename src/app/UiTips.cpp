@@ -54,6 +54,7 @@ const std::unordered_map<std::string, const char*>& table()
         {"Normal sigma (deg)", "Angle between two neighbouring normals at which the neighbour's weight falls to 1/e. Creases sharper than this stay sharp; gentler bends are averaged out."},
         {"Match the original layout", "Measures the gaps between the charts of the layout stored in the file and sets the texture size and the max mip level of the packer to what that layout allows (the highest level whose gutter fits into 95% of the places where two charts face each other)."},
         {"Compare with the original layout (huge)", "Measures the layout stored in the file and the new atlas with the same measures (distortion, seams, texel density, gaps between charts, charts mixed by mip levels) on the full mesh, in the background, and shows the table."},
+        {"LSCM before Tutte", "When the other methods fail, try the least squares conformal map first: it keeps angles much better than Tutte, but it can overlap itself; it is used only when it does not. Tutte stays the last resort."},
         {"Max sweeps", "Upper limit of passes over all faces in one smoothing step."},
         {"Smooth now", "Apply the border smoothing once to the current partition."},
         {"Insert", "Add a region: take the face with the largest error out of the worst region and make it a new seed."},

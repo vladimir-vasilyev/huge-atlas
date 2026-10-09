@@ -285,60 +285,12 @@ int repairFlipsByKernel(const TriMesh& mesh, std::vector<Eigen::Vector2d>& uv, c
     return int(moved.size());
 }
 
-PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& opt, LiftStats* stats,
-                     const TriMesh* source)
+// Repairs a map with a few flipped faces or border crossings: kernel placement, local LSCM in growing rings, and (a single border
+// loop) straightening of a tangled border. `uv` and `report` are updated in place.
+void repairMap(const TriMesh& fm, const std::vector<std::vector<int>>& loops, std::vector<Eigen::Vector2d>& uv, UVReport& reportIn,
+               const LiftOptions& opt, LiftStats& local)
 {
-    PatchParam out;
-    out.method = ParamMethod::Lifted;
-    out.patch = finePatch;
-    const TriMesh& fm = finePatch.mesh;
-    const TriMesh& cm = coarse.patch.mesh;
     const size_t nV = fm.n_vertices();
-
-    const FlatMesh cflat = flatOf(cm);
-    const TriangleGrid grid(cflat);
-    out.uv.assign(nV, Eigen::Vector2d::Zero());
-    std::vector<char> outside(nV, 0);
-    int nOutside = 0;
-    for (size_t v = 0; v < nV; ++v) {
-        const Vec3 p = fm.point(TriMesh::VertexHandle(int(v)));
-        const float pf[3] = {float(p[0]), float(p[1]), float(p[2])};
-        const TriangleGrid::Hit h = grid.closest(pf);
-        if (h.face == UINT32_MAX) { out.log = "lift: empty coarse chart\n"; out.needsSplit = true; return out; }
-        const uint32_t* tri = &cflat.idx[3 * size_t(h.face)];
-        out.uv[v] = h.u * coarse.uv[tri[0]] + h.v * coarse.uv[tri[1]] + h.w * coarse.uv[tri[2]];
-        if (h.inside) continue;
-        // clamped: is the closest point on the border of the chart?
-        const double wgt[3] = {h.u, h.v, h.w};
-        int zero = 0, onlyPositive = -1;
-        for (int k = 0; k < 3; ++k)
-            if (wgt[k] <= opt.outsideTolerance) ++zero; else onlyPositive = k;
-        bool onBorder = false;
-        if (zero == 2) {   // at a vertex
-            onBorder = cm.is_boundary(TriMesh::VertexHandle(int(tri[onlyPositive])));
-        } else if (zero == 1) {   // on the edge opposite the vertex with weight ~0
-            int z = 0;
-            for (int k = 0; k < 3; ++k) if (wgt[k] <= opt.outsideTolerance) z = k;
-            const auto va = TriMesh::VertexHandle(int(tri[(z + 1) % 3])), vb = TriMesh::VertexHandle(int(tri[(z + 2) % 3]));
-            const auto he = cm.find_halfedge(va, vb);
-            onBorder = he.is_valid() && cm.is_boundary(cm.edge_handle(he));
-        }
-        if (onBorder) { outside[v] = 1; ++nOutside; }
-    }
-
-    LiftStats local;
-    local.vertices = int(nV);
-    local.outside = nOutside;
-    if (nOutside > 0) {
-        if (!solveBand(fm, outside, out.uv, opt.regularization, local.bandFaces)) {
-            out.log = "lift: band solve failed\n";
-            out.needsSplit = true;
-            return out;
-        }
-    }
-    out.report.uv = checkUV(fm, out.uv);
-    // a few flipped triangles (the fine surface folds against the coarse one): solve the neighbourhood again,
-    // growing it until the map is clean. Also used after the border was straightened.
     auto repair = [&](std::vector<Eigen::Vector2d>& uvv, UVReport& report) {
         // ABF++: a few flipped faces are first cleared by moving their vertices into the kernel of their link, then the
         // neighbourhood is relaxed without letting a triangle flip
@@ -392,25 +344,106 @@ PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const Lif
             }
         }
     };
-    out.report.uv = checkUV(fm, out.uv);
-    repair(out.uv, out.report.uv);
+    repair(uv, reportIn);
 
     // crossings only: the border itself is tangled. Straighten it, then let the interior follow.
-    if (out.report.uv.flippedFaces.empty() && !out.report.uv.crossings.empty() && finePatch.topology.loops.size() == 1) {
+    if (reportIn.flippedFaces.empty() && !reportIn.crossings.empty() && loops.size() == 1) {
         for (int margin : {3, 8, 20}) {
-            std::vector<Eigen::Vector2d> trial = out.uv;
-            const bool straight = straightenBorder(fm, finePatch.topology.loops[0], out.report.uv.crossings, trial, margin, 400);
+            std::vector<Eigen::Vector2d> trial = uv;
+            const bool straight = straightenBorder(fm, loops[0], reportIn.crossings, trial, margin, 400);
             if (std::getenv("VSA_DEBUG_LIFT")) {
                 const UVReport dbg = checkUV(fm, trial);
                 std::fprintf(stderr, "[straighten] %zu faces margin %d: straight %d, crossings %zu (was %zu), flipped %zu\n", fm.n_faces(),
-                             margin, int(straight), dbg.crossings.size(), out.report.uv.crossings.size(), dbg.flippedFaces.size());
+                             margin, int(straight), dbg.crossings.size(), reportIn.crossings.size(), dbg.flippedFaces.size());
             }
             if (!straight) continue;
             UVReport rep = checkUV(fm, trial);
             repair(trial, rep);
-            if (rep.ok()) { out.uv = std::move(trial); out.report.uv = rep; break; }
+            if (rep.ok()) { uv = std::move(trial); reportIn = rep; break; }
         }
     }
+}
+
+std::vector<Eigen::Vector2d> lscmEmbedding(const TriMesh& m, std::string* error)
+{
+    auto fail = [&](const char* msg) { if (error) *error = msg; return std::vector<Eigen::Vector2d>(); };
+    std::vector<int> border;
+    for (auto v : m.vertices()) if (m.is_boundary(v)) border.push_back(v.idx());
+    if (border.size() < 3) return fail("no border");
+    auto far = [&](int from) {
+        int best = from;
+        double bd = -1.0;
+        for (int b : border) {
+            const double d = (m.point(TriMesh::VertexHandle(b)) - m.point(TriMesh::VertexHandle(from))).sqrnorm();
+            if (d > bd) { bd = d; best = b; }
+        }
+        return best;
+    };
+    const int a0 = far(far(border[0])), b0 = far(a0);   // the ends of a long diameter of the border
+    if (a0 == b0) return fail("degenerate border");
+    std::vector<Eigen::Vector2d> uv(m.n_vertices(), Eigen::Vector2d::Zero());
+    uv[b0] = Eigen::Vector2d((m.point(TriMesh::VertexHandle(b0)) - m.point(TriMesh::VertexHandle(a0))).norm(), 0.0);
+    std::vector<char> unknown(m.n_vertices(), 1);
+    unknown[a0] = unknown[b0] = 0;
+    int faces = 0;
+    if (!solveBand(m, unknown, uv, 1e-14, faces)) return fail("solve failed");
+    return uv;
+}
+
+PatchParam liftPatch(const Patch& finePatch, const PatchParam& coarse, const LiftOptions& opt, LiftStats* stats,
+                     const TriMesh* source)
+{
+    PatchParam out;
+    out.method = ParamMethod::Lifted;
+    out.patch = finePatch;
+    const TriMesh& fm = finePatch.mesh;
+    const TriMesh& cm = coarse.patch.mesh;
+    const size_t nV = fm.n_vertices();
+
+    const FlatMesh cflat = flatOf(cm);
+    const TriangleGrid grid(cflat);
+    out.uv.assign(nV, Eigen::Vector2d::Zero());
+    std::vector<char> outside(nV, 0);
+    int nOutside = 0;
+    for (size_t v = 0; v < nV; ++v) {
+        const Vec3 p = fm.point(TriMesh::VertexHandle(int(v)));
+        const float pf[3] = {float(p[0]), float(p[1]), float(p[2])};
+        const TriangleGrid::Hit h = grid.closest(pf);
+        if (h.face == UINT32_MAX) { out.log = "lift: empty coarse chart\n"; out.needsSplit = true; return out; }
+        const uint32_t* tri = &cflat.idx[3 * size_t(h.face)];
+        out.uv[v] = h.u * coarse.uv[tri[0]] + h.v * coarse.uv[tri[1]] + h.w * coarse.uv[tri[2]];
+        if (h.inside) continue;
+        // clamped: is the closest point on the border of the chart?
+        const double wgt[3] = {h.u, h.v, h.w};
+        int zero = 0, onlyPositive = -1;
+        for (int k = 0; k < 3; ++k)
+            if (wgt[k] <= opt.outsideTolerance) ++zero; else onlyPositive = k;
+        bool onBorder = false;
+        if (zero == 2) {   // at a vertex
+            onBorder = cm.is_boundary(TriMesh::VertexHandle(int(tri[onlyPositive])));
+        } else if (zero == 1) {   // on the edge opposite the vertex with weight ~0
+            int z = 0;
+            for (int k = 0; k < 3; ++k) if (wgt[k] <= opt.outsideTolerance) z = k;
+            const auto va = TriMesh::VertexHandle(int(tri[(z + 1) % 3])), vb = TriMesh::VertexHandle(int(tri[(z + 2) % 3]));
+            const auto he = cm.find_halfedge(va, vb);
+            onBorder = he.is_valid() && cm.is_boundary(cm.edge_handle(he));
+        }
+        if (onBorder) { outside[v] = 1; ++nOutside; }
+    }
+
+    LiftStats local;
+    local.vertices = int(nV);
+    local.outside = nOutside;
+    if (nOutside > 0) {
+        if (!solveBand(fm, outside, out.uv, opt.regularization, local.bandFaces)) {
+            out.log = "lift: band solve failed\n";
+            out.needsSplit = true;
+            return out;
+        }
+    }
+    out.report.uv = checkUV(fm, out.uv);
+    out.report.uv = checkUV(fm, out.uv);
+    repairMap(fm, finePatch.topology.loops, out.uv, out.report.uv, opt, local);
     if (stats) *stats = local;
     if (std::getenv("VSA_DEBUG_LIFT") && !out.report.uv.crossings.empty() && out.report.uv.flippedFaces.empty()) {
         // where along the border loop are the two edges of a crossing, and what kind of vertices do they have

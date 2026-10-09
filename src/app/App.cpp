@@ -271,12 +271,15 @@ void App::run()
                     std::printf("AUTO COMPARE: %.0f s\n", hj.compareSeconds);
                     if (std::getenv("VSA_AUTO_METHODS")) {   // the distortion of our layout split by the method that unfolded the patch
                         const std::vector<int32_t> nbr = buildFaceNeighbors(hj.mesh);
-                        for (int m = 0; m <= int(ParamMethod::Lifted); ++m) {
+                        for (int m = 0; m <= int(ParamMethod::Repaired); ++m) {
                             std::vector<float> sub(hj.result.cornerUV.size(), std::nanf(""));
                             size_t faces = 0, count = 0;
+                            double area = 0.0, areaAll = 0.0;
+                            for (const FlatPatch& fp : hj.result.patches) areaAll += fp.area3D;
                             for (const FlatPatch& fp : hj.result.patches) {
                                 if (int(fp.method) != m) continue;
                                 ++count;
+                                area += fp.area3D;
                                 for (uint32_t f : fp.faces) {
                                     ++faces;
                                     for (int k = 0; k < 6; ++k) sub[size_t(f) * 6 + k] = hj.result.cornerUV[size_t(f) * 6 + k];
@@ -284,8 +287,8 @@ void App::run()
                             }
                             if (!count) continue;
                             const UVLayoutStats s = analyzeUVLayout(hj.mesh, nbr, sub, hj.atlas.resolution);
-                            std::printf("AUTO METHOD %-10s: %zu patches, %zu faces (%.1f%%), L2 mean %.3f p95 %.3f, conformal p50 %.3f p95 %.3f, flipped %d\n",
-                                        paramMethodName(ParamMethod(m)), count, faces, 100.0 * faces / hj.mesh.faceCount(), s.l2Mean, s.l2P95,
+                            std::printf("AUTO METHOD %-10s: %zu patches, %zu faces (%.1f%%, area %.1f%%), L2 mean %.3f p95 %.3f, conformal p50 %.3f p95 %.3f, flipped %d\n",
+                                        paramMethodName(ParamMethod(m)), count, faces, 100.0 * faces / hj.mesh.faceCount(), 100.0 * area / std::max(areaAll, 1e-300), s.l2Mean, s.l2P95,
                                         s.conformalP50, s.conformalP95, s.flipped);
                         }
                     }
@@ -1465,10 +1468,10 @@ void App::drawRefinePanel()
         for (size_t d = 0; d < st.depthHistogram.size(); ++d)
             if (st.depthHistogram[d] > 0) hist += "  d" + std::to_string(d) + "=" + std::to_string(st.depthHistogram[d]);
         ImGui::TextUnformatted(hist.c_str());
-        int byMethod[5] = {0, 0, 0, 0, 0};
+        int byMethod[8] = {0, 0, 0, 0, 0, 0, 0, 0};
         for (const PatchParam& p : params_) ++byMethod[int(p.method)];
-        ImGui::Text("LinABF %d, active set %d, slit %d, Tutte %d, not parameterized %d", byMethod[int(ParamMethod::LinABF)],
-                    byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Tutte)],
+        ImGui::Text("LinABF %d, active set %d, slit %d, LSCM %d, Tutte %d, not parameterized %d", byMethod[int(ParamMethod::LinABF)],
+                    byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Lscm)], byMethod[int(ParamMethod::Tutte)],
                     byMethod[int(ParamMethod::None)]);
     }
     ImGui::End();
@@ -1492,6 +1495,7 @@ void App::drawParamPanel()
     }
     ui::Checkbox("Slits from the worst vertex", &paramOptions_.allowCut);
     ui::SliderInt("Max slits", &paramOptions_.maxCuts, 0, 6);
+    ui::Checkbox("LSCM before Tutte", &paramOptions_.allowLscm);
     ui::Checkbox("Tutte fallback (always injective)", &paramOptions_.allowTutte);
     {
         float ms = float(paramOptions_.maxStretch);
@@ -1505,7 +1509,7 @@ void App::drawParamPanel()
     if (ui::Button("Parameterize all disks")) runParam(false);
 
     // summary
-    int done = 0, injective = 0, split = 0, byMethod[5] = {0, 0, 0, 0, 0};
+    int done = 0, injective = 0, split = 0, byMethod[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     double worst = 0.0, sumL2 = 0.0;
     for (size_t i = 0; i < params_.size(); ++i) {
         if (!paramDone_[i]) continue;
@@ -1520,8 +1524,8 @@ void App::drawParamPanel()
     if (!paramStatus_.empty()) ImGui::TextUnformatted(paramStatus_.c_str());
     if (done > 0) {
         ImGui::Text("%d patches: %d injective, %d need a split", done, injective, split);
-        ImGui::Text("LinABF %d, active set %d, slit %d, Tutte %d, failed %d", byMethod[int(ParamMethod::LinABF)],
-                    byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Tutte)],
+        ImGui::Text("LinABF %d, active set %d, slit %d, LSCM %d, Tutte %d, failed %d", byMethod[int(ParamMethod::LinABF)],
+                    byMethod[int(ParamMethod::ActiveSet)], byMethod[int(ParamMethod::Cut)], byMethod[int(ParamMethod::Lscm)], byMethod[int(ParamMethod::Tutte)],
                     byMethod[int(ParamMethod::None)]);
         ImGui::Text("L2 stretch: mean of patches %.3f, worst triangle %.2f", sumL2 / std::max(1, done), worst);
         if (ui::RadioButton("Stretch", &colorMode_, 7)) uploadMesh();

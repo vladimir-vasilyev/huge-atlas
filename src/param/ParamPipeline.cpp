@@ -1,5 +1,7 @@
 #include "param/ParamPipeline.h"
 
+#include "param/LiftParam.h"
+
 #include <algorithm>
 #include <cstdio>
 
@@ -11,6 +13,8 @@ const char* paramMethodName(ParamMethod m)
         case ParamMethod::Cut:       return "cut";
         case ParamMethod::Tutte:     return "Tutte";
         case ParamMethod::Lifted:    return "lifted";
+        case ParamMethod::Lscm:      return "LSCM";
+        case ParamMethod::Repaired:  return "repaired";
         default:                     return "none";
     }
 }
@@ -119,6 +123,20 @@ PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const
         return false;
     };
 
+    // A map with only a few flipped faces / crossings (and valid angles) is repaired locally: kernel placement, LSCM in rings,
+    // straightening of the border. Better than a slit or Tutte, which spoil the angles.
+    auto nearMiss = [&](const Attempt& a, const Patch& p, ParamMethod method, const char* name) {
+        if (!opt.repairNearMisses || !a.solved || a.report.ok() || !a.report.angles.badCorners.empty() || a.problems() > opt.repairMaxProblems) return false;
+        Attempt r = a;
+        LiftStats ls;
+        repairMap(p.mesh, p.topology.loops, r.uv, r.report.uv, LiftOptions(), ls);
+        r.what = std::string(name) + " + repair: " + (r.report.ok() ? "injective" : describe(r.report));
+        out.log += r.what + "\n";
+        if (!r.report.ok()) return false;
+        finish(out, p, method, r);
+        return true;
+    };
+
     bool done = false;
     for (int cut = 0; cut <= (opt.allowCut ? opt.maxCuts : 0) && !done; ++cut) {
         if (cut > 0) {
@@ -132,10 +150,31 @@ PatchParam parameterizePatch(const TriMesh& source, const Patch& original, const
         const ParamMethod plain = cut ? ParamMethod::Cut : ParamMethod::LinABF;
         Attempt a = attempt(current->mesh, solveLinABF(current->mesh, opt.lin), opt, "LinABF");
         if (consider(a, *current, plain)) { done = true; break; }
+        if (nearMiss(a, *current, ParamMethod::Repaired, "LinABF")) { done = true; break; }
         if (opt.useActiveSet) {
             ActiveSetInfo info;
             Attempt b = attempt(current->mesh, solveLinABFActiveSet(current->mesh, opt.lin, opt.active, &info), opt, "active set");
             if (consider(b, *current, cut ? ParamMethod::Cut : ParamMethod::ActiveSet)) { done = true; break; }
+            if (nearMiss(b, *current, ParamMethod::Repaired, "active set")) { done = true; break; }
+        }
+    }
+
+    if (!done && opt.allowLscm) {
+        std::string err;
+        const std::vector<Eigen::Vector2d> uv = lscmEmbedding(original.mesh, &err);
+        if (uv.empty()) {
+            out.log += "LSCM: " + err + "\n";
+        } else {
+            Attempt l;
+            l.solved = true;
+            l.uv = uv;
+            l.report.uv = checkUV(original.mesh, l.uv);
+            if (!l.report.uv.ok()) {   // LSCM leaves a few flips / crossings: the repair of the lift fixes most of them
+                LiftStats ls;
+                repairMap(original.mesh, original.topology.loops, l.uv, l.report.uv, LiftOptions(), ls);
+            }
+            l.what = std::string("LSCM: ") + (l.report.ok() ? "injective" : describe(l.report));
+            done = consider(l, original, ParamMethod::Lscm);
         }
     }
 

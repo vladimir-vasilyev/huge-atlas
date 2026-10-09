@@ -23,6 +23,15 @@ struct LiftStats {
     int repairs = 0;        // local re-solves around flipped triangles that helped
 };
 
+// Least squares conformal map of a disk with a free border (Levy et al. 2002): two far apart border vertices are pinned,
+// the rest is solved. Empty result (and `error`) when the mesh has no border or the solve fails. Not injective in general.
+std::vector<Eigen::Vector2d> lscmEmbedding(const TriMesh& mesh, std::string* error = nullptr);
+
+// Repairs a map with a few flipped faces or border crossings (kernel placement, local LSCM in growing rings, straightening of a
+// tangled single border loop); `uv` and `report` are updated in place. Used by liftPatch and for LSCM maps.
+void repairMap(const TriMesh& mesh, const std::vector<std::vector<int>>& borderLoops, std::vector<Eigen::Vector2d>& uv, UVReport& report,
+               const LiftOptions& options, LiftStats& stats);
+
 // `coarse` must be a parameterized disk (coarse.patch.mesh with coarse.uv). `finePatch` is a patch of the fine mesh
 // (a disk). The returned parameterization has method Lifted; needsSplit tells whether it must be redone.
 // `source` (the mesh finePatch was cut from), when given, lets a failed lift suggest where to split (hintFaceA/B).
