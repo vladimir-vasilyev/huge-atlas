@@ -6,3 +6,6 @@ xcuserdata/
 imgui.ini
 data/happy_buddha.ply
 DebugOut/
+# large test scans are downloaded separately
+data/car/
+data/doom-combat-scene_obj/
