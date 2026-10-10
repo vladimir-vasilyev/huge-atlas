@@ -307,3 +307,18 @@ foreach(tgt ${ALL_TARGETS})
 endforeach()
 add_custom_target(all_tests DEPENDS ${TEST_TARGETS})
 set_target_properties(all_tests PROPERTIES FOLDER "Tests")
+
+# ---------------------------------------------------------------- the native shell (a prototype): AppKit window, sidebar, toolbar, menus
+add_executable(huge_atlas_native
+    src/native/main.mm
+    src/native/Session.cpp
+    src/app/NativeUI.mm
+    src/render/GL.cpp
+    src/render/Shader.cpp
+    src/render/Camera.cpp
+    src/render/MeshRenderer.cpp
+    src/render/ImageFile.cpp)
+target_include_directories(huge_atlas_native PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
+target_compile_definitions(huge_atlas_native PRIVATE GL_SILENCE_DEPRECATION)
+target_compile_options(huge_atlas_native PRIVATE -fobjc-arc)
+target_link_libraries(huge_atlas_native PRIVATE vsa_core "-framework Cocoa" "-framework OpenGL" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
