@@ -20,6 +20,7 @@
 #include <atomic>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <unordered_map>
 #include <chrono>
 #include <mutex>
@@ -92,6 +93,13 @@ bool App::init(int width, int height, const char* title)
         return false;
     }
     imguiReady_ = true;
+    loadSettings();
+    if (std::getenv("VSA_DEV")) devMode_ = true;
+    if (!devMode_) wireframe_ = false;   // the simple interface shows the surface, not the triangles
+    glfwSetWindowUserPointer(window_, this);
+    glfwSetDropCallback(window_, [](GLFWwindow* w, int count, const char** files) {
+        if (count > 0) static_cast<App*>(glfwGetWindowUserPointer(w))->droppedPath_ = files[0];
+    });
 
     // ---- Test geometry
     std::string log;
@@ -248,6 +256,30 @@ void App::run()
             }
             if (badFrame > 3 && loadBadReady && !std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
             ++badFrame;
+        }
+        // VSA_AUTO_SIMPLE=file: the simple interface by itself: open the file, press "Make atlas" (the regular or the huge pipeline by
+        // the size), print the outcome and quit (VSA_SCREENSHOT keeps the window)
+        if (const char* simple = std::getenv("VSA_AUTO_SIMPLE")) {
+            static int simpleFrame = 0;
+            static bool simpleStarted = false, simpleDone = false;
+            if (simpleFrame == 2) {
+                if (const char* q = std::getenv("VSA_QUALITY")) quality_ = std::max(0, std::min(2, std::atoi(q)));
+                if (const char* rr = std::getenv("VSA_ATLAS_RES")) horizonOptions_.resolution = std::atoi(rr);
+                if (const char* ml = std::getenv("VSA_ATLAS_MIP")) horizonOptions_.maxMipLevel = std::atoi(ml);
+                if (const char* mk = std::getenv("VSA_MANUAL_K")) { manualPatches_ = true; manualK_ = std::atoi(mk); }
+                openMeshSmart(simple);
+                startSimpleAtlas();
+                simpleStarted = true;
+            }
+            const bool regularDone = simpleStarted && pendingHugePath_.empty() && !hugeShown_ && !hugeJob_ && atlasStage_ == AtlasStage::Idle && simpleFrame > 4;
+            const bool hugeDone = hugeJob_ && hugeJob_->done && hugeShown_;
+            if (!simpleDone && (regularDone || hugeDone || (hugeJob_ && hugeJob_->done && !hugeJob_->error.empty()))) {
+                std::printf("AUTO SIMPLE: k=%d hugeK=%d percent=%.0f%% | %s\n", vsaK_, hugeK_, hugeSimplifyPercent_,
+                            (hugeJob_ ? hugeStatus_ : makeAtlasStatus_).c_str());
+                simpleDone = true;
+                if (!std::getenv("VSA_SCREENSHOT")) glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            }
+            ++simpleFrame;
         }
         if (autoHuge) {
             if (hugeFrame == 2) {
@@ -1186,6 +1218,10 @@ void App::drawHugeAtlas()
 void App::drawUvPanel()
 {
     ImGui::SetNextWindowSize(ImVec2(520, 520), ImGuiCond_FirstUseEver);
+    if (!devMode_) {   // the simple interface: the atlas in the lower right corner, the "Atlas" window on the left
+        const ImVec2 vp = ImGui::GetMainViewport()->Size;
+        ImGui::SetNextWindowPos(ImVec2(std::max(430.0f, vp.x - 540.0f), std::max(36.0f, vp.y - 540.0f)), ImGuiCond_FirstUseEver);
+    }
     if (!ImGui::Begin("UV view")) { ImGui::End(); return; }
 
     if (hugeShown_ && hugeJob_ && hugeJob_->done) {   // the atlas of the huge result: texture and chart borders
@@ -1834,6 +1870,10 @@ void App::makeAtlasTick()
                   patches_.patches.size(), refineStats_.unresolved, atlas_.resolution, atlas_.resolution,
                   100.0 * atlas_.efficiency, atlas_.gutter, withUV, mesh_.n_faces());
     makeAtlasStatus_ = buf;
+    if (!devMode_) {   // the simple interface: straight to the result, the texture if there is one
+        simpleView_ = hasSourceTexture_ ? 2 : 0;
+        applySimpleView();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- huge meshes
@@ -2032,6 +2072,7 @@ void App::drawHugeUI()
             status_ = hugeStatus_;
             std::printf("%s\n", hugeStatus_.c_str());
             showHugeResult();
+            if (!devMode_) { simpleView_ = hugeView_ == 3 ? 2 : 0; presentation_ = false; }
         }
     }
 
@@ -3108,20 +3149,25 @@ void App::drawMainMenu()
                 glfwSetWindowShouldClose(window_, GLFW_TRUE);
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Debug")) {
+        if (devMode_ && ImGui::BeginMenu("Debug")) {
             if (ui::MenuItem("Save Bad Patch", nullptr, false, patchesValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done)))
                 saveBadPatches();
             if (ui::MenuItem("Load Bad Patch...")) loadBadRequested_ = true;
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            ui::MenuItem("Wireframe", nullptr, &wireframe_);
+            if (devMode_) ui::MenuItem("Wireframe", nullptr, &wireframe_);
             if (ui::MenuItem("Reset camera"))
                 camera_.reset();
+            ImGui::Separator();
+            if (ui::MenuItem("Developer mode", nullptr, &devMode_)) saveSettings();
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
     }
+
+    if (openMeshRequested_) { openRequested = true; openMeshRequested_ = false; }
+    if (!droppedPath_.empty()) { const std::string p = droppedPath_; droppedPath_.clear(); openMeshSmart(p); }
 
     // Cmd+O on macOS (ImGui maps Super to Cmd)
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O) || ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_O))
@@ -3144,10 +3190,246 @@ void App::drawMainMenu()
                                              ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
         if (ImGuiFileDialog::Instance()->IsOk()) {
             lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-            openMesh(ImGuiFileDialog::Instance()->GetFilePathName());
+            openMeshSmart(ImGuiFileDialog::Instance()->GetFilePathName());
         }
         ImGuiFileDialog::Instance()->Close();
     }
+}
+
+// ---------------------------------------------------------------------------------------------- the simple interface
+
+void App::loadSettings()
+{
+    std::ifstream in(paths::settingsDir() + "/settings.txt");
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line == "developer_mode=1") devMode_ = true;
+        else if (line.rfind("quality=", 0) == 0) quality_ = std::max(0, std::min(2, std::atoi(line.c_str() + 8)));
+        else if (line.rfind("texture_size=", 0) == 0) { horizonOptions_.resolution = std::max(256, std::min(8192, std::atoi(line.c_str() + 13))); textureSizeTouched_ = true; }
+        else if (line.rfind("mip_levels=", 0) == 0) horizonOptions_.maxMipLevel = std::max(0, std::min(8, std::atoi(line.c_str() + 11)));
+    }
+}
+
+void App::saveSettings() const
+{
+    std::ofstream out(paths::settingsDir() + "/settings.txt");
+    out << "developer_mode=" << (devMode_ ? 1 : 0) << "\n";
+    out << "quality=" << quality_ << "\n";
+    if (textureSizeTouched_) out << "texture_size=" << horizonOptions_.resolution << "\n";
+    out << "mip_levels=" << horizonOptions_.maxMipLevel << "\n";
+}
+
+// A texture size that fits the mesh (until the user chooses one): a big scan needs more texels than a small model.
+void App::suggestTextureSize(size_t faces)
+{
+    if (textureSizeTouched_) return;
+    horizonOptions_.resolution = faces < 1000000 ? 2048 : faces < 8000000 ? 4096 : 8192;
+}
+
+// Files up to about 300 MB (a few million faces) are loaded as they are; bigger ones are not loaded at all, the huge mode reads
+// them straight into compact arrays when "Make atlas" is pressed.
+void App::openMeshSmart(const std::string& path)
+{
+    if (devMode_) { pendingHugePath_.clear(); openMesh(path); return; }
+    std::error_code ec;
+    const auto bytes = std::filesystem::file_size(path, ec);
+    if (!ec && bytes > 300ull * 1000 * 1000) {
+        pendingHugePath_ = path;
+        suggestTextureSize(size_t(bytes / 75));   // about 75 bytes of an OBJ per face
+        status_ = "a big scan: it will be processed in the huge mode, press Make atlas";
+        return;
+    }
+    pendingHugePath_.clear();
+    openMesh(path);
+    if (!meshRenderer_.hasMesh()) return;
+    suggestTextureSize(mesh_.n_faces());
+    simpleView_ = 0;
+    presentation_ = false;
+    atlasValid_ = false;
+}
+
+// How many patches and how fine a simplified copy: from the size of the mesh and the quality.
+void App::applyQuality(size_t faces)
+{
+    static const double kFactor[3] = {0.5, 1.0, 2.0};
+    static const double kPercent[3] = {5.0, 10.0, 20.0};
+    const double base = 0.06 * std::sqrt(double(std::max<size_t>(faces, 1)));
+    const int k = manualPatches_ ? std::max(1, manualK_) : int(std::max(8.0, std::min(1000.0, std::round(base * kFactor[quality_]))));
+    vsaK_ = std::min(k, std::max(1, int(faces)));
+    hugeK_ = k;
+    hugeSimplifyPercent_ = kPercent[quality_];
+    seedMethod_ = 1;
+    makeAtlasTeleport_ = false;
+}
+
+void App::startSimpleAtlas()
+{
+    saveSettings();
+    if (!pendingHugePath_.empty()) {   // a big file: straight to the huge mode
+        std::error_code ec;
+        const auto bytes = std::filesystem::file_size(pendingHugePath_, ec);
+        applyQuality(size_t(bytes / 75));   // about 75 bytes of an OBJ per face
+        presentation_ = false;
+        startHuge(pendingHugePath_);
+        return;
+    }
+    if (!meshRenderer_.hasMesh() || hugeShown_) return;
+    applyQuality(mesh_.n_faces());
+    presentation_ = false;
+    if (mesh_.n_faces() > 3000000) startHugeFromLoaded();
+    else startMakeAtlas();
+}
+
+// What the 3D view shows after the atlas is made: the patches, the presentation, the texture, the UV checker.
+void App::applySimpleView()
+{
+    presentation_ = simpleView_ == 1;
+    if (hugeShown_) {
+        const bool tex = hugeJob_ && !hugeJob_->baked.empty();
+        hugeView_ = (simpleView_ == 2 && tex) ? 3 : simpleView_ == 3 ? 1 : 0;
+        setHugeColors();
+        return;
+    }
+    if (simpleView_ == 2 && hasSourceTexture_ && atlasValid_) {
+        if (bakedVersion_ != atlasVersion_) bakeAtlasPreview();   // sets the texture view
+        colorMode_ = 11;
+    } else {
+        colorMode_ = simpleView_ == 3 ? 8 : 4;
+    }
+    uploadMesh();
+}
+
+void App::drawAtlasWindow()
+{
+    ImGui::SetNextWindowPos(ImVec2(12, 36), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 640), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Atlas")) { ImGui::End(); return; }
+
+    const bool regularRunning = atlasStage_ != AtlasStage::Idle;
+    const bool hugeRunning = hugeJob_ && (!hugeJob_->done || hugeJob_->repacking);
+    const bool busy = regularRunning || hugeRunning;
+    const bool hugeResult = hugeShown_ && hugeJob_ && hugeJob_->done && hugeJob_->error.empty();
+    const bool regularResult = atlasValid_ && !hugeShown_;
+    const bool haveMesh = (meshRenderer_.hasMesh() && !hugeShown_) || !pendingHugePath_.empty() || hugeResult;
+
+    // 1. the mesh
+    ImGui::SeparatorText("1. Mesh");
+    ImGui::BeginDisabled(busy);
+    if (ui::Button("Open mesh...", ImVec2(-1, 30))) openMeshRequested_ = true;
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("or drop an OBJ / PLY file on the window");
+    if (!pendingHugePath_.empty()) {
+        const std::string name = std::filesystem::path(pendingHugePath_).filename().string();
+        ImGui::TextWrapped("%s: a big scan, it is read when the atlas is made", name.c_str());
+    } else if (hugeResult) {
+        ImGui::TextWrapped("%zu faces%s", hugeJob_->mesh.faceCount(), hugeJob_->baked.empty() ? "" : ", with a texture");
+    } else if (meshRenderer_.hasMesh()) {
+        ImGui::TextWrapped("%zu faces%s", mesh_.n_faces(), hasSourceTexture_ ? ", with a texture" : ", no texture");
+    } else {
+        ImGui::TextWrapped("%s", status_.c_str());
+    }
+
+    // 2. settings
+    ImGui::SeparatorText("2. Settings");
+    ImGui::BeginDisabled(busy);
+    {
+        static const char* kQuality[] = {"Fast", "Balanced", "Detailed"};
+        ui::Combo("Quality", &quality_, kQuality, 3);
+        ui::Checkbox("Set the number of patches", &manualPatches_);
+        if (manualPatches_) ui::InputInt("Patches", &manualK_, 10, 100);
+        manualK_ = std::max(1, std::min(manualK_, 20000));
+
+        HorizonOptions& ho = horizonOptions_;
+        static const int kResolutions[] = {256, 512, 1024, 2048, 4096, 8192};
+        char label[24];
+        std::snprintf(label, sizeof(label), "%d x %d", ho.resolution, ho.resolution);
+        if (ui::BeginCombo("Texture size", label)) {
+            for (int r : kResolutions) {
+                std::snprintf(label, sizeof(label), "%d x %d", r, r);
+                if (ImGui::Selectable(label, r == ho.resolution)) { ho.resolution = r; textureSizeTouched_ = true; }
+            }
+            ImGui::EndCombo();
+        }
+        int maxLevel = 0;
+        while ((1 << (maxLevel + 1)) <= ho.resolution) ++maxLevel;
+        maxLevel = std::max(0, maxLevel - 2);
+        ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
+        ui::SliderInt("Mip levels", &ho.maxMipLevel, 0, maxLevel);
+        ImGui::TextDisabled("gap between parts of the texture: %d texels", chartGutter(ho.maxMipLevel, ho.extraTexels));
+    }
+    ImGui::EndDisabled();
+
+    // 3. make the atlas
+    ImGui::SeparatorText("3. Atlas");
+    if (!busy) {
+        ImGui::BeginDisabled(!haveMesh || hugeResult);
+        if (ui::Button("Make atlas", ImVec2(-1, 40))) startSimpleAtlas();
+        ImGui::EndDisabled();
+        if (hugeResult) ImGui::TextDisabled("open another mesh to make a new atlas");
+    } else if (regularRunning) {
+        if (ui::Button("Cancel", ImVec2(-1, 40))) cancelMakeAtlas("cancelled");
+        ImGui::ProgressBar(atlasStage_ == AtlasStage::Lloyd ? 0.15f : 0.55f, ImVec2(-1, 0), "");
+        ImGui::TextWrapped("%s", makeAtlasStatus_.c_str());
+    } else {
+        ImGui::TextDisabled("working, a big scan takes a few minutes...");
+    }
+
+    // 4. the result
+    if ((regularResult || hugeResult) && !busy) {
+        ImGui::SeparatorText("4. Result");
+        if (hugeResult) {
+            const FlatStats& s = hugeJob_->result.stats;
+            ImGui::TextWrapped("%zu patches, atlas %d x %d, %.0f%% of the texture is used", hugeJob_->result.patches.size(),
+                               hugeJob_->atlas.resolution, hugeJob_->atlas.resolution, 100.0 * hugeJob_->atlas.efficiency);
+            if (s.patchesUnresolved > 0 || s.facesWithoutUV > 0)
+                ImGui::TextWrapped("%zu faces could not be unfolded and have no texture coordinates", s.facesWithoutUV);
+        } else {
+            ImGui::TextWrapped("%zu patches, atlas %d x %d, %.0f%% of the texture is used", patches_.patches.size(),
+                               atlas_.resolution, atlas_.resolution, 100.0 * atlas_.efficiency);
+            if (refineStats_.unresolved > 0)
+                ImGui::TextWrapped("%d patches could not be unfolded cleanly (shown in red in the Patches view)", refineStats_.unresolved);
+        }
+        const bool haveTexture = hugeResult ? !hugeJob_->baked.empty() : hasSourceTexture_;
+        int v = simpleView_;
+        bool changed = ui::RadioButton("Patches", &v, 0);
+        ImGui::SameLine();
+        changed |= ui::RadioButton("Presentation", &v, 1);
+        if (haveTexture) {
+            ImGui::SameLine();
+            changed |= ui::RadioButton("Texture", &v, 2);
+        }
+        ImGui::SameLine();
+        changed |= ui::RadioButton("UV checker", &v, 3);
+        if (changed) { simpleView_ = v; applySimpleView(); }
+        if (simpleView_ == 1) {
+            ui::SliderFloat("Patch offset", &presentOffset_, 0.0f, 1.0f, "%.3f");
+            ui::SliderFloat("Patch opacity", &presentAlpha_, 0.05f, 1.0f, "%.2f");
+        }
+        if (ui::Button("Save...", ImVec2(-1, 34))) {
+            if (hugeResult) hugeSaveRequested_ = true; else requestSave();
+        }
+        if (ImGui::CollapsingHeader("More")) {
+            if (ui::Button("Repack the atlas")) { if (hugeResult) repackHuge(); else repackAtlas(); }
+            ImGui::TextDisabled("packs the same patches again with the texture size and mip levels set above");
+            if (hugeResult) {
+                ImGui::BeginDisabled(!hugeJob_->surface.hasUV() || hugeJob_->comparing);
+                if (ui::Button("Compare with the original layout (huge)")) compareHuge();
+                ImGui::EndDisabled();
+                if (hugeJob_->compared && hugeJob_->hadOriginal)
+                    drawLayoutTable(hugeJob_->layoutOriginal, hugeJob_->layoutOurs, hugeJob_->mipOriginal, hugeJob_->mipOurs);
+            } else {
+                ImGui::BeginDisabled(!objExtras_.hasUV());
+                if (ui::Button("Compare with the original layout")) measureLayouts();
+                ImGui::EndDisabled();
+                if (layoutMeasured_ && bakedVersion_ == atlasVersion_)
+                    drawLayoutTable(layoutOriginal_, layoutOurs_, mipOriginal_, mipOurs_);
+            }
+        }
+    }
+    if (!hugeStatus_.empty() && (hugeShown_ || !pendingHugePath_.empty()) && !hugeRunning) ImGui::TextWrapped("%s", hugeStatus_.c_str());
+    ImGui::Separator();
+    if (ui::Button("Reset camera")) camera_.reset();
+    ImGui::End();
 }
 
 void App::drawUI()
@@ -3165,7 +3447,7 @@ void App::drawUI()
 
     ImGui::SetNextWindowPos(ImVec2(12, 36), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Info")) {
+    if (devMode_ && ImGui::Begin("Info")) {
         ImGui::Text("OpenGL : %s", glVersion_.c_str());
         ImGui::Text("GPU    : %s", glRenderer_.c_str());
         ImGui::Text("GLSL   : %s", glslVersion_.c_str());
@@ -3188,11 +3470,11 @@ void App::drawUI()
         ImGui::SameLine();
         ui::Checkbox("Rotate", &rotate_);
     }
-    ImGui::End();
+    if (devMode_) ImGui::End();
 
     drawMainMenu();
 
-    if (ImGui::Begin("Mesh")) {
+    if (devMode_ && ImGui::Begin("Mesh")) {
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::Separator();
         ui::Checkbox("Wireframe", &wireframe_);
@@ -3261,10 +3543,10 @@ void App::drawUI()
             }
         }
     }
-    ImGui::End();
+    if (devMode_) ImGui::End();
 
     makeAtlasTick();
-    if (!std::getenv("VSA_NO_PANELS")) {   // testing hook: a clean 3D view for screenshots
+    if (!std::getenv("VSA_NO_PANELS") && devMode_) {   // testing hook: a clean 3D view for screenshots
         drawMakeAtlasPanel();
         drawVsaPanel();
         drawPatchPanel();
@@ -3272,6 +3554,10 @@ void App::drawUI()
         drawParamPanel();
         drawRefinePanel();
         drawUvPanel();
+    } else if (!std::getenv("VSA_NO_PANELS")) {
+        drawAtlasWindow();
+        if (atlasValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done)) drawUvPanel();
+        refineTick();
     } else {
         refineTick();
     }

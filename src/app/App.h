@@ -232,6 +232,24 @@ private:
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
     bool             loadBadRequested_ = false;
     bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
+    // The interface for people who do not develop the program: one window "Atlas" with the steps; everything else is the developer mode
+    bool             devMode_ = false;
+    int              quality_ = 1;                 // 0 fast, 1 balanced, 2 detailed: how many patches, how fine the simplified copy is
+    bool             manualPatches_ = false;       // the number of patches is set by hand
+    int              manualK_ = 100;
+    int              simpleView_ = 0;              // 0 patches, 1 presentation, 2 texture, 3 UV checker
+    std::string      pendingHugePath_;             // a big file that was chosen but is not loaded: the huge mode reads it by itself
+    std::string      droppedPath_;                 // set by the drop callback
+    bool             openMeshRequested_ = false;
+    bool             textureSizeTouched_ = false;   // the user chose a texture size: it is not suggested from the mesh any more
+    void             suggestTextureSize(size_t faces);
+    void             drawAtlasWindow();
+    void             openMeshSmart(const std::string& path);   // small files are loaded, big ones wait for the huge mode (the simple interface)
+    void             startSimpleAtlas();                       // the one button: the regular or the huge pipeline by the size of the mesh
+    void             applyQuality(size_t faces);
+    void             applySimpleView();
+    void             loadSettings();
+    void             saveSettings() const;
     // Presentation: the patches in colors, then the same patches translucent and moved along their normals
     bool             presentation_ = false;
     float            presentOffset_ = 0.06f, presentAlpha_ = 0.4f;

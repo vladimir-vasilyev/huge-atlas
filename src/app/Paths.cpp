@@ -64,6 +64,14 @@ std::string defaultMesh()
     return res.empty() ? "data/cube.obj" : (fs::path(res) / "data" / "cube.obj").string();
 }
 
+std::string settingsDir()
+{
+    const fs::path dir = fs::path(homeDir()) / "Library" / "Application Support" / "huge-atlas";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir.string();
+}
+
 std::string startDir()
 {
     return runningFromBundle() ? (fs::path(homeDir()) / "Documents").string() : ".";

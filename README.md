@@ -23,6 +23,12 @@ for mip mapping (Horizon pack, Lévy et al. 2002) and bakes the texture of the s
 4. Open a mesh (OBJ or PLY, **File > Open**), press **Make atlas** (or **Make atlas (huge)** for scans of millions of faces) and save
    the result with **File > Save**: OBJ or PLY with the new UV and a texture baked into the new atlas.
 
+The window **Atlas** walks through the steps: 1. open a mesh (or drop the file on the window), 2. choose the quality (Fast / Balanced / Detailed),
+optionally the number of patches, the texture size and the mip levels, 3. **Make atlas**: the regular or the huge pipeline is chosen by itself
+by the size of the mesh (above 3 million faces, or a file of more than 300 MB, it is the huge mode), 4. look at the result (patches,
+presentation, texture, UV checker) and **Save**. **More** has the repacking of the atlas with another texture size and mip levels and
+the comparison with the original layout. Everything else (partition, patches, unfolding steps, the debug menu) is in **View > Developer mode**.
+
 The settings of the windows are kept in `~/Library/Application Support/huge-atlas`; files that the Debug menu writes go to
 `~/Documents/huge-atlas/DebugOut`.
 
