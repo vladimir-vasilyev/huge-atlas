@@ -275,8 +275,9 @@ bool Refiner::splitPatch(int pi)
         return n0 >= share && n1 >= share;
     };
 
-    std::vector<int> split;
-    int kind = 0;   // 0 Lloyd (hint/farthest/normals), 1 flood, 2 Voronoi
+    std::vector<int> split, peel;
+    double peelEnergy = 0.0;
+    int kind = 0;   // 0 Lloyd (hint/farthest/normals), 1 flood, 2 Voronoi, 3 peel
     enum { ByHint, ByFarthest, ByNormals } seedsOfSplit = seedKind == Hint ? ByHint : ByFarthest;
     {
         // Several starts of the same two-proxy VSA, the best energy wins. Lloyd only finds a local minimum, and where it ends
@@ -337,7 +338,12 @@ bool Refiner::splitPatch(int pi)
                              st.tag == ByHint ? "crossings" : (st.tag == ByFarthest ? "farthest pair" : "worst faces"), st.a, st.b,
                              lr.iterations, n[0], n[1], energy);
             }
-            if (!acceptable(s.label, s.k())) continue;
+            if (!acceptable(s.label, s.k())) {
+                // a small part cut off a big patch: only used when nothing better works (below)
+                const auto [p0, p1] = sizes(s.label);
+                if (s.k() == 2 && p0 >= opt_.minFaces && p1 >= opt_.minFaces && (peel.empty() || energy < peelEnergy)) { peel = s.label; peelEnergy = energy; }
+                continue;
+            }
             // The energy only says how flat the parts are. What matters is that they unfold: for patches of moderate size the
             // parts are tried with plain LinABF, and a split whose parts both unfold beats one with a part that does not.
             int badParts = 0;
@@ -380,6 +386,11 @@ bool Refiner::splitPatch(int pi)
         dualDistances(sub.mesh, fd, {seedA, seedB}, &nearest);
         if (acceptable(nearest, 2, false)) { split = nearest; kind = 2; }
     }
+    if (split.empty() && !peel.empty()) {   // peeling a few faces off a big patch beats leaving it as it is
+        split = peel;
+        kind = 3;
+        if (std::getenv("VSA_VERBOSE")) std::fprintf(stderr, "[split] patch %d: peeled a small part off\n", pi);
+    }
     if (split.empty()) return why("empty split");
 
     const int newLabel = nextLabel_++;
@@ -389,7 +400,8 @@ bool Refiner::splitPatch(int pi)
         faceDepth_[g] = depth + 1;
     }
     ++result_.stats.splits;
-    if (kind == 1) ++result_.stats.splitsByFlood;
+    if (kind == 3) ++result_.stats.splitsByPeel;
+    else if (kind == 1) ++result_.stats.splitsByFlood;
     else if (kind == 2) ++result_.stats.splitsByVoronoi;
     else if (seedsOfSplit == ByHint) ++result_.stats.splitsByCrossingHint;
     else if (seedsOfSplit == ByNormals) ++result_.stats.splitsByNormals;

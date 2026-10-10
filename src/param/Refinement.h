@@ -60,6 +60,7 @@ struct RefineStats {
     int rounds = 0;
     int initialBad = 0;
     int splits = 0;
+    int splitsByPeel = 0;      // a small part cut off a big patch (the last resort)
     int splitsByNormals = 0;   // split from the two faces that the single plane fits worst
     int splitsByCrossingHint = 0, splitsByFarthest = 0, splitsByFlood = 0, splitsByVoronoi = 0;
     int unresolved = 0;                 // bad patches that stayed bad (limits or a split that did not work)
