@@ -116,7 +116,6 @@ private:
 
     // Stage 0 UI state
     float clearColor_[3] = {0.16f, 0.17f, 0.20f};
-    bool  showDemo_ = false;
     bool  showTriangle_ = true;
     bool  rotate_ = true;
     float angle_ = 0.0f;

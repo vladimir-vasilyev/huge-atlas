@@ -21,7 +21,6 @@ const std::unordered_map<std::string, const char*>& table()
         {"Quit", "Close the program."},
         {"Wireframe", "Draw the triangle edges over the shaded surface. Slow on meshes of millions of faces."},
         {"Reset camera", "Return the orbit camera to the starting view of the whole model."},
-        {"ImGui demo", "Open the demo window of the interface library (for developers)."},
         {"Background", "Colour of the 3D view behind the model."},
         {"Debug triangle", "Show the test triangle drawn by the first stage of the program (checks the graphics context)."},
         {"Rotate", "Spin the test triangle."},

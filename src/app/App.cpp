@@ -3118,8 +3118,6 @@ void App::drawMainMenu()
             ui::MenuItem("Wireframe", nullptr, &wireframe_);
             if (ui::MenuItem("Reset camera"))
                 camera_.reset();
-            ImGui::Separator();
-            ui::MenuItem("ImGui demo", nullptr, &showDemo_);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -3189,7 +3187,6 @@ void App::drawUI()
         ui::Checkbox("Debug triangle", &showTriangle_);
         ImGui::SameLine();
         ui::Checkbox("Rotate", &rotate_);
-        ui::Checkbox("ImGui demo", &showDemo_);
     }
     ImGui::End();
 
@@ -3285,9 +3282,6 @@ void App::drawUI()
     if (const char* preview = std::getenv("VSA_TIP_PREVIEW")) uiTipPreview(preview, 560.0f, 120.0f);
 
     handleSceneInput();
-
-    if (showDemo_)
-        ImGui::ShowDemoWindow(&showDemo_);
 
     if (rotate_)
         angle_ = std::fmod(angle_ + io.DeltaTime, 6.28318530718f);
