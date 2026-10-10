@@ -13,38 +13,48 @@ for mip mapping (Horizon pack, Lévy et al. 2002) and bakes the texture of the s
 
 ## Install (no programming needed)
 
-1. Download `huge-atlas-<version>-arm64.dmg` from the [Releases](https://github.com/vladimir-vasilyev/huge-atlas/releases) page
+1. Download `huge-atlas-0.3.0-arm64.dmg` from the [Releases](https://github.com/vladimir-vasilyev/huge-atlas/releases) page
    (Apple Silicon Macs, macOS 11 or newer).
-2. Open the disk image and drag **huge-atlas** to **Applications** (do not run it from the disk image: it is read-only, and the next step needs the copy).
-3. Open **huge-atlas** from Applications. Since 0.2.1 the app is signed with a Developer ID and notarized by Apple: macOS asks only
-   the usual *"downloaded from the Internet, open it?"* once. (The older 0.1.0 and 0.2.0 are not notarized and are blocked with *"Apple could
-   not verify…"*; if you have one of them, copy it to Applications and run `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`,
-   or on macOS 15 and newer press **Open Anyway** in System Settings > Privacy & Security.)
-4. Open a mesh (OBJ or PLY, **File > Open**), press **Make atlas** (or **Make atlas (huge)** for scans of millions of faces) and save
-   the result with **File > Save**: OBJ or PLY with the new UV and a texture baked into the new atlas.
+2. Open the disk image and drag **huge-atlas** to **Applications** (do not run it from the disk image: it is read-only).
+3. Open **huge-atlas** from Applications. The app is signed with a Developer ID and notarized by Apple, so macOS asks only the usual
+   *"downloaded from the Internet, open it?"* once. (The old 0.1.0 and 0.2.0 are not notarized and are blocked with *"Apple could not
+   verify…"*: copy the app to Applications, then run `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`, or on macOS 15 and
+   newer press **Open Anyway** in System Settings > Privacy & Security.)
 
-The window **Atlas** walks through the steps: 1. open a mesh (or drop the file on the window), 2. choose the quality (Fast / Balanced / Detailed),
-optionally the number of patches, the texture size and the mip levels, 3. **Make atlas**: the regular or the huge pipeline is chosen by itself
-by the size of the mesh (above 3 million faces, or a file of more than 300 MB, it is the huge mode), 4. look at the result (patches,
-presentation, texture, UV checker) and **Save**. **More** has the repacking of the atlas with another texture size and mip levels and
-the comparison with the original layout. Everything else (partition, patches, unfolding steps, the debug menu) is in **View > Developer mode**.
+## How to use
 
-The settings of the windows are kept in `~/Library/Application Support/huge-atlas`; files that the Debug menu writes go to
-`~/Documents/huge-atlas/DebugOut`.
+The window **Atlas** walks through the steps:
 
-To make the disk image yourself: `./scripts/make_dmg.sh` (builds, makes `dist/huge-atlas.app` and the `.dmg`; with `CODESIGN_IDENTITY` and `NOTARY_PROFILE` it signs with a Developer ID and notarizes, see the header of the script).
+1. **Mesh**: **Open mesh...** (OBJ or PLY) or drop the file on the window. A file of more than 300 MB is not loaded for viewing, the
+   huge mode reads it by itself.
+2. **Settings**: the **Quality** (Fast / Balanced / Detailed), optionally **Set the number of patches** by hand, the **Texture size** and
+   the **Mip levels** (how far the texture can be shrunk before the colors of neighbouring parts start to bleed into each other).
+3. **Make atlas**: one button. The regular or the huge pipeline is chosen by the size of the mesh (above 3 million faces, or a file of
+   more than 300 MB, it is the huge mode). A regular run can be cancelled.
+4. **Result**: the views **Patches**, **Presentation**, **Texture** (when the mesh has one) and **UV checker**; **Save...** writes an OBJ or
+   PLY with the new UV and the texture baked into the new atlas. **More** has **Repack the atlas** (another texture size and mip levels,
+   nothing before the packing is run again) and the comparison with the UV layout stored in the file.
 
-## Two modes
+**Presentation** shows the result like a showcase: the patches in colors, then the same patches translucent and moved along their
+normals (offset and opacity are sliders); every one of the two passes shows the patch colors, the texture or plain shading.
 
-- **Make atlas** — the mesh is loaded as a half-edge mesh (OpenMesh); VSA, patch extraction, repair ladder
-  (LinABF → active set → slits → LSCM → Tutte), automatic splitting of patches that do not unfold, packing, texture baking.
-- **Make atlas (huge)** — for dense scans (tens of millions of faces) on flat arrays (about 100 bytes per face): the mesh is
-  simplified (meshoptimizer, parallel), segmented and unwrapped on the simplified copy, the charts are lifted back onto the
-  full mesh, patches that do not lift are repaired or re-unwrapped, the atlas is packed and the texture moved to it.
-  The size of the simplified copy is a percentage of the faces (10% = 10 times fewer).
+Everything else (the partition, the patches, the unfolding steps, the debug menu) is in **View > Developer mode**. The window layout and
+settings are kept in `~/Library/Application Support/huge-atlas`; files that the Debug menu writes go to `~/Documents/huge-atlas/DebugOut`.
 
-Both modes compare the result with the UV layout stored in the file (distortion, seams, texel density, gaps between charts,
-mip levels the layout can use) and save OBJ / PLY with the atlas UV and the baked texture.
+To make the disk image yourself: `./scripts/make_dmg.sh` (builds, makes `dist/huge-atlas.app` and the `.dmg`; with `CODESIGN_IDENTITY` and
+`NOTARY_PROFILE` it signs with a Developer ID and notarizes, see the header of the script).
+
+## Two pipelines
+
+- **Regular** (meshes up to a few million faces): the mesh is loaded as a half-edge mesh (OpenMesh); VSA, patch extraction, repair
+  ladder (LinABF → active set → slits → LSCM → Tutte), automatic splitting of patches that do not unfold, packing, texture baking.
+- **Huge** (dense scans, tens of millions of faces) on flat arrays (about 100 bytes per face): the mesh is simplified (meshoptimizer,
+  parallel), segmented and unwrapped on the simplified copy, the charts are lifted back onto the full mesh, patches that do not lift are
+  repaired or re-unwrapped, the atlas is packed and the texture moved to it. The size of the simplified copy is a percentage of the faces
+  (10% = 10 times fewer, chosen by the quality).
+
+Both compare the result with the UV layout stored in the file (distortion, seams, texel density, gaps between charts, mip levels the
+layout can use).
 
 ## Requirements
 
@@ -78,6 +88,7 @@ and `data/car/`; `data/*/license.txt` keep their attribution.
 Environment hooks run the pipeline and exit, for example:
 
 ```bash
+VSA_AUTO_SIMPLE=data/bunny.ply ./build-xcode/Release/vsa_app          # the simple interface: open, Make atlas, print the result
 VSA_AUTO_ATLAS=1 VSA_MESH=data/bunny.ply VSA_K=8 ./build-xcode/Release/vsa_app
 VSA_AUTO_HUGE=data/car/FIN_CAR_D.obj VSA_K=200 VSA_HUGE_PERCENT=10 VSA_ATLAS_RES=8192 VSA_ATLAS_MIP=1 VSA_AUTO_BAKE=1 ./build-xcode/Release/vsa_app
 ```
@@ -88,8 +99,9 @@ The hooks are read in `src/app/App.cpp` (search for `getenv("VSA_`); the plan is
 
 ```
 external/      dependencies (git submodules)
-scripts/       helper scripts
-src/app/       window, main loop, UI
+packaging/     app icon, Info.plist, the window layout that ships with the app
+scripts/       helper scripts (setup_deps.sh, make_dmg.sh)
+src/app/       window, main loop, the Atlas window and the developer panels
 src/render/    OpenGL wrappers, shaders, drawing
 src/core/      mesh, VSA (no GL / ImGui dependency)
 src/param/     patches, LinABF, UV, repair, huge pipeline, atlas packing
