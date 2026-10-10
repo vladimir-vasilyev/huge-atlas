@@ -35,9 +35,13 @@ void Camera::rotateTo(double x, double y, int w, int h)
     last_ = b;
 }
 
-void Camera::pan(double dx, double dy, int h)
+// An area that is narrower than about 0.7 : 1 (between docked panels) sees a wider vertical field, so the model keeps
+// its margins at the sides instead of touching them.
+static double fieldFit(double aspect) { return std::max(1.0, 0.7 / std::max(aspect, 1e-3)); }
+
+void Camera::pan(double dx, double dy, int h, double aspect)
 {
-    const double s = dist_ / std::max(h, 1);
+    const double s = dist_ / std::max(h, 1) * fieldFit(aspect);
     panX_ += dx * s;
     panY_ -= dy * s;
 }
@@ -46,7 +50,7 @@ void Camera::zoomAt(double wheelDelta, double ndcX, double ndcY, double aspect)
 {
     const double before = dist_;
     zoom(wheelDelta);
-    const double t = std::tan(0.5 * 0.7854), change = dist_ - before;
+    const double t = std::tan(0.5 * 0.7854) * fieldFit(aspect), change = dist_ - before;
     // the view space point on the centre plane under the cursor is (ndcX t aspect dist, ndcY t dist, -dist) for any dist
     panX_ += ndcX * t * aspect * change;
     panY_ += ndcY * t * change;
@@ -70,7 +74,7 @@ void Camera::viewProj(float aspect, float out[16]) const
 {
     float V[16];
     view(V);
-    const float n = 0.05f, f = 50.0f, t = std::tan(0.5f * 0.7854f * 1.0f);
+    const float n = 0.05f, f = 50.0f, t = std::tan(0.5f * 0.7854f * 1.0f) * float(fieldFit(aspect));
     float P[16] = {0};
     P[0] = 1.0f / (t * aspect); P[5] = 1.0f / t;
     P[10] = -(f + n) / (f - n); P[11] = -1; P[14] = -2 * f * n / (f - n);

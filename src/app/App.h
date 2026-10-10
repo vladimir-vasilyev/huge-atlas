@@ -233,6 +233,11 @@ private:
     bool             loadBadRequested_ = false;
     bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
     // The interface for people who do not develop the program: one window "Atlas" with the steps; everything else is the developer mode
+    // The free central area between the docked windows (window points: x, y, width, height; width 0 = the whole window). The 3D scene
+    // is drawn there, so the model is centered between the panels instead of hiding under them.
+    float            sceneRect_[4] = {0, 0, 0, 0};
+    void             sceneRectPx(int fbW, int fbH, int& x, int& y, int& w, int& h) const;   // in framebuffer pixels, y from the bottom
+    void             sceneViewProjFull(int fbW, int fbH, float out[16]) const;               // viewProj of the area as seen by a full-window viewport
     bool             devMode_ = false;
     int              quality_ = 1;                 // 0 fast, 1 balanced, 2 detailed: how many patches, how fine the simplified copy is
     bool             manualPatches_ = false;       // the number of patches is set by hand

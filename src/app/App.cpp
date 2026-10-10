@@ -11,6 +11,7 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <imgui_internal.h>   // the central node of the dock space: where the 3D scene is drawn
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <ImGuiFileDialog.h>
@@ -3092,7 +3093,7 @@ void App::paintWeights(int fbW, int fbH)
         return;
     }
     float vp[16];
-    camera_.viewProj(float(fbW) / float(fbH), vp);
+    sceneViewProjFull(fbW, fbH, vp);
     std::vector<int> ids;
     meshRenderer_.pickFaces(vp, fbW, fbH, int(io.MousePos.x * scale), fbH - 1 - int(io.MousePos.y * scale),
                             brushRadius_, ids);
@@ -3112,7 +3113,11 @@ void App::handleSceneInput()
     }
     int w, h;
     glfwGetWindowSize(window_, &w, &h);   // ImGui coordinates are in window points
-    const double x = io.MousePos.x, y = io.MousePos.y;
+    double x = io.MousePos.x, y = io.MousePos.y;
+    if (sceneRect_[2] > 0) {   // relative to the free area, where the scene is drawn
+        x -= sceneRect_[0]; y -= sceneRect_[1];
+        w = std::max(1, int(std::lround(sceneRect_[2]))); h = std::max(1, int(std::lround(sceneRect_[3])));
+    }
 
     // In paint mode the left button paints; Alt+left still rotates
     const bool painting = paintMode_ && !io.KeyAlt && meshRenderer_.hasMesh();
@@ -3132,7 +3137,7 @@ void App::handleSceneInput()
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) panning_ = false;
 
     if (dragging_) camera_.rotateTo(x, y, w, h);
-    if (panning_) camera_.pan(io.MouseDelta.x, io.MouseDelta.y, h);
+    if (panning_) camera_.pan(io.MouseDelta.x, io.MouseDelta.y, h, double(w) / std::max(1, h));
     if (io.MouseWheel != 0.0f) {   // towards the point under the cursor
         const double ndcX = 2.0 * x / std::max(1, w) - 1.0, ndcY = 1.0 - 2.0 * y / std::max(1, h);
         camera_.zoomAt(io.MouseWheel, ndcX, ndcY, double(w) / std::max(1, h));
@@ -3447,10 +3452,20 @@ void App::drawUI()
 #ifdef IMGUI_HAS_DOCK
     // The central area is transparent: the 3D scene shows through it
   #if IMGUI_VERSION_NUM >= 19100
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
   #else
-    ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiID dockId = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
   #endif
+    sceneRect_[2] = sceneRect_[3] = 0;
+    if (const ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockId)) {
+        const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+        if (central->Size.x > 8 && central->Size.y > 8) {
+            sceneRect_[0] = central->Pos.x - origin.x;
+            sceneRect_[1] = central->Pos.y - origin.y;
+            sceneRect_[2] = central->Size.x;
+            sceneRect_[3] = central->Size.y;
+        }
+    }
 #endif
 
     ImGui::SetNextWindowPos(ImVec2(12, 36), ImGuiCond_FirstUseEver);
@@ -3581,6 +3596,38 @@ void App::drawUI()
         angle_ = std::fmod(angle_ + io.DeltaTime, 6.28318530718f);
 }
 
+void App::sceneRectPx(int fbW, int fbH, int& x, int& y, int& w, int& h) const
+{
+    int winW = 0, winH = 0;
+    glfwGetWindowSize(window_, &winW, &winH);
+    if (sceneRect_[2] <= 0 || winW <= 0 || winH <= 0) { x = 0; y = 0; w = fbW; h = fbH; return; }
+    const float sx = float(fbW) / float(winW), sy = float(fbH) / float(winH);
+    x = int(std::lround(sceneRect_[0] * sx));
+    w = std::max(1, int(std::lround(sceneRect_[2] * sx)));
+    h = std::max(1, int(std::lround(sceneRect_[3] * sy)));
+    y = std::max(0, fbH - int(std::lround((sceneRect_[1] + sceneRect_[3]) * sy)));
+    if (x + w > fbW) w = std::max(1, fbW - x);
+    if (y + h > fbH) h = std::max(1, fbH - y);
+}
+
+// viewProj of the central area, then moved and scaled so that a viewport over the whole window shows the same picture (picking)
+void App::sceneViewProjFull(int fbW, int fbH, float out[16]) const
+{
+    int x, y, w, h;
+    sceneRectPx(fbW, fbH, x, y, w, h);
+    float vp[16];
+    camera_.viewProj(float(w) / float(std::max(1, h)), vp);
+    const float sx = float(w) / float(fbW), sy = float(h) / float(fbH);
+    const float tx = 2.0f * (float(x) + 0.5f * float(w)) / float(fbW) - 1.0f, ty = 2.0f * (float(y) + 0.5f * float(h)) / float(fbH) - 1.0f;
+    for (int c = 0; c < 4; ++c) {   // out = T * vp, column major: row 0 and 1 are scaled and get tx / ty times the w row
+        const float* col = vp + 4 * c;
+        out[4 * c + 0] = sx * col[0] + tx * col[3];
+        out[4 * c + 1] = sy * col[1] + ty * col[3];
+        out[4 * c + 2] = col[2];
+        out[4 * c + 3] = col[3];
+    }
+}
+
 void App::renderScene(int fbWidth, int fbHeight)
 {
     scene_.begin(fbWidth, fbHeight, msaaSamples_);   // the default framebuffer if no multisampling
@@ -3588,13 +3635,16 @@ void App::renderScene(int fbWidth, int fbHeight)
     glEnable(GL_DEPTH_TEST);
     glClearColor(clearColor_[0], clearColor_[1], clearColor_[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    int vx, vy, vw, vh;   // the free area between the docked windows
+    sceneRectPx(fbWidth, fbHeight, vx, vy, vw, vh);
+    glViewport(vx, vy, vw, vh);
 
-    if (showTriangle_ && fbHeight > 0)
-        triangle_.draw(angle_, float(fbWidth) / float(fbHeight));
+    if (showTriangle_ && vh > 0)
+        triangle_.draw(angle_, float(vw) / float(vh));
 
-    if (meshRenderer_.hasMesh() && fbHeight > 0) {
+    if (meshRenderer_.hasMesh() && vh > 0) {
         float vp[16], v[16];
-        camera_.viewProj(float(fbWidth) / float(fbHeight), vp);
+        camera_.viewProj(float(vw) / float(vh), vp);
         camera_.view(v);
 
         // GPU time of the mesh draw, read one frame late so that nothing stalls
@@ -3632,7 +3682,7 @@ void App::renderScene(int fbWidth, int fbHeight)
         ++gpuQueryFrame_;
 
         if (meshRenderer_.hasLines())
-            meshRenderer_.drawLines(vp, fbWidth, fbHeight, boundaryWidth_);
+            meshRenderer_.drawLines(vp, vw, vh, boundaryWidth_);
     }
     scene_.end();
 }
