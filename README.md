@@ -16,20 +16,17 @@ for mip mapping (Horizon pack, Lévy et al. 2002) and bakes the texture of the s
 1. Download `huge-atlas-<version>-arm64.dmg` from the [Releases](https://github.com/vladimir-vasilyev/huge-atlas/releases) page
    (Apple Silicon Macs, macOS 11 or newer).
 2. Open the disk image and drag **huge-atlas** to **Applications** (do not run it from the disk image: it is read-only, and the next step needs the copy).
-3. The first start: the app is not notarized by Apple (that needs a paid Apple Developer ID), so macOS blocks it with the message
-   *"Apple could not verify "huge-atlas" is free of malware..."*. Allow it once:
-   - **macOS 15 Sequoia and newer (including macOS 26):** press **Done** in that window, open **System Settings > Privacy & Security**,
-     scroll down to the line *"huge-atlas" was blocked to protect your Mac* and press **Open Anyway**, then confirm with your password.
-   - **Any macOS, one command in Terminal** (it works only once the app has been copied to Applications; "No such file" means it has not):
-     `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`
-   - (macOS 14 and older: right-click the app, **Open**, **Open**.)
+3. Open **huge-atlas** from Applications. Since 0.2.1 the app is signed with a Developer ID and notarized by Apple: macOS asks only
+   the usual *"downloaded from the Internet, open it?"* once. (The older 0.1.0 and 0.2.0 are not notarized and are blocked with *"Apple could
+   not verify…"*; if you have one of them, copy it to Applications and run `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`,
+   or on macOS 15 and newer press **Open Anyway** in System Settings > Privacy & Security.)
 4. Open a mesh (OBJ or PLY, **File > Open**), press **Make atlas** (or **Make atlas (huge)** for scans of millions of faces) and save
    the result with **File > Save**: OBJ or PLY with the new UV and a texture baked into the new atlas.
 
 The settings of the windows are kept in `~/Library/Application Support/huge-atlas`; files that the Debug menu writes go to
 `~/Documents/huge-atlas/DebugOut`.
 
-To make the disk image yourself: `./scripts/make_dmg.sh` (builds, makes `dist/huge-atlas.app` and the `.dmg`).
+To make the disk image yourself: `./scripts/make_dmg.sh` (builds, makes `dist/huge-atlas.app` and the `.dmg`; with `CODESIGN_IDENTITY` and `NOTARY_PROFILE` it signs with a Developer ID and notarizes, see the header of the script).
 
 ## Two modes
 
