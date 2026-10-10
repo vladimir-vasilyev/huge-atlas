@@ -519,8 +519,31 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
     return res;
 }
 
+// Moves the charts of a packed result back to where they were before the packing.
+static void unpackFlatAtlas(FlatResult& r)
+{
+    if (!r.packed || r.packSim.size() != r.patches.size()) return;
+    const size_t nF = r.patchOfFace.size();
+    const size_t chunk = 1 << 15, chunks = (nF + chunk - 1) / chunk;
+    ThreadPool::shared().parallelFor(int(chunks), [&](int c) {
+        for (size_t f = size_t(c) * chunk; f < std::min(nF, size_t(c + 1) * chunk); ++f) {
+            const int32_t pi = r.patchOfFace[f];
+            if (pi < 0 || !r.packSim[pi].valid) continue;
+            const FlatPackSim& s = r.packSim[pi];
+            const double inv = 1.0 / (s.ar * s.ar + s.ai * s.ai);
+            for (int k = 0; k < 3; ++k) {
+                const double x = r.cornerUV[6 * f + 2 * k] - s.br, y = r.cornerUV[6 * f + 2 * k + 1] - s.bi;   // z' - b
+                r.cornerUV[6 * f + 2 * k] = float((s.ar * x + s.ai * y) * inv);                                // times conj(a) / |a|^2
+                r.cornerUV[6 * f + 2 * k + 1] = float((s.ar * y - s.ai * x) * inv);
+            }
+        }
+    });
+    r.packed = false;
+}
+
 AtlasResult packFlatAtlas(FlatResult& r, const HorizonOptions& options)
 {
+    unpackFlatAtlas(r);
     std::vector<AtlasInput> in(r.patches.size());
     std::vector<char> usable(r.patches.size(), 0);
     std::vector<std::vector<Eigen::Vector2d>> centered(r.patches.size());   // border UV relative to the chart centre
@@ -551,7 +574,7 @@ AtlasResult packFlatAtlas(FlatResult& r, const HorizonOptions& options)
 
     // the packer moves a chart by a similarity (rotation, uniform scale, translation): recover it from the border
     // points and apply it to every corner
-    struct Sim { double ar = 1, ai = 0, br = 0, bi = 0; bool valid = false; };
+    using Sim = FlatPackSim;
     std::vector<Sim> sim(r.patches.size());
     for (size_t i = 0; i < sim.size(); ++i) {
         if (!usable[i]) continue;
@@ -597,6 +620,8 @@ AtlasResult packFlatAtlas(FlatResult& r, const HorizonOptions& options)
             }
         }
     });
+    r.packSim = std::move(sim);
+    r.packed = true;
     return res;
 }
 

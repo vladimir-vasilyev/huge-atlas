@@ -37,8 +37,13 @@ struct FlatStats {
     double adjacencySeconds = 0, cleanSeconds = 0, liftSeconds = 0, fallbackSeconds = 0;
 };
 
+// How packFlatAtlas moved a chart: z -> (ar + i ai) z + (br + i bi) on the UV of the patch (kept to undo the packing).
+struct FlatPackSim { double ar = 1, ai = 0, br = 0, bi = 0; bool valid = false; };
+
 struct FlatResult {
     std::vector<float>   cornerUV;       // 6 per face: u0 v0 u1 v1 u2 v2 (corner k = vertex idx[3 f + k]); NaN = none
+    bool                 packed = false; // cornerUV is in the atlas (packFlatAtlas was called); packSim says how each chart was moved
+    std::vector<FlatPackSim> packSim;    // per patch
     std::vector<int32_t> patchOfFace;    // -1 = none
     std::vector<FlatPatch> patches;
     FlatStats stats;
@@ -49,7 +54,9 @@ struct FlatResult {
 FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& options = {}, size_t faceBudget = 4000000);
 
 // Horizon pack of the patches; the packed UV replace result.cornerUV (in [0, 1]^2). Returns the packer's result
-// (its per-input uv are those of the border vertices).
+// (its per-input uv are those of the border vertices). May be called again on a packed result with other options (another texture
+// size, other mip levels): the earlier packing is undone first (the charts are moved back by the inverse similarity), nothing
+// before the packing is run again.
 AtlasResult packFlatAtlas(FlatResult& result, const HorizonOptions& options = {});
 
 // Binary little endian PLY with the packed atlas UV (properties x y z s t, faces as triangles). Vertices are welded by

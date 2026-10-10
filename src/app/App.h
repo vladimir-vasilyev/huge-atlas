@@ -80,6 +80,10 @@ private:
     void startHugeFromLoaded();
     void runHugeJob(const std::shared_ptr<HugeJob>& job);
     void drawHugeButtons();
+    void repackHuge();                     // the huge result in another texture size / mip levels, nothing before the packing is run again
+    void finishRepackHuge();               // the main thread takes the repacked result over (GPU buffers, texture, status)
+    void refreshHugeGpu();                 // the geometry and the texture of the huge result to the renderer, the camera stays
+    void repackAtlas();                    // the same for the atlas of the loaded mesh
     void compareHuge();                    // original layout vs ours for the huge result (a thread; fills HugeJob::layout*)
     void stopRefine(bool wait);
     void drawRefineModal();

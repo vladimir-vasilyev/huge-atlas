@@ -62,6 +62,26 @@ int main(int argc, char** argv)
     CHECK(after.overlap < 1e-4);
     CHECK(std::abs(after.l2Mean - before.l2Mean) < 1e-3);   // the packer only rescales
 
+    // repacking without running anything before the packing: another texture size and mip levels, then the first settings again
+    {
+        const std::vector<float> first = r.cornerUV;
+        HorizonOptions big;
+        big.resolution = 2048;
+        big.maxMipLevel = 3;
+        const AtlasResult a2 = packFlatAtlas(r, big);
+        CHECK(a2.ok && a2.resolution == 2048 && a2.maxMipLevel == 3);
+        const UVLayoutStats mid = analyzeUVLayout(m, r.cornerUV, a2.resolution);
+        CHECK(mid.flipped == 0 && mid.overlap < 1e-4);
+        CHECK(std::abs(mid.l2Mean - before.l2Mean) < 1e-3);
+        const AtlasResult a3 = packFlatAtlas(r, ho);   // back to the first settings
+        CHECK(a3.ok && a3.resolution == 1024);
+        double worst = 0.0;
+        for (size_t i = 0; i < first.size(); ++i)
+            if (std::isfinite(first[i])) worst = std::max(worst, double(std::abs(first[i] - r.cornerUV[i])));
+        std::printf("repack there and back: largest UV difference %.2e\n", worst);
+        CHECK(worst < 1e-4);   // float round trips only
+    }
+
     // retexturing: an old planar UV and a gradient texture are baked into the atlas; a point of the surface must show the same
     // colour through the old uv and the old texture as through the new uv and the new texture
     {

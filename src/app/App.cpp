@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -153,7 +154,13 @@ struct App::HugeJob {
     MipSafetyResult mipOriginal, mipOurs;
     bool hadOriginal = false;
     double compareSeconds = 0;
-    ~HugeJob() { if (worker.joinable()) worker.join(); if (compareWorker.joinable()) compareWorker.join(); }
+    // repacking of the finished result with other texture settings (a thread of its own)
+    std::thread repackWorker;
+    std::atomic<bool> repacking{false}, repackFinished{false};
+    std::string repackError;
+    double repackSeconds = 0, repackBakeSeconds = 0;
+    bool repackWithoutTexture = false;   // the old texture was not kept (a huge mesh): the atlas changed, the texture is gone
+    ~HugeJob() { if (worker.joinable()) worker.join(); if (compareWorker.joinable()) compareWorker.join(); if (repackWorker.joinable()) repackWorker.join(); }
     void say(const std::string& s) { std::lock_guard<std::mutex> lock(mutex); stage = s; }
 };
 
@@ -256,6 +263,14 @@ void App::run()
                 if (const char* view = std::getenv("VSA_HUGE_VIEW")) { hugeView_ = std::atoi(view); setHugeColors(); }
                 std::printf("AUTO HUGE: %s\n", hugeStatus_.c_str());
                 if (std::getenv("VSA_AUTO_BADPATCH")) saveBadPatches();
+                if (const char* rr = std::getenv("VSA_REPACK_RES")) {   // repack with other settings, as the button does
+                    horizonOptions_.resolution = std::atoi(rr);
+                    if (const char* rm = std::getenv("VSA_REPACK_MIP")) horizonOptions_.maxMipLevel = std::atoi(rm);
+                    repackHuge();
+                    if (hugeJob_->repackWorker.joinable()) hugeJob_->repackWorker.join();
+                    finishRepackHuge();
+                    std::printf("AUTO REPACK: %s\n", hugeStatus_.c_str());
+                }
                 if (std::getenv("VSA_AUTO_BAKE")) {   // compare with the original layout
                     compareHuge();
                     if (hugeJob_->compareWorker.joinable()) hugeJob_->compareWorker.join();
@@ -331,6 +346,13 @@ void App::run()
             if (autoFrame > 3 && atlasStage_ == AtlasStage::Idle && !autoDone) {
                 std::printf("AUTO ATLAS: %s\n", makeAtlasStatus_.c_str());
                 if (std::getenv("VSA_AUTO_BADPATCH")) saveBadPatches();
+                if (const char* rr = std::getenv("VSA_REPACK_RES")) {   // repack with other settings, as the button does
+                    horizonOptions_.resolution = std::atoi(rr);
+                    if (const char* rm = std::getenv("VSA_REPACK_MIP")) horizonOptions_.maxMipLevel = std::atoi(rm);
+                    if (std::getenv("VSA_AUTO_BAKE")) bakeAtlasPreview();   // a baked texture exists to be baked again
+                    repackAtlas();
+                    std::printf("AUTO REPACK: %s\n", status_.c_str());
+                }
                 if (std::getenv("VSA_AUTO_BAKE") && atlasValid_) {   // bake the atlas texture, compare with the original layout
                     measureLayouts();
                     const UVLayoutStats &o = layoutOriginal_, &n = layoutOurs_;
@@ -1109,6 +1131,7 @@ void App::saveBadPatches()
 
 void App::drawHugeAtlas()
 {
+    if (hugeJob_->repacking) { ImGui::TextUnformatted("repacking the atlas..."); return; }   // the worker is changing the result
     const FlatResult& r = hugeJob_->result;
     const AtlasResult& atlas = hugeJob_->atlas;
     ui::Checkbox("Edges", &uvShowEdges_);
@@ -1365,6 +1388,29 @@ void App::packAtlasNow()
     uvShowAtlas_ = true;
     colorMode_ = 8;
     uploadMesh();
+}
+
+// The atlas of the loaded mesh packed again with the texture size and the mip levels now set: the patches and their unfolding are
+// kept, nothing before the packing is run again. A baked texture is baked again for the new atlas.
+void App::repackAtlas()
+{
+    if (!atlasValid_ || params_.empty()) return;
+    const bool hadBake = bakedVersion_ == atlasVersion_;
+    const int mode = colorMode_;
+    const bool showAtlas = uvShowAtlas_;
+    const auto t0 = std::chrono::steady_clock::now();
+    packAtlasNow();   // also switches the view to the atlas checker
+    if (!atlasValid_) return;
+    colorMode_ = mode;
+    uvShowAtlas_ = showAtlas;
+    if (hadBake) bakeAtlasPreview();
+    else uploadMesh();
+    char buf[260];
+    std::snprintf(buf, sizeof(buf), "repacked: atlas %d x %d, max mip level %d, gutter %d texels, efficiency %.1f%% (%.1f s%s)",
+                  atlas_.resolution, atlas_.resolution, atlas_.maxMipLevel, atlas_.gutter, 100.0 * atlas_.efficiency,
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), hadBake ? ", texture baked again" : "");
+    status_ = buf;
+    makeAtlasStatus_ = buf;
 }
 
 void App::startRefine()
@@ -1896,11 +1942,12 @@ void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
             raw->bakeSeconds = since(t);
             // the old texture is not needed any more; the old uv stay (24 bytes per face) for the comparison with the original
             // layout, unless the mesh is so big that they would cost gigabytes
+            // (the old texture stays too, up to the same size: the atlas can be repacked and baked again)
             if (raw->mesh.faceCount() > 30000000) {
                 std::vector<float>().swap(raw->surface.cornerUV);
                 std::vector<uint8_t>().swap(raw->surface.faceMaterial);
+                std::vector<unsigned char>().swap(raw->sourcePixels);
             }
-            std::vector<unsigned char>().swap(raw->sourcePixels);
         }
         raw->done = true;
     });
@@ -2099,10 +2146,94 @@ void App::showHugeResult()
     setHugeColors();
 }
 
+// The huge result in another texture size and other mip levels: the packing is done again on the patches that are there
+// (packFlatAtlas undoes the first one), the texture is baked again from the old one; the segmentation, the unfolding and the
+// lifting are not run again.
+void App::repackHuge()
+{
+    if (!hugeJob_ || !hugeJob_->done || !hugeJob_->error.empty() || hugeJob_->repacking || hugeJob_->comparing) return;
+    HugeJob* raw = hugeJob_.get();
+    if (raw->repackWorker.joinable()) raw->repackWorker.join();
+    raw->repacking = true;
+    raw->repackFinished = false;
+    raw->repackError.clear();
+    hugeStatus_ = "repacking the atlas...";
+    const HorizonOptions ho = horizonOptions_;
+    raw->repackWorker = std::thread([raw, ho]() {
+        using Clock = std::chrono::steady_clock;
+        auto since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+        const auto t0 = Clock::now();
+        const AtlasResult a = packFlatAtlas(raw->result, ho);
+        raw->repackSeconds = since(t0);
+        raw->repackBakeSeconds = 0;
+        raw->repackWithoutTexture = false;
+        if (!a.ok) {
+            raw->repackError = "packing failed: " + a.message;
+        } else {
+            raw->atlas = a;
+            raw->compared = false;   // the layout of the earlier packing was measured
+            const bool haveSource = !raw->sourcePixels.empty() && raw->surface.cornerUV.size() == raw->mesh.faceCount() * 6;
+            if (haveSource) {
+                const auto t1 = Clock::now();
+                BakeSource src{raw->sourceW, raw->sourceH, raw->sourcePixels.data()};
+                BakeOptions bo;
+                bo.resolution = a.resolution;
+                bo.margin = a.margin;
+                raw->baked = bakeAtlasFlat(raw->mesh, raw->result, raw->surface.cornerUV, raw->surface.faceMaterial, raw->textureMaterial, &src, bo);
+                raw->bakedResolution = bo.resolution;
+                raw->repackBakeSeconds = since(t1);
+            } else if (!raw->baked.empty()) {
+                std::vector<unsigned char>().swap(raw->baked);   // the old texture belongs to the old atlas
+                raw->bakedResolution = 0;
+                raw->repackWithoutTexture = true;
+            }
+        }
+        raw->repacking = false;
+        raw->repackFinished = true;
+    });
+}
+
+void App::refreshHugeGpu()
+{
+    if (!hugeJob_ || !hugeJob_->done) return;
+    meshRenderer_.uploadFlat(hugeJob_->mesh, hugeJob_->result.cornerUV);
+    if (!hugeJob_->baked.empty() && hugeJob_->bakedResolution > 0)
+        meshRenderer_.setTexture(hugeJob_->bakedResolution, hugeJob_->bakedResolution, hugeJob_->baked.data());
+    else if (hugeView_ == 3)
+        hugeView_ = 0;
+    setHugeColors();
+}
+
+void App::finishRepackHuge()
+{
+    if (!hugeJob_) return;
+    HugeJob* raw = hugeJob_.get();
+    if (raw->repackWorker.joinable()) raw->repackWorker.join();
+    raw->repackFinished = false;
+    if (!raw->repackError.empty()) { hugeStatus_ = raw->repackError; return; }
+    if (hugeShown_) refreshHugeGpu();
+    char buf[400];
+    std::snprintf(buf, sizeof(buf), "repacked: atlas %d x %d, max mip level %d, gutter %d texels, efficiency %.1f%% (packing %.1f s%s)%s",
+                  raw->atlas.resolution, raw->atlas.resolution, raw->atlas.maxMipLevel, raw->atlas.gutter, 100.0 * raw->atlas.efficiency,
+                  raw->repackSeconds, raw->repackBakeSeconds > 0 ? ", texture baked again" : "",
+                  raw->repackWithoutTexture ? "; the old texture was not kept for a mesh this big, the texture is gone" : "");
+    if (raw->repackBakeSeconds > 0) {
+        char b2[64];
+        std::snprintf(b2, sizeof(b2), " in %.1f s", raw->repackBakeSeconds);
+        std::string s = buf;
+        const size_t pos = s.find(", texture baked again");
+        if (pos != std::string::npos) s.insert(pos + std::strlen(", texture baked again"), b2);
+        hugeStatus_ = s;
+    } else {
+        hugeStatus_ = buf;
+    }
+    status_ = hugeStatus_;
+}
+
 // Original layout vs ours on flat arrays: the same measures as the regular mode (analyzeUVLayout, measureMipSafety).
 void App::compareHuge()
 {
-    if (!hugeJob_ || !hugeJob_->done || !hugeJob_->error.empty() || hugeJob_->comparing) return;
+    if (!hugeJob_ || !hugeJob_->done || !hugeJob_->error.empty() || hugeJob_->comparing || hugeJob_->repacking) return;
     HugeJob* raw = hugeJob_.get();
     if (raw->compareWorker.joinable()) raw->compareWorker.join();
     raw->comparing = true;
@@ -2134,7 +2265,8 @@ void App::compareHuge()
 
 void App::drawHugeButtons()
 {
-    const bool busy = hugeJob_ && !hugeJob_->done;
+    if (hugeJob_ && hugeJob_->repackFinished) finishRepackHuge();
+    const bool busy = hugeJob_ && (!hugeJob_->done || hugeJob_->repacking);
     ImGui::BeginDisabled(busy);
     {
         float pct = float(hugeSimplifyPercent_);
@@ -2183,6 +2315,30 @@ void App::drawHugeButtons()
         if (ui::Button("Compare with the original layout (huge)")) compareHuge();
         ImGui::EndDisabled();
         if (hugeJob_->comparing) ImGui::TextDisabled("comparing the layouts...");
+        // another texture size and mip levels for the same patches (nothing before the packing is run again)
+        ImGui::BeginDisabled(busy || hugeJob_->comparing);
+        {
+            HorizonOptions& ho = horizonOptions_;
+            static const int kRes[] = {256, 512, 1024, 2048, 4096, 8192};
+            char label[24];
+            std::snprintf(label, sizeof(label), "%d x %d", ho.resolution, ho.resolution);
+            if (ui::BeginCombo("Repack: texture size", label)) {
+                for (int rr : kRes) {
+                    std::snprintf(label, sizeof(label), "%d x %d", rr, rr);
+                    if (ImGui::Selectable(label, rr == ho.resolution)) ho.resolution = rr;
+                }
+                ImGui::EndCombo();
+            }
+            int maxLevel = 0;
+            while ((1 << (maxLevel + 1)) <= ho.resolution) ++maxLevel;
+            maxLevel = std::max(0, maxLevel - 2);
+            ho.maxMipLevel = std::min(ho.maxMipLevel, maxLevel);
+            ui::SliderInt("Repack: max mip level", &ho.maxMipLevel, 0, maxLevel);
+            ImGui::TextDisabled("gap between charts: %d texels", chartGutter(ho.maxMipLevel, ho.extraTexels));
+            if (ui::Button("Repack the atlas")) repackHuge();
+        }
+        ImGui::EndDisabled();
+        if (hugeJob_->repacking) ImGui::TextDisabled("repacking the atlas...");
         if (hugeJob_->compared && hugeJob_->hadOriginal) {
             drawLayoutTable(hugeJob_->layoutOriginal, hugeJob_->layoutOurs, hugeJob_->mipOriginal, hugeJob_->mipOurs);
             ImGui::TextDisabled("Measured in %.0f s on the full mesh. Lower stretch, a tighter density, fewer seams and a wider gap between charts are better.", hugeJob_->compareSeconds);
@@ -2249,6 +2405,8 @@ void App::drawMakeAtlasPanel()
     if (atlasValid_ && !running) {
         ImGui::SeparatorText("Retexture and compare");
         if (ui::Button("Bake atlas texture")) bakeAtlasPreview();
+        ImGui::SameLine();
+        if (ui::Button("Repack the atlas")) repackAtlas();
         ImGui::SameLine();
         ImGui::BeginDisabled(!objExtras_.hasUV());
         if (ui::Button("Compare with the original layout")) measureLayouts();
