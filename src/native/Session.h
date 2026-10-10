@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/MeshTypes.h"
+#include "core/ObjLoader.h"
 #include "param/AtlasPacker.h"
 #include "param/Refinement.h"
 
@@ -42,6 +43,16 @@ public:
     // rgb per face: every patch in its own color
     std::vector<float> patchColors() const;
 
+    // The texture of the file (an OBJ with vt and a material with a diffuse map) and its bake into the new atlas.
+    bool hasSourceTexture() const { return sourceW_ > 0; }
+    bool hasBakedTexture() const { return resultValid_ && !baked_.empty(); }
+    int bakedResolution() const { return atlas_.resolution; }
+    const unsigned char* bakedPixels() const { return baked_.data(); }
+    // the atlas as texture coordinates of the corners of every face (6 floats per face; u = -1: the face has none)
+    const std::vector<float>& atlasFaceUV() const { return bakedUV_; }
+    // the normal of the patch of every face (3 floats per face): the direction in which the patches move in the presentation
+    std::vector<float> patchNormalsPerFace() const;
+
     // OBJ with the atlas UV (a vt per patch vertex, seams get their own vt)
     bool save(const std::string& path, std::string* error) const;
 
@@ -55,4 +66,10 @@ private:
     AtlasResult atlas_;
     bool resultValid_ = false;
     double seconds_ = 0.0;
+
+    ObjExtras extras_;
+    std::vector<unsigned char> sourcePixels_;
+    int sourceW_ = 0, sourceH_ = 0, textureMaterial_ = -1;
+    std::vector<unsigned char> baked_;
+    std::vector<float> bakedUV_;
 };

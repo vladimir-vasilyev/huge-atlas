@@ -21,13 +21,20 @@
     MeshRenderer _renderer;
     Camera _camera;
     BOOL _ready;
-    BOOL _plain;            // gray, lit mesh instead of the colors of the patches
+    int _mode;              // 0 patches, 1 plain shading, 2 presentation, 3 texture
     BOOL _hasMesh;
+    BOOL _hasTexture;
+    float _offset, _alpha;  // presentation: how far the translucent copies of the patches move, how opaque they are
+    int _pass1, _pass2;     // presentation: what a pass shows (0 patch colors, 1 texture, 2 shading); -1 = decided by the mesh
     NSPoint _last;
 }
 @property (nonatomic, copy) void (^onDropURL)(NSURL*);
-- (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors;
-- (void)setPlain:(BOOL)plain;
+- (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors faceUV:(const std::vector<float>&)uv;
+- (void)setTexture:(int)side pixels:(const unsigned char*)pixels;
+- (void)setPatchNormals:(const std::vector<float>&)normals;
+- (void)setMode:(int)mode;
+- (void)setOffset:(float)offset alpha:(float)alpha;
+- (void)setPass1:(int)p1 pass2:(int)p2;
 - (void)resetCamera;
 @end
 
@@ -45,16 +52,18 @@
     if (self) {
         self.wantsBestResolutionOpenGLSurface = YES;
         [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+        _offset = 0.06f; _alpha = 0.4f; _pass1 = _pass2 = -1;
         self.accessibilityLabel = @"3D view of the mesh";
         self.accessibilityRole = NSAccessibilityGroupRole;
     }
     return self;
 }
 
-- (void)prepareOpenGL
+// The renderer is made on first use: a mesh can be opened before the view has been drawn for the first time.
+- (void)ensureReady
 {
-    [super prepareOpenGL];
     [self.openGLContext makeCurrentContext];
+    if (_ready) return;
     GLint swap = 1;
     [self.openGLContext setValues:&swap forParameter:NSOpenGLContextParameterSwapInterval];
     std::string log;
@@ -64,26 +73,47 @@
     glEnable(GL_MULTISAMPLE);
 }
 
+- (void)prepareOpenGL
+{
+    [super prepareOpenGL];
+    [self ensureReady];
+}
+
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)isOpaque { return YES; }
 
 - (void)viewDidChangeEffectiveAppearance { [self setNeedsDisplay:YES]; }
 
-- (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors
+- (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors faceUV:(const std::vector<float>&)uv
 {
-    [self.openGLContext makeCurrentContext];
+    [self ensureReady];
     _renderer.invalidateGeometry();
-    _renderer.upload(mesh, colors);
+    _renderer.upload(mesh, colors, {}, uv);
     _hasMesh = YES;
     [self setNeedsDisplay:YES];
 }
 
-- (void)setPlain:(BOOL)plain { _plain = plain; [self setNeedsDisplay:YES]; }
+- (void)setTexture:(int)side pixels:(const unsigned char*)pixels
+{
+    [self ensureReady];
+    _hasTexture = side > 0 && pixels && _renderer.setTexture(side, side, pixels);
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setPatchNormals:(const std::vector<float>&)normals
+{
+    [self ensureReady];
+    _renderer.setPatchNormals(normals);
+}
+
+- (void)setMode:(int)mode { _mode = mode; [self setNeedsDisplay:YES]; }
+- (void)setOffset:(float)offset alpha:(float)alpha { _offset = offset; _alpha = alpha; [self setNeedsDisplay:YES]; }
+- (void)setPass1:(int)p1 pass2:(int)p2 { _pass1 = p1; _pass2 = p2; [self setNeedsDisplay:YES]; }
 - (void)resetCamera { _camera.reset(); [self setNeedsDisplay:YES]; }
 
 - (void)drawRect:(NSRect)dirty
 {
-    [self.openGLContext makeCurrentContext];
+    [self ensureReady];
     const NSRect b = [self convertRectToBacking:self.bounds];
     glViewport(0, 0, GLsizei(b.size.width), GLsizei(b.size.height));
     __block float r = 0.12f, g = 0.12f, bl = 0.13f;
@@ -97,7 +127,20 @@
         float vp[16], v[16];
         _camera.viewProj(float(b.size.width / b.size.height), vp);
         _camera.view(v);
-        _renderer.draw(vp, v, false, 0.0f, false, false, _plain);
+        const BOOL tex = _hasTexture;
+        if (_mode == 2 && _renderer.hasPatchNormals()) {
+            // presentation: the patches as they are, then the same patches translucent and moved along their normals. The defaults:
+            // a textured mesh is colors + texture, a mesh without a texture is shading + colors
+            auto fix = [&](int p) { return (p == 1 && !tex) ? 0 : p; };
+            const int p1 = fix(_pass1 >= 0 ? _pass1 : (tex ? 0 : 2)), p2 = fix(_pass2 >= 0 ? _pass2 : (tex ? 1 : 0));
+            const BOOL skipFirst = _offset <= 1e-6f, secondFirst = _alpha >= 0.999f;   // offset 0: one pass; opaque: the second goes first
+            auto first = [&] { _renderer.draw(vp, v, false, 0.0f, p1 == 1, false, p1 == 2); };
+            if (!skipFirst && !secondFirst) first();
+            _renderer.drawGhosts(vp, v, _offset, _alpha, false, p2 == 1, p2 == 2);
+            if (!skipFirst && secondFirst) first();
+        } else {
+            _renderer.draw(vp, v, false, 0.0f, _mode == 3 && tex, false, _mode == 1);
+        }
     }
     [self.openGLContext flushBuffer];
 }
@@ -155,6 +198,8 @@
     [m addItem:[NSMenuItem separatorItem]];
     [m addItemWithTitle:@"Show Patches" action:@selector(showPatches:) keyEquivalent:@""];
     [m addItemWithTitle:@"Show Plain Shading" action:@selector(showPlain:) keyEquivalent:@""];
+    [m addItemWithTitle:@"Show Presentation" action:@selector(showPresentation:) keyEquivalent:@""];
+    [m addItemWithTitle:@"Show Texture" action:@selector(showTexture:) keyEquivalent:@""];
     return m;
 }
 
@@ -172,6 +217,13 @@
 @end
 
 // ------------------------------------------------------------------------------------------------------------------ the application
+
+// The document of the sidebar's scroll view: the content starts at the top.
+@interface FlippedView : NSView
+@end
+@implementation FlippedView
+- (BOOL)isFlipped { return YES; }
+@end
 
 static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO, BOOL bold = NO)
 {
@@ -201,6 +253,14 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     NSProgressIndicator* _progress;
     NSTextField* _status;
     NSTextField* _result;
+    NSStackView* _presentGroup;
+    NSSlider* _offset;
+    NSSlider* _alpha;
+    NSTextField* _offsetLabel;
+    NSTextField* _alphaLabel;
+    NSPopUpButton* _pass1;
+    NSPopUpButton* _pass2;
+    int _mode;
 
     AtlasSession _session;
     std::atomic<bool> _cancel;
@@ -290,12 +350,36 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _result.maximumNumberOfLines = 4;
     _result.preferredMaxLayoutWidth = 260;
 
+    // Presentation: shown only while the presentation is the view
+    _offset = [NSSlider sliderWithValue:0.06 minValue:0 maxValue:1 target:self action:@selector(presentationChanged:)];
+    _offset.accessibilityLabel = @"Patch offset";
+    _alpha = [NSSlider sliderWithValue:0.4 minValue:0.05 maxValue:1 target:self action:@selector(presentationChanged:)];
+    _alpha.accessibilityLabel = @"Patch opacity";
+    _offsetLabel = label(@"", 11, YES);
+    _alphaLabel = label(@"", 11, YES);
+    auto passMenu = [&](NSString* what) {
+        NSPopUpButton* b = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+        [b addItemsWithTitles:@[@"Automatic", @"Patch Colors", @"Texture", @"Shading"]];
+        b.target = self; b.action = @selector(presentationChanged:);
+        b.accessibilityLabel = what;
+        return b;
+    };
+    _pass1 = passMenu(@"First pass");
+    _pass2 = passMenu(@"Second pass");
+    _presentGroup = [NSStackView stackViewWithViews:@[
+        label(@"Presentation", 11, YES, YES), label(@"Patch offset", 12), _offset, _offsetLabel, label(@"Patch opacity", 12), _alpha, _alphaLabel,
+        label(@"First pass", 12), _pass1, label(@"Second pass", 12), _pass2]];
+    _presentGroup.orientation = NSUserInterfaceLayoutOrientationVertical;
+    _presentGroup.alignment = NSLayoutAttributeLeading;
+    _presentGroup.spacing = 8;
+    _presentGroup.hidden = YES;
+
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel, open,
         label(@"Settings", 11, YES, YES), label(@"Quality", 12), _quality, _manual, patchRow,
         label(@"Texture size", 12), _textureSize, label(@"Mip levels", 12), _mip, _mipLabel,
         label(@"Atlas", 11, YES, YES), makeRow, _progress, _status,
-        label(@"Result", 11, YES, YES), _result]];
+        label(@"Result", 11, YES, YES), _result, _presentGroup]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 8;
@@ -307,14 +391,40 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [stack setCustomSpacing:20 afterView:patchRow];
     [stack setCustomSpacing:20 afterView:_mipLabel];
     [stack setCustomSpacing:20 afterView:_status];
-    [fx addSubview:stack];
+    // the form scrolls when the window is low (the presentation group makes it long)
+    FlippedView* doc = [[FlippedView alloc] init];
+    doc.translatesAutoresizingMaskIntoConstraints = NO;
+    [doc addSubview:stack];
+    NSScrollView* scroll = [[NSScrollView alloc] init];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.drawsBackground = NO;
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers = YES;
+    scroll.borderType = NSNoBorder;
+    scroll.automaticallyAdjustsContentInsets = NO;
+    scroll.documentView = doc;
+    [fx addSubview:scroll];
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:fx.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:fx.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:fx.trailingAnchor]]];
-    for (NSView* v in @[(NSView*)_quality, (NSView*)_textureSize, (NSView*)_mip, (NSView*)_progress])
+        [scroll.topAnchor constraintEqualToAnchor:fx.topAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:fx.bottomAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:fx.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:fx.trailingAnchor],
+        [doc.topAnchor constraintEqualToAnchor:scroll.contentView.topAnchor],
+        [doc.leadingAnchor constraintEqualToAnchor:scroll.contentView.leadingAnchor],
+        [doc.trailingAnchor constraintEqualToAnchor:scroll.contentView.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:doc.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:doc.bottomAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:doc.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:doc.trailingAnchor]]];
+    _meshLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [_meshLabel.widthAnchor constraintLessThanOrEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
+    [_status.widthAnchor constraintLessThanOrEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
+    for (NSView* v in @[(NSView*)_quality, (NSView*)_textureSize, (NSView*)_mip, (NSView*)_progress, (NSView*)_offset, (NSView*)_alpha,
+                        (NSView*)_pass1, (NSView*)_pass2])
         [v.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
+    [stack setCustomSpacing:20 afterView:_result];
     [self updateMipLabel];
+    [self presentationChanged:nil];
     return fx;
 }
 
@@ -330,6 +440,15 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     const int gutter = 2 * ((int)std::ceil(1.5 * double(1 << int(_mip.integerValue))) - 1);
     _mipLabel.stringValue = [NSString stringWithFormat:@"Level %d, gap between the parts of the texture: %d texels",
                                                       int(_mip.integerValue), gutter];
+}
+
+- (void)presentationChanged:(id)sender
+{
+    _offsetLabel.stringValue = [NSString stringWithFormat:@"%.2f of the size of the model", _offset.doubleValue];
+    _alphaLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", 100.0 * _alpha.doubleValue];
+    [_scene setOffset:float(_offset.doubleValue) alpha:float(_alpha.doubleValue)];
+    // the popups: item 0 is "Automatic", then 0 patch colors, 1 texture, 2 shading
+    [_scene setPass1:int(_pass1.indexOfSelectedItem) - 1 pass2:int(_pass2.indexOfSelectedItem) - 1];
 }
 
 - (void)mipChanged:(id)sender { [self updateMipLabel]; }
@@ -412,9 +531,13 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     else if ([ident isEqual:@"makeAtlas"]) set(@"Make Atlas", @"wand.and.stars", @selector(makeAtlas:), @"Make the atlas (⌘R)");
     else if ([ident isEqual:@"save"]) set(@"Save", @"square.and.arrow.down", @selector(saveAs:), @"Save the mesh with the atlas (⇧⌘S)");
     else if ([ident isEqual:@"views"]) {
-        _viewSwitch = [NSSegmentedControl segmentedControlWithLabels:@[@"Patches", @"Plain"] trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                                target:self action:@selector(viewSwitched:)];
-        _viewSwitch.selectedSegment = 0;
+        _viewSwitch = [NSSegmentedControl segmentedControlWithLabels:@[@"Patches", @"Plain", @"Presentation", @"Texture"]
+                                                         trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                               target:self action:@selector(viewSwitched:)];
+        _viewSwitch.selectedSegment = 1;
+        [_viewSwitch setEnabled:NO forSegment:0];
+        [_viewSwitch setEnabled:NO forSegment:2];
+        [_viewSwitch setEnabled:NO forSegment:3];
         _viewSwitch.accessibilityLabel = @"View";
         item.label = @"View"; item.paletteLabel = @"View"; item.view = _viewSwitch;
     }
@@ -485,6 +608,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     NSMenu* view = top(@"View");
     add(view, @"Show Patches", @selector(showPatches:), @"1", NSEventModifierFlagCommand, self);
     add(view, @"Show Plain Shading", @selector(showPlain:), @"2", NSEventModifierFlagCommand, self);
+    add(view, @"Show Presentation", @selector(showPresentation:), @"3", NSEventModifierFlagCommand, self);
+    add(view, @"Show Texture", @selector(showTexture:), @"4", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Reset Camera", @selector(resetCamera:), @"0", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
@@ -517,8 +642,10 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (a == @selector(cancelAtlas:)) return _running;
     if (a == @selector(saveAs:)) return !_running && _session.hasResult();
     if (a == @selector(showSettings:)) return NO;
-    if (a == @selector(showPatches:)) item.state = _viewSwitch.selectedSegment == 0 ? NSControlStateValueOn : NSControlStateValueOff;
-    if (a == @selector(showPlain:)) item.state = _viewSwitch.selectedSegment == 1 ? NSControlStateValueOn : NSControlStateValueOff;
+    if (a == @selector(showPatches:)) { item.state = _mode == 0 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasResult(); }
+    if (a == @selector(showPlain:)) item.state = _mode == 1 ? NSControlStateValueOn : NSControlStateValueOff;
+    if (a == @selector(showPresentation:)) { item.state = _mode == 2 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasResult(); }
+    if (a == @selector(showTexture:)) { item.state = _mode == 3 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasBakedTexture(); }
     if (a == @selector(toggleSidebar:)) {
         NSSplitViewItem* s = _split.splitViewItems.firstObject;
         item.title = s.collapsed ? @"Show Sidebar" : @"Hide Sidebar";
@@ -536,13 +663,14 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     }
     _window.title = path.lastPathComponent;
     _window.representedURL = [NSURL fileURLWithPath:path];
-    _meshLabel.stringValue = [NSString stringWithFormat:@"%@ — %zu faces", path.lastPathComponent, _session.mesh().n_faces()];
+    _meshLabel.stringValue = [NSString stringWithFormat:@"%@ — %zu faces%s", path.lastPathComponent, _session.mesh().n_faces(),
+                                                       _session.hasSourceTexture() ? ", with a texture" : ""];
     _result.stringValue = @"";
     _status.stringValue = @"Ready";
     [_scene resetCamera];
-    [_scene showMesh:_session.mesh() colors:{}];
-    _viewSwitch.selectedSegment = 1;
-    [_scene setPlain:YES];
+    [_scene showMesh:_session.mesh() colors:{} faceUV:{}];
+    [_scene setTexture:0 pixels:nullptr];
+    [self setViewMode:1];
 }
 
 - (void)openMesh:(id)sender
@@ -603,11 +731,18 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (_session.unresolvedPatches() > 0)
         text = [text stringByAppendingFormat:@"\n%d patches could not be unfolded cleanly", _session.unresolvedPatches()];
     _result.stringValue = text;
-    _viewSwitch.selectedSegment = 0;
-    [_scene setPlain:NO];
-    [_scene showMesh:_session.mesh() colors:_session.patchColors()];
+    [_scene showMesh:_session.mesh() colors:_session.patchColors() faceUV:(_session.hasBakedTexture() ? _session.atlasFaceUV() : std::vector<float>())];
+    [_scene setTexture:(_session.hasBakedTexture() ? _session.bakedResolution() : 0) pixels:_session.bakedPixels()];
+    [_scene setPatchNormals:_session.patchNormalsPerFace()];
+    [self setViewMode:_session.hasBakedTexture() ? 3 : 0];
     if (getenv("HUGE_NATIVE_AUTORUN")) {
-        printf("NATIVE: %s\n", text.UTF8String);
+        printf("NATIVE: %s%s\n", text.UTF8String, _session.hasBakedTexture() ? " (texture baked)" : "");
+        if (const char* v = getenv("HUGE_NATIVE_VIEW")) [self setViewMode:atoi(v)];
+        if (const char* o = getenv("HUGE_NATIVE_OFFSET")) _offset.doubleValue = atof(o);
+        if (const char* al = getenv("HUGE_NATIVE_ALPHA")) _alpha.doubleValue = atof(al);
+        if (const char* p1 = getenv("HUGE_NATIVE_PASS1")) [_pass1 selectItemAtIndex:atoi(p1)];
+        if (const char* p2 = getenv("HUGE_NATIVE_PASS2")) [_pass2 selectItemAtIndex:atoi(p2)];
+        [self presentationChanged:nil];
         [self autoShotAndQuit];
     }
 }
@@ -626,9 +761,25 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _status.stringValue = _session.save(p, &err) ? @"Saved" : [NSString stringWithFormat:@"Cannot save: %s", err.c_str()];
 }
 
-- (void)showPatches:(id)sender { _viewSwitch.selectedSegment = 0; [_scene setPlain:NO]; }
-- (void)showPlain:(id)sender { _viewSwitch.selectedSegment = 1; [_scene setPlain:YES]; }
-- (void)viewSwitched:(NSSegmentedControl*)s { [_scene setPlain:s.selectedSegment == 1]; }
+// the views: 0 patches, 1 plain shading, 2 presentation, 3 texture (the segments of the toolbar are in the same order)
+- (void)setViewMode:(int)mode
+{
+    const BOOL result = _session.hasResult();
+    [_viewSwitch setEnabled:result forSegment:0];
+    [_viewSwitch setEnabled:result forSegment:2];
+    [_viewSwitch setEnabled:_session.hasBakedTexture() forSegment:3];
+    if ((mode == 0 || mode == 2) && !result) mode = 1;
+    if (mode == 3 && !_session.hasBakedTexture()) mode = result ? 0 : 1;
+    _mode = mode;
+    _viewSwitch.selectedSegment = mode;
+    _presentGroup.hidden = mode != 2;
+    [_scene setMode:mode];
+}
+- (void)showPatches:(id)sender { [self setViewMode:0]; }
+- (void)showPlain:(id)sender { [self setViewMode:1]; }
+- (void)showPresentation:(id)sender { [self setViewMode:2]; }
+- (void)showTexture:(id)sender { [self setViewMode:3]; }
+- (void)viewSwitched:(NSSegmentedControl*)s { [self setViewMode:int(s.selectedSegment)]; }
 - (void)resetCamera:(id)sender { [_scene resetCamera]; }
 - (void)showSettings:(id)sender {}
 

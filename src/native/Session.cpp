@@ -2,9 +2,14 @@
 
 #include "core/MeshPrep.h"
 #include "core/Operations.h"
+#include "param/AtlasBake.h"
 #include "param/HorizonPacker.h"
+#include "render/ImageFile.h"
+#include "render/MeshRenderer.h"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 
 namespace {
@@ -37,7 +42,11 @@ int AtlasSession::patchesFor(size_t faces, int quality)
 bool AtlasSession::load(const std::string& path, std::string* error)
 {
     TriMesh m;
-    if (!loadMesh(path, m, error)) return false;
+    ObjExtras extras;
+    std::string ext = path.size() > 4 ? path.substr(path.size() - 4) : "";
+    for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+    const bool isObj = ext == ".obj";
+    if (isObj ? !loadObj(path, m, &extras, error) : !loadMesh(path, m, error)) return false;
     if (m.n_faces() == 0) { if (error) *error = "the file has no faces"; return false; }
     normalizeToUnitBox(m);
     mesh_ = std::move(m);
@@ -45,6 +54,27 @@ bool AtlasSession::load(const std::string& path, std::string* error)
     result_ = RefineResult();
     atlas_ = AtlasResult();
     resultValid_ = false;
+    baked_.clear();
+    bakedUV_.clear();
+
+    // the texture of the file: the first material with a diffuse map (the faces of other materials stay gray)
+    extras_ = std::move(extras);
+    sourcePixels_.clear();
+    sourceW_ = sourceH_ = 0;
+    textureMaterial_ = -1;
+    if (extras_.hasUV()) {
+        for (size_t i = 0; i < extras_.materials.size(); ++i) {
+            if (extras_.materials[i].diffuseMap.empty()) continue;
+            int w = 0, h = 0;
+            std::vector<unsigned char> pixels;
+            if (loadImageRGBA(extras_.directory + "/" + extras_.materials[i].diffuseMap, w, h, pixels, nullptr)) {
+                sourcePixels_ = std::move(pixels);
+                sourceW_ = w; sourceH_ = h;
+                textureMaterial_ = int(i);
+            }
+            break;
+        }
+    }
     return true;
 }
 
@@ -107,6 +137,25 @@ bool AtlasSession::run(const SessionSettings& s, const Progress& progress, const
     result_ = std::move(rr);
     atlas_ = std::move(atlas);
     resultValid_ = true;
+    if (stop()) { resultValid_ = false; return false; }
+
+    // the atlas as texture coordinates, and the texture of the file baked into it
+    say(0.92, "Baking the texture");
+    std::vector<BakeChart> charts;
+    for (size_t i = 0; i < result_.params.size(); ++i)
+        if (i < atlas_.uv.size() && !atlas_.uv[i].empty()) charts.push_back({&result_.params[i].patch, &atlas_.uv[i]});
+    bakedUV_ = cornerUVFromAtlas(mesh_, charts);
+    for (size_t f = 0; f < mesh_.n_faces(); ++f)
+        if (std::isnan(bakedUV_[f * 6])) for (int k = 0; k < 6; ++k) bakedUV_[f * 6 + k] = -1.0f;
+    baked_.clear();
+    if (hasSourceTexture()) {
+        BakeSource src{sourceW_, sourceH_, sourcePixels_.data()};
+        BakeOptions bo;
+        bo.resolution = atlas_.resolution;
+        bo.margin = atlas_.margin;
+        baked_ = bakeAtlasTexture(mesh_, charts, &src, extras_.cornerUV, extras_.faceMaterial, textureMaterial_, bo);
+        if (getenv("HUGE_NATIVE_DEBUG")) std::fprintf(stderr, "bake: %zu charts, %d x %d source, baked %zu bytes\n", charts.size(), sourceW_, sourceH_, baked_.size());
+    }
     seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     say(1.0, "Done");
     return true;
@@ -119,6 +168,13 @@ std::vector<float> AtlasSession::patchColors() const
     for (size_t f = 0; f < colors.size() / 3 && f < result_.labels.size(); ++f)
         if (result_.labels[f] >= 0) hueColor(result_.labels[f], &colors[3 * f]);
     return colors;
+}
+
+std::vector<float> AtlasSession::patchNormalsPerFace() const
+{
+    if (!resultValid_) return {};
+    const FaceData fd = computeFaceData(mesh_);
+    return patchNormals(result_.labels, fd.area, fd.normal);
 }
 
 bool AtlasSession::save(const std::string& path, std::string* error) const
