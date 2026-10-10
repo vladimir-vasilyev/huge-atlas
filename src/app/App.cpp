@@ -3204,7 +3204,7 @@ void App::drawUI()
             if (hugeShown_) setHugeColors(); else uploadMesh();
         }
         if (presentation_) {
-            ui::SliderFloat("Patch offset", &presentOffset_, 0.0f, 0.3f, "%.3f");
+            ui::SliderFloat("Patch offset", &presentOffset_, 0.0f, 1.0f, "%.3f");
             ui::SliderFloat("Patch opacity", &presentAlpha_, 0.05f, 1.0f, "%.2f");
             static const char* kPass[] = {"Patch colors", "Texture", "Shading"};
             int first = presentPass(0), second = presentPass(1);
