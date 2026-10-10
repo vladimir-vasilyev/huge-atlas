@@ -3148,9 +3148,21 @@ void App::renderScene(int fbWidth, int fbHeight)
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
         const bool texReady = presentation_ && presentTextureReady();
-        meshRenderer_.draw(vp, v, wireframe_ && !presentation_, presentation_ ? 0.0f : hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
-                           presentation_ ? (texReady && presentFirst_ == 1) : hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
-        if (presentation_) meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_, texReady && presentSecond_ == 1);
+        auto drawFirst = [&] {
+            meshRenderer_.draw(vp, v, wireframe_ && !presentation_, presentation_ ? 0.0f : hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
+                               presentation_ ? (texReady && presentFirst_ == 1) : hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
+        };
+        if (!presentation_) {
+            drawFirst();
+        } else {
+            // offset 0: the second pass lies exactly on the first, the first is not drawn. Opacity 1: the second pass goes first,
+            // so the first (behind it) is cut by the depth test instead of being drawn and then covered.
+            const bool skipFirst = presentOffset_ <= 1e-6f;
+            const bool secondFirst = presentAlpha_ >= 0.999f;
+            if (!skipFirst && !secondFirst) drawFirst();
+            meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_, texReady && presentSecond_ == 1);
+            if (!skipFirst && secondFirst) drawFirst();
+        }
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;
 
