@@ -1,6 +1,7 @@
 #include "render/MeshRenderer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 
@@ -45,6 +46,50 @@ void main() {
         col = col * mix(0.45, 1.1, k);
     }
     fragColor = vec4(col, 1.0);
+}
+)";
+
+const char* kGhostVS = R"(#version 410 core
+layout(location = 0) in vec3 aPos;
+out vec3 vPos;
+void main() { vPos = aPos; gl_Position = vec4(aPos, 1.0); }
+)";
+
+const char* kGhostGS = R"(#version 410 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+in vec3 vPos[];
+uniform mat4 uVP;
+uniform mat4 uView;
+uniform float uOffset;
+uniform samplerBuffer uPatchNormals;   // rgba8 per face: the normal of the face's patch, (n * 0.5 + 0.5)
+out vec3 vViewPos;
+void main() {
+    vec3 n = texelFetch(uPatchNormals, gl_PrimitiveIDIn).xyz * 2.0 - 1.0;
+    for (int i = 0; i < 3; ++i) {
+        vec3 p = vPos[i] + n * uOffset;
+        vViewPos = (uView * vec4(p, 1.0)).xyz;
+        gl_Position = uVP * vec4(p, 1.0);
+        gl_PrimitiveID = gl_PrimitiveIDIn;
+        EmitVertex();
+    }
+    EndPrimitive();
+}
+)";
+
+const char* kGhostFS = R"(#version 410 core
+in vec3 vViewPos;
+uniform samplerBuffer uFaceColors;
+uniform float uUseFaceColors;
+uniform float uAlpha;
+out vec4 fragColor;
+void main() {
+    vec3 base = uUseFaceColors > 0.5 ? texelFetch(uFaceColors, gl_PrimitiveID).rgb : vec3(0.72, 0.74, 0.78);
+    vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+    float facing = abs(n.z);
+    // glassy look: lighter and more opaque towards the silhouette
+    vec3 col = base * (0.65 + 0.35 * facing) + vec3(0.18) * (1.0 - facing);
+    fragColor = vec4(col, uAlpha * (0.45 + 0.55 * (1.0 - facing)));
 }
 )";
 
@@ -159,6 +204,16 @@ bool MeshRenderer::init(std::string* errorLog)
     uUseFaceColors_ = shader_.uniform("uUseFaceColors");
     uFaceColors_    = shader_.uniform("uFaceColors");
     uTex_           = shader_.uniform("uTex");
+    if (!ghostShader_.build(kGhostVS, kGhostFS, errorLog, kGhostGS)) return false;
+    uGhostVP_        = ghostShader_.uniform("uVP");
+    uGhostView_      = ghostShader_.uniform("uView");
+    uGhostOffset_    = ghostShader_.uniform("uOffset");
+    uGhostAlpha_     = ghostShader_.uniform("uAlpha");
+    uGhostColors_    = ghostShader_.uniform("uFaceColors");
+    uGhostNormals_   = ghostShader_.uniform("uPatchNormals");
+    uGhostUseColors_ = ghostShader_.uniform("uUseFaceColors");
+    glGenBuffers(1, &patchNormBuffer_);
+    glGenTextures(1, &patchNormTexture_);
     if (!wireShader_.build(kWireVS, kWireFS, errorLog)) return false;
     uWireVP_ = wireShader_.uniform("uVP");
     if (!lineShader_.build(kLineVS, kLineFS, errorLog)) return false;
@@ -376,6 +431,103 @@ bool MeshRenderer::setTexture(int w, int h, const unsigned char* rgba)
     return true;
 }
 
+std::vector<float> patchNormals(const std::vector<int>& label, const std::vector<double>& area, const std::vector<Vec3>& normal)
+{
+    int maxLabel = -1;
+    for (int l : label) maxLabel = std::max(maxLabel, l);
+    std::vector<double> sum(3 * size_t(maxLabel + 1), 0.0);
+    for (size_t f = 0; f < label.size(); ++f)
+        if (label[f] >= 0)
+            for (int k = 0; k < 3; ++k) sum[3 * size_t(label[f]) + k] += area[f] * normal[f][k];
+    for (size_t p = 0; p * 3 < sum.size(); ++p) {
+        const double len = std::sqrt(sum[3 * p] * sum[3 * p] + sum[3 * p + 1] * sum[3 * p + 1] + sum[3 * p + 2] * sum[3 * p + 2]);
+        for (int k = 0; k < 3; ++k) sum[3 * p + k] = len > 1e-300 ? sum[3 * p + k] / len : 0.0;
+    }
+    std::vector<float> out(3 * label.size(), 0.0f);
+    for (size_t f = 0; f < label.size(); ++f)
+        if (label[f] >= 0)
+            for (int k = 0; k < 3; ++k) out[3 * f + k] = float(sum[3 * size_t(label[f]) + k]);
+    return out;
+}
+
+std::vector<float> patchNormals(const std::vector<int>& label, const FlatMesh& m)
+{
+    int maxLabel = -1;
+    for (int l : label) maxLabel = std::max(maxLabel, l);
+    std::vector<double> sum(3 * size_t(maxLabel + 1), 0.0);
+    auto P = [&](size_t f, int k) { return &m.pos[3 * size_t(m.idx[3 * f + k])]; };
+    for (size_t f = 0; f < label.size(); ++f) {
+        if (label[f] < 0) continue;
+        const float *a = P(f, 0), *b = P(f, 1), *c = P(f, 2);
+        const double e1[3] = {double(b[0]) - a[0], double(b[1]) - a[1], double(b[2]) - a[2]};
+        const double e2[3] = {double(c[0]) - a[0], double(c[1]) - a[1], double(c[2]) - a[2]};
+        sum[3 * size_t(label[f])]     += e1[1] * e2[2] - e1[2] * e2[1];   // the cross product is the normal times twice the area
+        sum[3 * size_t(label[f]) + 1] += e1[2] * e2[0] - e1[0] * e2[2];
+        sum[3 * size_t(label[f]) + 2] += e1[0] * e2[1] - e1[1] * e2[0];
+    }
+    for (size_t p = 0; p * 3 < sum.size(); ++p) {
+        const double len = std::sqrt(sum[3 * p] * sum[3 * p] + sum[3 * p + 1] * sum[3 * p + 1] + sum[3 * p + 2] * sum[3 * p + 2]);
+        for (int k = 0; k < 3; ++k) sum[3 * p + k] = len > 1e-300 ? sum[3 * p + k] / len : 0.0;
+    }
+    std::vector<float> out(3 * label.size(), 0.0f);
+    for (size_t f = 0; f < label.size(); ++f)
+        if (label[f] >= 0)
+            for (int k = 0; k < 3; ++k) out[3 * f + k] = float(sum[3 * size_t(label[f]) + k]);
+    return out;
+}
+
+void MeshRenderer::setPatchNormals(const std::vector<float>& n)
+{
+    const size_t faces = n.size() / 3;
+    std::vector<unsigned char> bytes(faces * 4);
+    for (size_t f = 0; f < faces; ++f) {
+        for (int k = 0; k < 3; ++k) bytes[4 * f + k] = (unsigned char)std::lround(std::max(0.0f, std::min(1.0f, n[3 * f + k] * 0.5f + 0.5f)) * 255.0f);
+        bytes[4 * f + 3] = 255;
+    }
+    if (bytes.empty()) bytes.assign(4, 0);
+    glBindBuffer(GL_TEXTURE_BUFFER, patchNormBuffer_);
+    glBufferData(GL_TEXTURE_BUFFER, GLsizeiptr(bytes.size()), bytes.data(), GL_STATIC_DRAW);
+    glBindTexture(GL_TEXTURE_BUFFER, patchNormTexture_);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, patchNormBuffer_);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
+    patchNormalCount_ = faces;
+    GL_CHECK();
+}
+
+void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float offset, float alpha, bool cullBackFaces) const
+{
+    if (!hasPatchNormals() || !indexCount_) return;
+    ghostShader_.use();
+    glUniformMatrix4fv(uGhostVP_, 1, GL_FALSE, vp);
+    glUniformMatrix4fv(uGhostView_, 1, GL_FALSE, view);
+    glUniform1f(uGhostOffset_, offset);
+    glUniform1f(uGhostAlpha_, alpha);
+    glUniform1f(uGhostUseColors_, useFaceColors_ ? 1.0f : 0.0f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, colorTexture_);
+    glUniform1i(uGhostColors_, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, patchNormTexture_);
+    glUniform1i(uGhostNormals_, 1);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);   // the translucent shells do not hide each other or what is behind them
+    if (cullBackFaces) { glEnable(GL_CULL_FACE); glCullFace(GL_BACK); }
+    glBindVertexArray(vao_);
+    glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    glDisable(GL_CULL_FACE);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    GL_CHECK();
+}
+
 void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe, float checkerCells,
                         bool useTexture, bool cullBackFaces) const
 {
@@ -550,6 +702,10 @@ void MeshRenderer::destroy()
     if (colorBuffer_) { glDeleteBuffers(1, &colorBuffer_); colorBuffer_ = 0; }
     if (colorTexture_) { glDeleteTextures(1, &colorTexture_); colorTexture_ = 0; }
     if (texture_) { glDeleteTextures(1, &texture_); texture_ = 0; }
+    if (patchNormBuffer_) { glDeleteBuffers(1, &patchNormBuffer_); patchNormBuffer_ = 0; }
+    if (patchNormTexture_) { glDeleteTextures(1, &patchNormTexture_); patchNormTexture_ = 0; }
+    patchNormalCount_ = 0;
+    ghostShader_.destroy();
     shader_.destroy();
     wireShader_.destroy();
     faceCount_ = vertexCount_ = 0;

@@ -18,7 +18,7 @@ GLuint compileStage(GLenum type, const char* src, std::string& log)
         glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &len);
         std::vector<char> buf(static_cast<size_t>(len > 1 ? len : 1));
         glGetShaderInfoLog(sh, len, nullptr, buf.data());
-        log += (type == GL_VERTEX_SHADER ? "[vertex] " : "[fragment] ");
+        log += (type == GL_VERTEX_SHADER ? "[vertex] " : type == GL_GEOMETRY_SHADER ? "[geometry] " : "[fragment] ");
         log += buf.data();
         glDeleteShader(sh);
         return 0;
@@ -42,16 +42,18 @@ ShaderProgram& ShaderProgram::operator=(ShaderProgram&& other) noexcept
     return *this;
 }
 
-bool ShaderProgram::build(const char* vertexSrc, const char* fragmentSrc, std::string* errorLog)
+bool ShaderProgram::build(const char* vertexSrc, const char* fragmentSrc, std::string* errorLog, const char* geometrySrc)
 {
     destroy();
     std::string log;
 
     GLuint vs = compileStage(GL_VERTEX_SHADER, vertexSrc, log);
     GLuint fs = compileStage(GL_FRAGMENT_SHADER, fragmentSrc, log);
-    if (!vs || !fs) {
+    GLuint gs = geometrySrc ? compileStage(GL_GEOMETRY_SHADER, geometrySrc, log) : 0;
+    if (!vs || !fs || (geometrySrc && !gs)) {
         if (vs) glDeleteShader(vs);
         if (fs) glDeleteShader(fs);
+        if (gs) glDeleteShader(gs);
         if (errorLog) *errorLog = log;
         return false;
     }
@@ -59,9 +61,11 @@ bool ShaderProgram::build(const char* vertexSrc, const char* fragmentSrc, std::s
     GLuint prog = glCreateProgram();
     glAttachShader(prog, vs);
     glAttachShader(prog, fs);
+    if (gs) glAttachShader(prog, gs);
     glLinkProgram(prog);
     glDeleteShader(vs);  // flagged for deletion, freed together with the program
     glDeleteShader(fs);
+    if (gs) glDeleteShader(gs);
 
     GLint ok = GL_FALSE;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);

@@ -103,6 +103,9 @@ bool App::init(int width, int height, const char* title)
     rotate_ = false;
     if (const char* d = std::getenv("VSA_NORMAL_ITER")) normalSmoothing_.iterations = std::atoi(d);   // testing hooks
     if (const char* d = std::getenv("VSA_NORMAL_SIGMA")) normalSmoothing_.sigmaDegrees = std::atof(d);
+    if (std::getenv("VSA_PRESENTATION")) presentation_ = true;   // testing hook
+    if (const char* po = std::getenv("VSA_PRESENT_OFFSET")) presentOffset_ = float(std::atof(po));
+    if (const char* pa = std::getenv("VSA_PRESENT_ALPHA")) presentAlpha_ = float(std::atof(pa));
     const char* envMesh = std::getenv("VSA_MESH");   // testing hooks: VSA_MESH, VSA_K, VSA_AUTO_ATLAS
     openMesh(envMesh ? envMesh : "data/cube.obj");   // default file; on failure only a status message
     if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
@@ -527,6 +530,31 @@ void weightColor(float w, float out[3])
 void App::uploadMesh()
 {
     if (hugeShown_) return;   // the 3D view belongs to the huge result until another mesh is opened
+    if (!presentation_) { uploadMeshImpl(); return; }
+    // presentation: the patches in colors whatever mode is selected
+    const int saved = colorMode_;
+    colorMode_ = (patchesValid_ && patches_.faceToPatch.size() == mesh_.n_faces()) ? 4 : 2;
+    uploadMeshImpl();
+    colorMode_ = saved;
+    updatePresentationNormals();
+}
+
+void App::updatePresentationNormals()
+{
+    if (hugeShown_) {
+        if (hugeJob_ && hugeJob_->done && hugeJob_->error.empty())
+            meshRenderer_.setPatchNormals(patchNormals(hugeJob_->result.patchOfFace, hugeJob_->mesh));
+        return;
+    }
+    const size_t nF = mesh_.n_faces();
+    if (patchesValid_ && patches_.faceToPatch.size() == nF)
+        meshRenderer_.setPatchNormals(patchNormals(patches_.faceToPatch, faceData_.area, faceData_.normal));
+    else if (vsa_.label.size() == nF)
+        meshRenderer_.setPatchNormals(patchNormals(vsa_.label, faceData_.area, faceData_.normal));
+}
+
+void App::uploadMeshImpl()
+{
     std::vector<float> colors;
     const size_t nF = mesh_.n_faces();
     if (colorMode_ == 1) {
@@ -1999,7 +2027,7 @@ void App::setHugeColors()
     if (!hugeJob_ || !hugeJob_->done) return;
     const FlatResult& r = hugeJob_->result;
     std::vector<unsigned char> rgba;
-    if (hugeView_ == 0) {
+    if (hugeView_ == 0 || presentation_) {
         rgba.assign(r.patchOfFace.size() * 4, 255);
         // a color per patch from the golden ratio hue walk
         std::vector<unsigned char> palette(r.patches.size() * 3);
@@ -2024,6 +2052,7 @@ void App::setHugeColors()
         }
     }
     meshRenderer_.setFaceColorsRgba(rgba);   // empty = gray
+    if (presentation_) updatePresentationNormals();
 }
 
 void App::showHugeResult()
@@ -2987,6 +3016,14 @@ void App::drawUI()
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::Separator();
         ui::Checkbox("Wireframe", &wireframe_);
+        if (ui::Checkbox("Presentation", &presentation_)) {
+            if (presentation_ && hugeShown_) hugeView_ = 0;   // the patches in colors
+            if (hugeShown_) setHugeColors(); else uploadMesh();
+        }
+        if (presentation_) {
+            ui::SliderFloat("Patch offset", &presentOffset_, 0.0f, 0.3f, "%.3f");
+            ui::SliderFloat("Patch opacity", &presentAlpha_, 0.05f, 1.0f, "%.2f");
+        }
         ui::Checkbox("Cull back faces (faster on scans)", &cullBackFaces_);
         {
             static const char* kAA[] = {"Off", "2x", "4x", "8x"};
@@ -3087,8 +3124,9 @@ void App::renderScene(int fbWidth, int fbHeight)
             }
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
-        meshRenderer_.draw(vp, v, wireframe_, hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
+        meshRenderer_.draw(vp, v, wireframe_ && !presentation_, hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
                            hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
+        if (presentation_) meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;
 

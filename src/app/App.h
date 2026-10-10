@@ -229,6 +229,11 @@ private:
     bool             hugeOpenRequested_ = false, hugeSaveRequested_ = false;
     bool             loadBadRequested_ = false;
     bool             hugeFromLoaded_ = false;     // the shown result comes from the loaded TriMesh, not from a file
+    // Presentation: the patches in colors, then the same patches translucent and moved along their normals
+    bool             presentation_ = false;
+    float            presentOffset_ = 0.06f, presentAlpha_ = 0.4f;
+    void             updatePresentationNormals();   // the normals of the patches for the second pass
+    void             uploadMeshImpl();
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_
     int              hugeCheckerSquares_ = 40;    // size of a checker square: 1 / this of the model
     int              hugeView_ = 0;               // 0 patches, 1 uv checker, 2 plain

@@ -17,7 +17,8 @@ public:
     ShaderProgram& operator=(ShaderProgram&& other) noexcept;
 
     // Compiles and links the program. On failure returns false and writes the log to errorLog.
-    bool build(const char* vertexSrc, const char* fragmentSrc, std::string* errorLog = nullptr);
+    // geometrySrc: optional geometry shader (GL 3.2+).
+    bool build(const char* vertexSrc, const char* fragmentSrc, std::string* errorLog = nullptr, const char* geometrySrc = nullptr);
 
     void use() const;
     GLint uniform(const char* name) const;
