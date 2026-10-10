@@ -539,7 +539,7 @@ void App::uploadMesh()
     const int saved = colorMode_;
     colorMode_ = (patchesValid_ && patches_.faceToPatch.size() == mesh_.n_faces()) ? 4 : 2;
     uvOverride_ = -1;
-    if (presentFirst_ == 1 || presentSecond_ == 1) {
+    if (presentPass(0) == 1 || presentPass(1) == 1) {
         if (atlasValid_ && bakedVersion_ == atlasVersion_) uvOverride_ = 11;                       // the new atlas with the baked texture
         else if (hasSourceTexture_ && objExtras_.cornerUV.size() == mesh_.n_faces() * 6) uvOverride_ = 10;   // the file's own texture
     }
@@ -547,6 +547,14 @@ void App::uploadMesh()
     uvOverride_ = -1;
     colorMode_ = saved;
     updatePresentationNormals();
+}
+
+int App::presentPass(int which) const
+{
+    if (!presentAuto_) return which == 0 ? presentFirst_ : presentSecond_;
+    const bool tex = presentTextureReady();
+    if (which == 0) return tex ? 0 : 2;   // colors under the texture; a mesh without texture: plain shading under the colors
+    return tex ? 1 : 0;
 }
 
 bool App::presentTextureReady() const
@@ -3040,11 +3048,21 @@ void App::drawUI()
         if (presentation_) {
             ui::SliderFloat("Patch offset", &presentOffset_, 0.0f, 0.3f, "%.3f");
             ui::SliderFloat("Patch opacity", &presentAlpha_, 0.05f, 1.0f, "%.2f");
-            static const char* kPass[] = {"Patch colors", "Texture"};
-            if (ui::Combo("First pass", &presentFirst_, kPass, 2) | ui::Combo("Second pass", &presentSecond_, kPass, 2)) {
+            static const char* kPass[] = {"Patch colors", "Texture", "Shading"};
+            int first = presentPass(0), second = presentPass(1);
+            const bool c1 = ui::Combo("First pass", &first, kPass, 3), c2 = ui::Combo("Second pass", &second, kPass, 3);
+            if (c1 || c2) {
+                presentAuto_ = false;
+                presentFirst_ = first;
+                presentSecond_ = second;
                 if (!hugeShown_) uploadMesh();
             }
-            if ((presentFirst_ == 1 || presentSecond_ == 1) && !presentTextureReady())
+            if (presentAuto_) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("Chosen by the mesh: with a texture colors + texture, without one shading + colors.");
+                ImGui::PopStyleColor();
+            }
+            if ((presentPass(0) == 1 || presentPass(1) == 1) && !presentTextureReady())
                 ImGui::TextDisabled("No texture to show: load a textured mesh or bake the atlas texture.");
         }
         ui::Checkbox("Cull back faces (faster on scans)", &cullBackFaces_);
@@ -3150,7 +3168,8 @@ void App::renderScene(int fbWidth, int fbHeight)
         const bool texReady = presentation_ && presentTextureReady();
         auto drawFirst = [&] {
             meshRenderer_.draw(vp, v, wireframe_ && !presentation_, presentation_ ? 0.0f : hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
-                               presentation_ ? (texReady && presentFirst_ == 1) : hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
+                               presentation_ ? (texReady && presentPass(0) == 1) : hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_,
+                               presentation_ && presentPass(0) == 2);
         };
         if (!presentation_) {
             drawFirst();
@@ -3160,7 +3179,7 @@ void App::renderScene(int fbWidth, int fbHeight)
             const bool skipFirst = presentOffset_ <= 1e-6f;
             const bool secondFirst = presentAlpha_ >= 0.999f;
             if (!skipFirst && !secondFirst) drawFirst();
-            meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_, texReady && presentSecond_ == 1);
+            meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_, texReady && presentPass(1) == 1, presentPass(1) == 2);
             if (!skipFirst && secondFirst) drawFirst();
         }
         glEndQuery(GL_TIME_ELAPSED);

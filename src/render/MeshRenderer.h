@@ -51,8 +51,9 @@ public:
     // wireframe is a second pass with polygon mode LINE (one pixel wide: wide lines do not exist in GL 4.1 core).
     // cullBackFaces: counter-clockwise faces only. On a closed or scanned shell that skips about half of the
     // triangles before rasterization; on an open surface seen from behind it shows holes.
+    // plainShading: the default gray instead of the face colors (a lit, uncolored mesh)
     void draw(const float viewProj[16], const float view[16], bool wireframe, float checkerCells = 0.0f,
-              bool useTexture = false, bool cullBackFaces = false) const;
+              bool useTexture = false, bool cullBackFaces = false, bool plainShading = false) const;
 
     // "Presentation": the patches are drawn once as usual (draw(), with the patch colors), then a second time translucent and moved
     // along the normal of their patch (drawGhosts). The normal of the patch of every face (3 floats per face, e.g. from
@@ -61,7 +62,7 @@ public:
     bool hasPatchNormals() const { return patchNormalCount_ == faceCount_ && faceCount_ > 0; }
     // offset in model units (the models are normalized to a unit box), alpha 0..1
     void drawGhosts(const float viewProj[16], const float view[16], float offset, float alpha, bool cullBackFaces = false,
-                    bool useTexture = false) const;
+                    bool useTexture = false, bool plainShading = false) const;
 
     bool hasMesh() const { return faceCount_ > 0; }
     size_t faceCount() const { return faceCount_; }

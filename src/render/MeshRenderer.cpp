@@ -509,7 +509,8 @@ void MeshRenderer::setPatchNormals(const std::vector<float>& n)
     GL_CHECK();
 }
 
-void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float offset, float alpha, bool cullBackFaces, bool useTexture) const
+void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float offset, float alpha, bool cullBackFaces, bool useTexture,
+                              bool plainShading) const
 {
     if (!hasPatchNormals() || !indexCount_) return;
     ghostShader_.use();
@@ -517,7 +518,7 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
     glUniformMatrix4fv(uGhostView_, 1, GL_FALSE, view);
     glUniform1f(uGhostOffset_, offset);
     glUniform1f(uGhostAlpha_, alpha);
-    glUniform1f(uGhostUseColors_, useFaceColors_ ? 1.0f : 0.0f);
+    glUniform1f(uGhostUseColors_, (useFaceColors_ && !plainShading) ? 1.0f : 0.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, colorTexture_);
     glUniform1i(uGhostColors_, 0);
@@ -557,14 +558,14 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
 }
 
 void MeshRenderer::draw(const float vp[16], const float view[16], bool wireframe, float checkerCells,
-                        bool useTexture, bool cullBackFaces) const
+                        bool useTexture, bool cullBackFaces, bool plainShading) const
 {
     if (!faceCount_ || !indexCount_) return;
     shader_.use();
     glUniformMatrix4fv(uVP_, 1, GL_FALSE, vp);
     glUniformMatrix4fv(uView_, 1, GL_FALSE, view);
     glUniform1f(uChecker_, checkerCells);
-    glUniform1f(uUseFaceColors_, useFaceColors_ ? 1.0f : 0.0f);
+    glUniform1f(uUseFaceColors_, (useFaceColors_ && !plainShading) ? 1.0f : 0.0f);
     glUniform1f(uUseTexture_, (useTexture && texture_) ? 1.0f : 0.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, colorTexture_);
