@@ -16,8 +16,13 @@ for mip mapping (Horizon pack, Lévy et al. 2002) and bakes the texture of the s
 1. Download `huge-atlas-<version>-arm64.dmg` from the [Releases](https://github.com/vladimir-vasilyev/huge-atlas/releases) page
    (Apple Silicon Macs, macOS 11 or newer).
 2. Open the disk image and drag **huge-atlas** to **Applications**.
-3. The first start: the app is not notarized by Apple, so macOS asks for a confirmation. Right-click (or Ctrl-click) the app,
-   choose **Open**, then **Open** again. Or, once, in Terminal: `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`.
+3. The first start: the app is not notarized by Apple (that needs a paid Apple Developer ID), so macOS blocks it with the message
+   *"Apple could not verify "huge-atlas" is free of malware..."*. Allow it once:
+   - **macOS 15 Sequoia and newer (including macOS 26):** press **Done** in that window, open **System Settings > Privacy & Security**,
+     scroll down to the line *"huge-atlas" was blocked to protect your Mac* and press **Open Anyway**, then confirm with your password.
+   - **Any macOS, one command in Terminal** (after the app is in Applications):
+     `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`
+   - (macOS 14 and older: right-click the app, **Open**, **Open**.)
 4. Open a mesh (OBJ or PLY, **File > Open**), press **Make atlas** (or **Make atlas (huge)** for scans of millions of faces) and save
    the result with **File > Save**: OBJ or PLY with the new UV and a texture baked into the new atlas.
 
