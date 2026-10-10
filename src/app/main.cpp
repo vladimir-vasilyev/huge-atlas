@@ -5,7 +5,7 @@
 int main()
 {
     App app;
-    if (!app.init(1600, 1000, "VSA + LinABF")) {
+    if (!app.init(1600, 1000, "huge-atlas")) {
         std::fprintf(stderr, "Initialization failed\n");
         app.shutdown();
         return 1;

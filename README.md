@@ -11,6 +11,21 @@ A macOS tool (C++17, OpenGL 4.1 Core, Dear ImGui) that segments a triangle mesh 
 **Linear Angle Based Parameterization** (Zayer, Lévy, Seidel, SGP 2007), packs the charts into one UV atlas that is safe
 for mip mapping (Horizon pack, Lévy et al. 2002) and bakes the texture of the source mesh into the new atlas.
 
+## Install (no programming needed)
+
+1. Download `huge-atlas-<version>-arm64.dmg` from the [Releases](https://github.com/vladimir-vasilyev/huge-atlas/releases) page
+   (Apple Silicon Macs, macOS 11 or newer).
+2. Open the disk image and drag **huge-atlas** to **Applications**.
+3. The first start: the app is not notarized by Apple, so macOS asks for a confirmation. Right-click (or Ctrl-click) the app,
+   choose **Open**, then **Open** again. Or, once, in Terminal: `xattr -dr com.apple.quarantine /Applications/huge-atlas.app`.
+4. Open a mesh (OBJ or PLY, **File > Open**), press **Make atlas** (or **Make atlas (huge)** for scans of millions of faces) and save
+   the result with **File > Save**: OBJ or PLY with the new UV and a texture baked into the new atlas.
+
+The settings of the windows are kept in `~/Library/Application Support/huge-atlas`; files that the Debug menu writes go to
+`~/Documents/huge-atlas/DebugOut`.
+
+To make the disk image yourself: `./scripts/make_dmg.sh` (builds, makes `dist/huge-atlas.app` and the `.dmg`).
+
 ## Two modes
 
 - **Make atlas** — the mesh is loaded as a half-edge mesh (OpenMesh); VSA, patch extraction, repair ladder

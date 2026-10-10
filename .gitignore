@@ -16,3 +16,6 @@ CLAUDE.md
 docs/papers/
 # raw macOS screenshots (the README uses docs/screenshot.jpg)
 Screenshot *.png
+
+# packaging output
+dist/

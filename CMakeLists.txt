@@ -265,6 +265,7 @@ set(APP_SOURCES
     src/app/Preset.cpp
     src/app/UiTips.h
     src/app/UiTips.cpp
+    src/app/Paths.cpp
     src/render/GL.h
     src/render/GL.cpp
     src/render/Shader.h

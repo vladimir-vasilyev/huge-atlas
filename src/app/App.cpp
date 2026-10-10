@@ -5,6 +5,7 @@
 #include "param/FlatAdjacency.h"
 #include "param/MeshWriters.h"
 #include "render/ImageFile.h"
+#include "app/Paths.h"
 #include "app/Preset.h"
 #include "app/UiTips.h"
 
@@ -76,6 +77,9 @@ bool App::init(int width, int height, const char* title)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    static std::string iniPath;   // ImGui keeps the pointer: a bundle cannot write imgui.ini into "/"
+    if (paths::runningFromBundle()) { iniPath = paths::userDataDir() + "/imgui.ini"; io.IniFilename = iniPath.c_str(); }
+    lastDir_ = paths::startDir();
 #ifdef IMGUI_HAS_DOCK
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif
@@ -107,7 +111,7 @@ bool App::init(int width, int height, const char* title)
     if (const char* po = std::getenv("VSA_PRESENT_OFFSET")) presentOffset_ = float(std::atof(po));
     if (const char* pa = std::getenv("VSA_PRESENT_ALPHA")) presentAlpha_ = float(std::atof(pa));
     const char* envMesh = std::getenv("VSA_MESH");   // testing hooks: VSA_MESH, VSA_K, VSA_AUTO_ATLAS
-    openMesh(envMesh ? envMesh : "data/cube.obj");   // default file; on failure only a status message
+    openMesh(envMesh ? envMesh : paths::defaultMesh());   // default file; on failure only a status message
     if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
     if (const char* envW = std::getenv("VSA_WIREFRAME")) wireframe_ = std::atoi(envW) != 0;
     if (const char* envM = std::getenv("VSA_MSAA")) msaaSamples_ = std::atoi(envM);
@@ -984,7 +988,7 @@ void App::loadBadPatch(const std::string& path)
 void App::saveBadPatches()
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::path("DebugOut") / "BadPatch";
+    const fs::path dir = fs::path(paths::debugOutDir()) / "BadPatch";
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) { status_ = "cannot create " + dir.string() + ": " + ec.message(); return; }
@@ -1433,7 +1437,7 @@ void App::drawBadPatchDialog()
     if (loadBadRequested_) {
         loadBadRequested_ = false;
         IGFD::FileDialogConfig cfg;
-        cfg.path = std::filesystem::exists("DebugOut/BadPatch") ? std::filesystem::absolute("DebugOut/BadPatch").string() : lastDir_;
+        cfg.path = std::filesystem::exists(std::filesystem::path(paths::debugOutDir()) / "BadPatch") ? std::filesystem::absolute(std::filesystem::path(paths::debugOutDir()) / "BadPatch").string() : lastDir_;
         cfg.countSelectionMax = 1;
         cfg.flags = ImGuiFileDialogFlags_Modal;
         ImGuiFileDialog::Instance()->OpenDialog(kBadKey, "Load a bad patch (OBJ; the .preset next to it is applied)", ".obj", cfg);
