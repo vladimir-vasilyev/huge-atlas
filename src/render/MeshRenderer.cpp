@@ -93,8 +93,10 @@ uniform sampler2D uTex;
 out vec4 fragColor;
 void main() {
     vec3 base = uUseFaceColors > 0.5 ? texelFetch(uFaceColors, gl_PrimitiveID).rgb : vec3(0.72, 0.74, 0.78);
-    vec3 tex = texture(uTex, vUV).rgb;      // uniform control flow: the derivatives stay defined
-    if (uUseTexture > 0.5 && vUV.x >= 0.0) base = tex;
+    if (uUseTexture > 0.5) {                // a uniform condition: the derivatives stay defined; patch colors never touch the texture
+        vec3 tex = texture(uTex, vUV).rgb;
+        if (vUV.x >= 0.0) base = tex;
+    }
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     float facing = abs(n.z);
     // glassy look: lighter and more opaque towards the silhouette
@@ -522,10 +524,13 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, patchNormTexture_);
     glUniform1i(uGhostNormals_, 1);
-    glUniform1f(uGhostUseTex_, (useTexture && texture_) ? 1.0f : 0.0f);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, texture_);
-    glUniform1i(uGhostTex_, 2);
+    const bool sampleTexture = useTexture && texture_;
+    glUniform1f(uGhostUseTex_, sampleTexture ? 1.0f : 0.0f);
+    glUniform1i(uGhostTex_, 2);   // always: a sampler2D left at unit 0 would clash with the texture buffer there
+    if (sampleTexture) {          // with the patch colors the texture is not even bound
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, texture_);
+    }
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -537,8 +542,10 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
     glDisable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (sampleTexture) {
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, 0);
     glActiveTexture(GL_TEXTURE0);
