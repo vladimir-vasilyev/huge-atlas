@@ -60,7 +60,8 @@ public:
     void setPatchNormals(const std::vector<float>& normalsPerFace);
     bool hasPatchNormals() const { return patchNormalCount_ == faceCount_ && faceCount_ > 0; }
     // offset in model units (the models are normalized to a unit box), alpha 0..1
-    void drawGhosts(const float viewProj[16], const float view[16], float offset, float alpha, bool cullBackFaces = false) const;
+    void drawGhosts(const float viewProj[16], const float view[16], float offset, float alpha, bool cullBackFaces = false,
+                    bool useTexture = false) const;
 
     bool hasMesh() const { return faceCount_ > 0; }
     size_t faceCount() const { return faceCount_; }
@@ -89,7 +90,7 @@ private:
     ShaderProgram shader_, wireShader_, pickShader_, lineShader_, ghostShader_;
     GLuint patchNormBuffer_ = 0, patchNormTexture_ = 0;
     size_t patchNormalCount_ = 0;
-    GLint uGhostVP_ = -1, uGhostView_ = -1, uGhostOffset_ = -1, uGhostAlpha_ = -1, uGhostColors_ = -1, uGhostNormals_ = -1, uGhostUseColors_ = -1;
+    GLint uGhostVP_ = -1, uGhostView_ = -1, uGhostOffset_ = -1, uGhostAlpha_ = -1, uGhostUseTex_ = -1, uGhostTex_ = -1, uGhostColors_ = -1, uGhostNormals_ = -1, uGhostUseColors_ = -1;
     GLuint lineVao_ = 0, lineVbo_ = 0;
     GLsizei lineVertexCount_ = 0;
     GLint uLineVP_ = -1, uLineViewport_ = -1, uLineWidth_ = -1;

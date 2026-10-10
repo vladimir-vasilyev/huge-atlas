@@ -232,6 +232,9 @@ private:
     // Presentation: the patches in colors, then the same patches translucent and moved along their normals
     bool             presentation_ = false;
     float            presentOffset_ = 0.06f, presentAlpha_ = 0.4f;
+    int              presentFirst_ = 0, presentSecond_ = 1;   // what each pass shows: 0 patch colors, 1 texture
+    int              uvOverride_ = -1;                        // 10 / 11: the geometry carries the uv of the source / the atlas whatever the color mode
+    bool             presentTextureReady() const;             // is there a texture to show (and its uv in the geometry)
     void             updatePresentationNormals();   // the normals of the patches for the second pass
     void             uploadMeshImpl();
     bool             hugeShown_ = false;          // the 3D view shows the huge result, not mesh_

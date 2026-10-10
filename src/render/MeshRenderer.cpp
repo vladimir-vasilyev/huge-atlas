@@ -51,25 +51,30 @@ void main() {
 
 const char* kGhostVS = R"(#version 410 core
 layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUV;
 out vec3 vPos;
-void main() { vPos = aPos; gl_Position = vec4(aPos, 1.0); }
+out vec2 vUVg;
+void main() { vPos = aPos; vUVg = aUV; gl_Position = vec4(aPos, 1.0); }
 )";
 
 const char* kGhostGS = R"(#version 410 core
 layout(triangles) in;
 layout(triangle_strip, max_vertices = 3) out;
 in vec3 vPos[];
+in vec2 vUVg[];
 uniform mat4 uVP;
 uniform mat4 uView;
 uniform float uOffset;
 uniform samplerBuffer uPatchNormals;   // rgba8 per face: the normal of the face's patch, (n * 0.5 + 0.5)
 out vec3 vViewPos;
+out vec2 vUV;
 void main() {
     vec3 n = texelFetch(uPatchNormals, gl_PrimitiveIDIn).xyz * 2.0 - 1.0;
     for (int i = 0; i < 3; ++i) {
         vec3 p = vPos[i] + n * uOffset;
         vViewPos = (uView * vec4(p, 1.0)).xyz;
         gl_Position = uVP * vec4(p, 1.0);
+        vUV = vUVg[i];
         gl_PrimitiveID = gl_PrimitiveIDIn;
         EmitVertex();
     }
@@ -79,12 +84,17 @@ void main() {
 
 const char* kGhostFS = R"(#version 410 core
 in vec3 vViewPos;
+in vec2 vUV;
 uniform samplerBuffer uFaceColors;
 uniform float uUseFaceColors;
 uniform float uAlpha;
+uniform float uUseTexture;     // 1: the texture where the uv is valid (u >= 0), else the patch color
+uniform sampler2D uTex;
 out vec4 fragColor;
 void main() {
     vec3 base = uUseFaceColors > 0.5 ? texelFetch(uFaceColors, gl_PrimitiveID).rgb : vec3(0.72, 0.74, 0.78);
+    vec3 tex = texture(uTex, vUV).rgb;      // uniform control flow: the derivatives stay defined
+    if (uUseTexture > 0.5 && vUV.x >= 0.0) base = tex;
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     float facing = abs(n.z);
     // glassy look: lighter and more opaque towards the silhouette
@@ -212,6 +222,8 @@ bool MeshRenderer::init(std::string* errorLog)
     uGhostColors_    = ghostShader_.uniform("uFaceColors");
     uGhostNormals_   = ghostShader_.uniform("uPatchNormals");
     uGhostUseColors_ = ghostShader_.uniform("uUseFaceColors");
+    uGhostUseTex_    = ghostShader_.uniform("uUseTexture");
+    uGhostTex_       = ghostShader_.uniform("uTex");
     glGenBuffers(1, &patchNormBuffer_);
     glGenTextures(1, &patchNormTexture_);
     if (!wireShader_.build(kWireVS, kWireFS, errorLog)) return false;
@@ -495,7 +507,7 @@ void MeshRenderer::setPatchNormals(const std::vector<float>& n)
     GL_CHECK();
 }
 
-void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float offset, float alpha, bool cullBackFaces) const
+void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float offset, float alpha, bool cullBackFaces, bool useTexture) const
 {
     if (!hasPatchNormals() || !indexCount_) return;
     ghostShader_.use();
@@ -510,6 +522,10 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, patchNormTexture_);
     glUniform1i(uGhostNormals_, 1);
+    glUniform1f(uGhostUseTex_, (useTexture && texture_) ? 1.0f : 0.0f);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, texture_);
+    glUniform1i(uGhostTex_, 2);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -521,6 +537,8 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
     glDisable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, 0);
     glActiveTexture(GL_TEXTURE0);

@@ -534,9 +534,21 @@ void App::uploadMesh()
     // presentation: the patches in colors whatever mode is selected
     const int saved = colorMode_;
     colorMode_ = (patchesValid_ && patches_.faceToPatch.size() == mesh_.n_faces()) ? 4 : 2;
+    uvOverride_ = -1;
+    if (presentFirst_ == 1 || presentSecond_ == 1) {
+        if (atlasValid_ && bakedVersion_ == atlasVersion_) uvOverride_ = 11;                       // the new atlas with the baked texture
+        else if (hasSourceTexture_ && objExtras_.cornerUV.size() == mesh_.n_faces() * 6) uvOverride_ = 10;   // the file's own texture
+    }
     uploadMeshImpl();
+    uvOverride_ = -1;
     colorMode_ = saved;
     updatePresentationNormals();
+}
+
+bool App::presentTextureReady() const
+{
+    if (hugeShown_) return hugeJob_ && hugeJob_->done && !hugeJob_->baked.empty();
+    return (atlasValid_ && bakedVersion_ == atlasVersion_) || (hasSourceTexture_ && objExtras_.cornerUV.size() == mesh_.n_faces() * 6);
 }
 
 void App::updatePresentationNormals()
@@ -613,17 +625,18 @@ void App::uploadMeshImpl()
     }
 
     std::vector<float> faceUV;
-    if (colorMode_ == 11 && bakedVersion_ == atlasVersion_ && bakedCornerUV_.size() == nF * 6) {
+    const int uvMode = uvOverride_ >= 0 ? uvOverride_ : colorMode_;   // presentation shows the texture next to the patch colors
+    if (uvMode == 11 && bakedVersion_ == atlasVersion_ && bakedCornerUV_.size() == nF * 6) {
         faceUV = bakedCornerUV_;   // the atlas uv; faces without a chart get u = -1 (no texture)
         for (size_t f = 0; f < nF; ++f)
             if (std::isnan(faceUV[f * 6])) for (int k = 0; k < 6; ++k) faceUV[f * 6 + k] = -1.0f;
         if (textureOwner_ != 2) { meshRenderer_.setTexture(bakedResolution_, bakedResolution_, bakedRgba_.data()); textureOwner_ = 2; }
     }
-    if (colorMode_ == 10 && hasSourceTexture_ && textureOwner_ != 1 && !sourcePixels_.empty()) {
+    if (uvMode == 10 && hasSourceTexture_ && textureOwner_ != 1 && !sourcePixels_.empty()) {
         meshRenderer_.setTexture(sourceW_, sourceH_, sourcePixels_.data());
         textureOwner_ = 1;
     }
-    if (colorMode_ == 10 && hasSourceTexture_ && objExtras_.cornerUV.size() == nF * 6) {
+    if (uvMode == 10 && hasSourceTexture_ && objExtras_.cornerUV.size() == nF * 6) {
         // the uv of the file; faces of other materials get u = -1 (no texture)
         faceUV = objExtras_.cornerUV;
         for (size_t f = 0; f < nF; ++f)
@@ -3023,6 +3036,12 @@ void App::drawUI()
         if (presentation_) {
             ui::SliderFloat("Patch offset", &presentOffset_, 0.0f, 0.3f, "%.3f");
             ui::SliderFloat("Patch opacity", &presentAlpha_, 0.05f, 1.0f, "%.2f");
+            static const char* kPass[] = {"Patch colors", "Texture"};
+            if (ui::Combo("First pass", &presentFirst_, kPass, 2) | ui::Combo("Second pass", &presentSecond_, kPass, 2)) {
+                if (!hugeShown_) uploadMesh();
+            }
+            if ((presentFirst_ == 1 || presentSecond_ == 1) && !presentTextureReady())
+                ImGui::TextDisabled("No texture to show: load a textured mesh or bake the atlas texture.");
         }
         ui::Checkbox("Cull back faces (faster on scans)", &cullBackFaces_);
         {
@@ -3124,9 +3143,10 @@ void App::renderScene(int fbWidth, int fbHeight)
             }
         }
         glBeginQuery(GL_TIME_ELAPSED, gpuQuery_[cur]);
-        meshRenderer_.draw(vp, v, wireframe_ && !presentation_, hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
-                           hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
-        if (presentation_) meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_);
+        const bool texReady = presentation_ && presentTextureReady();
+        meshRenderer_.draw(vp, v, wireframe_ && !presentation_, presentation_ ? 0.0f : hugeShown_ ? (hugeView_ == 1 ? hugeCheckerCells() : 0.0f) : (colorMode_ == 8 ? atlasCheckerCells(atlas_, checkerSquares_) : 0.0f),
+                           presentation_ ? (texReady && presentFirst_ == 1) : hugeShown_ ? hugeView_ == 3 : (colorMode_ == 10 || colorMode_ == 11), cullBackFaces_);
+        if (presentation_) meshRenderer_.drawGhosts(vp, v, presentOffset_, presentAlpha_, cullBackFaces_, texReady && presentSecond_ == 1);
         glEndQuery(GL_TIME_ELAPSED);
         ++gpuQueryFrame_;
 
