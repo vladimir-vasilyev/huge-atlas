@@ -216,6 +216,146 @@
 
 @end
 
+// ------------------------------------------------------------------------------------------------------------------ the UV view
+
+// The atlas as a picture: the square of the texture, the baked texture in it (or the charts filled with the color of their patch),
+// the border of every chart. The wheel zooms towards the cursor, a drag moves, a double click fits the square to the view.
+@interface UvView : NSView {
+    std::vector<UvChart> _charts;
+    CGImageRef _image;
+    double _zoom;
+    NSPoint _pan;
+    NSPoint _last;
+}
+- (void)setCharts:(std::vector<UvChart>)charts texture:(const unsigned char*)rgba side:(int)side;
+- (void)clear;
+@end
+
+@implementation UvView
+
+- (instancetype)initWithFrame:(NSRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        _zoom = 1.0;
+        self.accessibilityLabel = @"UV layout of the atlas";
+        self.accessibilityRole = NSAccessibilityGroupRole;
+    }
+    return self;
+}
+
+- (void)dealloc { if (_image) CGImageRelease(_image); }
+
+- (void)clear
+{
+    _charts.clear();
+    if (_image) { CGImageRelease(_image); _image = nullptr; }
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setCharts:(std::vector<UvChart>)charts texture:(const unsigned char*)rgba side:(int)side
+{
+    _charts = std::move(charts);
+    if (_image) { CGImageRelease(_image); _image = nullptr; }
+    if (rgba && side > 0) {
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        NSData* data = [NSData dataWithBytes:rgba length:size_t(side) * side * 4];   // a copy: the session may change
+        CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
+        _image = CGImageCreate(side, side, 8, 32, size_t(side) * 4, cs, kCGImageAlphaLast | kCGBitmapByteOrderDefault, provider, nullptr, true,
+                               kCGRenderingIntentDefault);
+        CGDataProviderRelease(provider);
+        CGColorSpaceRelease(cs);
+    }
+    _zoom = 1.0;
+    _pan = NSZeroPoint;
+    [self setNeedsDisplay:YES];
+}
+
+- (NSRect)square
+{
+    const double s = std::max(32.0, std::min(self.bounds.size.width, self.bounds.size.height) - 32.0) * _zoom;
+    return NSMakeRect(self.bounds.size.width / 2 - s / 2 + _pan.x, self.bounds.size.height / 2 - s / 2 + _pan.y, s, s);
+}
+
+- (void)drawRect:(NSRect)dirty
+{
+    [NSColor.underPageBackgroundColor setFill];   // the pane is gray, the square of the atlas stands out from it
+    NSRectFill(dirty);
+    const NSRect sq = [self square];
+    CGContextRef g = NSGraphicsContext.currentContext.CGContext;
+    CGContextSaveGState(g);
+    CGContextClipToRect(g, NSRectToCGRect(NSIntersectionRect(sq, self.bounds)));
+    [NSColor.controlBackgroundColor setFill];
+    NSRectFill(sq);
+    if (_image) {
+        CGContextSaveGState(g);   // the first row of the data is v = 0, the bottom of the square
+        CGContextTranslateCTM(g, sq.origin.x, sq.origin.y + sq.size.height);
+        CGContextScaleCTM(g, 1.0, -1.0);
+        CGContextDrawImage(g, CGRectMake(0, 0, sq.size.width, sq.size.height), _image);
+        CGContextRestoreGState(g);
+    }
+    for (const UvChart& c : _charts) {
+        float rgb[3];
+        AtlasSession::patchColor(c.patch, rgb);
+        auto pt = [&](unsigned v) { return CGPointMake(sq.origin.x + c.uv[2 * v] * sq.size.width, sq.origin.y + c.uv[2 * v + 1] * sq.size.height); };
+        CGMutablePathRef fill = CGPathCreateMutable();
+        for (size_t t = 0; t + 2 < c.triangles.size(); t += 3) {
+            CGPathMoveToPoint(fill, nullptr, pt(c.triangles[t]).x, pt(c.triangles[t]).y);
+            CGPathAddLineToPoint(fill, nullptr, pt(c.triangles[t + 1]).x, pt(c.triangles[t + 1]).y);
+            CGPathAddLineToPoint(fill, nullptr, pt(c.triangles[t + 2]).x, pt(c.triangles[t + 2]).y);
+            CGPathCloseSubpath(fill);
+        }
+        CGContextSetRGBFillColor(g, rgb[0], rgb[1], rgb[2], _image ? 0.10 : 0.55);
+        CGContextAddPath(g, fill);
+        CGContextFillPath(g);
+        CGPathRelease(fill);
+        CGContextSetRGBStrokeColor(g, rgb[0], rgb[1], rgb[2], 0.95);
+        CGContextSetLineWidth(g, 1.5);
+        for (const auto& loop : c.loops) {
+            if (loop.size() < 2) continue;
+            CGContextMoveToPoint(g, pt(loop[0]).x, pt(loop[0]).y);
+            for (size_t i = 1; i < loop.size(); ++i) CGContextAddLineToPoint(g, pt(loop[i]).x, pt(loop[i]).y);
+            CGContextClosePath(g);
+            CGContextStrokePath(g);
+        }
+    }
+    CGContextRestoreGState(g);
+    [[NSColor.labelColor colorWithAlphaComponent:0.35] setStroke];
+    NSFrameRect(sq);
+}
+
+- (BOOL)acceptsFirstResponder { return YES; }
+- (void)mouseDown:(NSEvent*)e
+{
+    if (e.clickCount == 2) { _zoom = 1.0; _pan = NSZeroPoint; [self setNeedsDisplay:YES]; return; }
+    _last = [self convertPoint:e.locationInWindow fromView:nil];
+}
+- (void)mouseDragged:(NSEvent*)e
+{
+    const NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    _pan.x += p.x - _last.x; _pan.y += p.y - _last.y;
+    _last = p;
+    [self setNeedsDisplay:YES];
+}
+- (void)zoom:(double)factor at:(NSPoint)p
+{
+    const double z = std::max(0.2, std::min(60.0, _zoom * factor));
+    const double k = z / _zoom;
+    const NSPoint c = NSMakePoint(self.bounds.size.width / 2, self.bounds.size.height / 2);   // keep the point under the cursor in place
+    _pan.x = (p.x - c.x) - ((p.x - c.x) - _pan.x) * k;
+    _pan.y = (p.y - c.y) - ((p.y - c.y) - _pan.y) * k;
+    _zoom = z;
+    [self setNeedsDisplay:YES];
+}
+- (void)scrollWheel:(NSEvent*)e
+{
+    const double d = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY * 0.01 : e.scrollingDeltaY * 0.1;
+    [self zoom:std::pow(1.0 + d, 1.0) at:[self convertPoint:e.locationInWindow fromView:nil]];
+}
+- (void)magnifyWithEvent:(NSEvent*)e { [self zoom:1.0 + e.magnification at:[self convertPoint:e.locationInWindow fromView:nil]]; }
+
+@end
+
 // ------------------------------------------------------------------------------------------------------------------ the application
 
 // The document of the sidebar's scroll view: the content starts at the top.
@@ -237,6 +377,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 @interface AppController : NSObject <NSApplicationDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuItemValidation, NSWindowDelegate> {
     NSWindow* _window;
     NSSplitViewController* _split;
+    NSSplitViewItem* _uvItem;
+    UvView* _uv;
     SceneView* _scene;
     NSSegmentedControl* _viewSwitch;
 
@@ -481,6 +623,15 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     sideItem.canCollapse = YES;
     [_split addSplitViewItem:sideItem];
     [_split addSplitViewItem:[NSSplitViewItem splitViewItemWithViewController:sceneVC]];
+    // the atlas on the trailing side: hidden until there is one, opened and closed by the toolbar and by View > Show UV Layout
+    _uv = [[UvView alloc] initWithFrame:NSMakeRect(0, 0, 360, 600)];
+    NSViewController* uvVC = [[NSViewController alloc] init];
+    uvVC.view = _uv;
+    _uvItem = [NSSplitViewItem splitViewItemWithViewController:uvVC];
+    _uvItem.minimumThickness = 280;
+    _uvItem.canCollapse = YES;
+    _uvItem.collapsed = YES;
+    [_split addSplitViewItem:_uvItem];
 
     _window = [NSWindow windowWithContentViewController:_split];
     _window.styleMask |= NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView;
@@ -515,7 +666,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 - (NSArray<NSToolbarItemIdentifier>*)toolbarDefaultItemIdentifiers:(NSToolbar*)t
 {
     return @[NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, @"open", @"makeAtlas",
-             NSToolbarFlexibleSpaceItemIdentifier, @"views", @"save"];
+             NSToolbarFlexibleSpaceItemIdentifier, @"views", @"save", @"uv"];
 }
 - (NSArray<NSToolbarItemIdentifier>*)toolbarAllowedItemIdentifiers:(NSToolbar*)t { return [self toolbarDefaultItemIdentifiers:t]; }
 
@@ -529,6 +680,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     };
     if ([ident isEqual:@"open"]) set(@"Open", @"folder", @selector(openMesh:), @"Open a mesh (⌘O)");
     else if ([ident isEqual:@"makeAtlas"]) set(@"Make Atlas", @"wand.and.stars", @selector(makeAtlas:), @"Make the atlas (⌘R)");
+    else if ([ident isEqual:@"uv"]) set(@"UV Layout", @"square.grid.2x2", @selector(toggleUVLayout:), @"Show or hide the atlas (⌥⌘U)");
     else if ([ident isEqual:@"save"]) set(@"Save", @"square.and.arrow.down", @selector(saveAs:), @"Save the mesh with the atlas (⇧⌘S)");
     else if ([ident isEqual:@"views"]) {
         _viewSwitch = [NSSegmentedControl segmentedControlWithLabels:@[@"Patches", @"Plain", @"Presentation", @"Texture"]
@@ -549,6 +701,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if ([item.itemIdentifier isEqual:@"open"]) return !_running;
     if ([item.itemIdentifier isEqual:@"makeAtlas"]) return !_running && _session.hasMesh();
     if ([item.itemIdentifier isEqual:@"save"]) return !_running && _session.hasResult();
+    if ([item.itemIdentifier isEqual:@"uv"]) return _session.hasResult();
     return YES;
 }
 
@@ -613,6 +766,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Reset Camera", @selector(resetCamera:), @"0", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
+    add(view, @"Show UV Layout", @selector(toggleUVLayout:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Sidebar", @selector(toggleSidebar:), @"s", NSEventModifierFlagCommand | NSEventModifierFlagControl);
     add(view, @"Enter Full Screen", @selector(toggleFullScreen:), @"f", NSEventModifierFlagCommand | NSEventModifierFlagControl);
 
@@ -646,6 +800,10 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (a == @selector(showPlain:)) item.state = _mode == 1 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(showPresentation:)) { item.state = _mode == 2 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasResult(); }
     if (a == @selector(showTexture:)) { item.state = _mode == 3 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasBakedTexture(); }
+    if (a == @selector(toggleUVLayout:)) {
+        item.title = _uvItem.collapsed ? @"Show UV Layout" : @"Hide UV Layout";
+        return _session.hasResult();
+    }
     if (a == @selector(toggleSidebar:)) {
         NSSplitViewItem* s = _split.splitViewItems.firstObject;
         item.title = s.collapsed ? @"Show Sidebar" : @"Hide Sidebar";
@@ -670,6 +828,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [_scene resetCamera];
     [_scene showMesh:_session.mesh() colors:{} faceUV:{}];
     [_scene setTexture:0 pixels:nullptr];
+    [_uv clear];
+    _uvItem.collapsed = YES;
     [self setViewMode:1];
 }
 
@@ -734,6 +894,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [_scene showMesh:_session.mesh() colors:_session.patchColors() faceUV:(_session.hasBakedTexture() ? _session.atlasFaceUV() : std::vector<float>())];
     [_scene setTexture:(_session.hasBakedTexture() ? _session.bakedResolution() : 0) pixels:_session.bakedPixels()];
     [_scene setPatchNormals:_session.patchNormalsPerFace()];
+    [_uv setCharts:_session.uvCharts() texture:(_session.hasBakedTexture() ? _session.bakedPixels() : nullptr) side:_session.bakedResolution()];
+    [_uvItem.animator setCollapsed:NO];
     [self setViewMode:_session.hasBakedTexture() ? 3 : 0];
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, _session.hasBakedTexture() ? " (texture baked)" : "");
@@ -743,6 +905,11 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
         if (const char* p1 = getenv("HUGE_NATIVE_PASS1")) [_pass1 selectItemAtIndex:atoi(p1)];
         if (const char* p2 = getenv("HUGE_NATIVE_PASS2")) [_pass2 selectItemAtIndex:atoi(p2)];
         [self presentationChanged:nil];
+        if (const char* out = getenv("HUGE_NATIVE_SAVE")) {   // the same as Save As, to a given path
+            std::string err;
+            const bool ok = _session.save(out, &err);
+            printf("NATIVE SAVE: %s %s\n", ok ? "ok" : "failed", err.c_str());
+        }
         [self autoShotAndQuit];
     }
 }
@@ -755,10 +922,12 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (slash != std::string::npos) stem = stem.substr(slash + 1);
     const size_t dot = stem.find_last_of('.');
     if (dot != std::string::npos) stem.resize(dot);
-    const std::string p = native::saveFile("Save the mesh with the atlas", stem + "_atlas.obj", {"obj"}, "");
+    const std::string p = native::saveFile("Save the mesh with the atlas (OBJ or PLY, the texture goes next to it)", stem + "_atlas.obj",
+                                           {"obj", "ply"}, "");
     if (p.empty()) return;
     std::string err;
-    _status.stringValue = _session.save(p, &err) ? @"Saved" : [NSString stringWithFormat:@"Cannot save: %s", err.c_str()];
+    _status.stringValue = _session.save(p, &err) ? [NSString stringWithFormat:@"Saved %@ and its texture", [NSString stringWithUTF8String:p.c_str()].lastPathComponent]
+                                                 : [NSString stringWithFormat:@"Cannot save: %s", err.c_str()];
 }
 
 // the views: 0 patches, 1 plain shading, 2 presentation, 3 texture (the segments of the toolbar are in the same order)
@@ -775,6 +944,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _presentGroup.hidden = mode != 2;
     [_scene setMode:mode];
 }
+- (void)toggleUVLayout:(id)sender { [_uvItem.animator setCollapsed:!_uvItem.collapsed]; }
 - (void)showPatches:(id)sender { [self setViewMode:0]; }
 - (void)showPlain:(id)sender { [self setViewMode:1]; }
 - (void)showPresentation:(id)sender { [self setViewMode:2]; }

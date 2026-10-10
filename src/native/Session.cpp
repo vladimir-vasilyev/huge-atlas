@@ -3,7 +3,9 @@
 #include "core/MeshPrep.h"
 #include "core/Operations.h"
 #include "param/AtlasBake.h"
+#include "param/AtlasMask.h"
 #include "param/HorizonPacker.h"
+#include "param/MeshWriters.h"
 #include "render/ImageFile.h"
 #include "render/MeshRenderer.h"
 
@@ -12,9 +14,7 @@
 #include <cstdlib>
 #include <cmath>
 
-namespace {
-
-void hueColor(int index, float* rgb)
+void AtlasSession::patchColor(int index, float* rgb)
 {
     const float h = std::fmod(float(index) * 0.61803398875f, 1.0f), s = 0.6f, v = 0.92f;
     const float c = v * s, x = c * (1.0f - std::abs(std::fmod(h * 6.0f, 2.0f) - 1.0f)), m = v - c;
@@ -29,8 +29,6 @@ void hueColor(int index, float* rgb)
     }
     rgb[0] = r + m; rgb[1] = g + m; rgb[2] = b + m;
 }
-
-} // namespace
 
 int AtlasSession::patchesFor(size_t faces, int quality)
 {
@@ -166,7 +164,7 @@ std::vector<float> AtlasSession::patchColors() const
     std::vector<float> colors(mesh_.n_faces() * 3, 0.72f);
     if (!resultValid_) return colors;
     for (size_t f = 0; f < colors.size() / 3 && f < result_.labels.size(); ++f)
-        if (result_.labels[f] >= 0) hueColor(result_.labels[f], &colors[3 * f]);
+        if (result_.labels[f] >= 0) patchColor(result_.labels[f], &colors[3 * f]);
     return colors;
 }
 
@@ -177,9 +175,67 @@ std::vector<float> AtlasSession::patchNormalsPerFace() const
     return patchNormals(result_.labels, fd.area, fd.normal);
 }
 
-bool AtlasSession::save(const std::string& path, std::string* error) const
+std::vector<BakeChart> AtlasSession::bakeCharts() const
+{
+    std::vector<BakeChart> charts;
+    for (size_t i = 0; i < result_.params.size(); ++i)
+        if (i < atlas_.uv.size() && !atlas_.uv[i].empty()) charts.push_back({&result_.params[i].patch, &atlas_.uv[i]});
+    return charts;
+}
+
+std::vector<UvChart> AtlasSession::uvCharts() const
+{
+    std::vector<UvChart> out;
+    if (!resultValid_) return out;
+    for (size_t i = 0; i < result_.params.size(); ++i) {
+        if (i >= atlas_.uv.size() || atlas_.uv[i].empty()) continue;
+        const Patch& p = result_.params[i].patch;
+        UvChart c;
+        c.patch = int(i);
+        for (const auto& q : atlas_.uv[i]) { c.uv.push_back(float(q.x())); c.uv.push_back(float(q.y())); }
+        for (auto f : p.mesh.faces())
+            for (auto v : p.mesh.fv_range(f)) c.triangles.push_back(unsigned(v.idx()));
+        for (const auto& loop : p.topology.loops) {
+            std::vector<unsigned> l;
+            for (int v : loop) l.push_back(unsigned(v));
+            c.loops.push_back(std::move(l));
+        }
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+bool AtlasSession::save(const std::string& requested, std::string* error) const
 {
     if (!resultValid_) { if (error) *error = "there is no atlas to save"; return false; }
+    std::string path = requested;
+    std::string lower = path;
+    for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
+    const bool endsObj = lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".obj") == 0;
+    const bool endsPly = lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".ply") == 0;
+    if (!endsObj && !endsPly) path += ".obj";
+
+    const size_t slash = path.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? "." : path.substr(0, slash);
+    std::string stem = path.substr(slash == std::string::npos ? 0 : slash + 1);
+    stem.resize(stem.size() - 4);
+    const std::string textureName = stem + "_atlas.png";
+
+    // the texture: the baked one, or a flat color per chart when the mesh has no texture
+    const int res = atlas_.resolution > 0 ? atlas_.resolution : 2048;
+    std::vector<unsigned char> rgba = baked_;
+    if (rgba.empty()) {
+        BakeOptions bo;
+        bo.resolution = res;
+        bo.margin = atlas_.margin;
+        rgba = bakeAtlasTexture(mesh_, bakeCharts(), nullptr, {}, {}, -1, bo);
+    }
+    std::vector<unsigned char> flipped(rgba.size());   // image row 0 is v = 1
+    const size_t row = size_t(res) * 4;
+    for (int y = 0; y < res; ++y)
+        std::copy(rgba.begin() + size_t(res - 1 - y) * row, rgba.begin() + size_t(res - y) * row, flipped.begin() + size_t(y) * row);
+    if (!writePNG(dir + "/" + textureName, res, res, flipped, error)) return false;
+
     std::vector<const Patch*> pv;
     std::vector<const std::vector<Eigen::Vector2d>*> uvv;
     for (size_t i = 0; i < result_.params.size(); ++i) {
@@ -189,6 +245,7 @@ bool AtlasSession::save(const std::string& path, std::string* error) const
     char meta[200];
     std::snprintf(meta, sizeof(meta), "atlas resolution=%d maxMipLevel=%d gutter=%d margin=%d texelsPerUnit=%.6g", atlas_.resolution,
                   atlas_.maxMipLevel, atlas_.gutter, atlas_.margin, atlas_.texelsPerUnit);
-    if (exportAtlasOBJ(path, mesh_, pv, uvv, meta) < 0) { if (error) *error = "cannot write " + path; return false; }
+    const int faces = endsPly ? writePlyAtlas(path, pv, uvv, textureName, true, meta) : exportAtlasOBJ(path, mesh_, pv, uvv, meta, textureName);
+    if (faces < 0) { if (error) *error = "cannot write " + path; return false; }
     return true;
 }

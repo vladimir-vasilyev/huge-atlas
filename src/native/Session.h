@@ -2,6 +2,7 @@
 
 #include "core/MeshTypes.h"
 #include "core/ObjLoader.h"
+#include "param/AtlasBake.h"
 #include "param/AtlasPacker.h"
 #include "param/Refinement.h"
 
@@ -18,6 +19,14 @@ struct SessionSettings {
     int  patches = 100;
     int  resolution = 2048;
     int  maxMipLevel = 3;
+};
+
+// One chart of the atlas for the UV view: its vertices in the atlas (u, v in [0, 1]), its triangles and the loops of its border.
+struct UvChart {
+    int patch = 0;
+    std::vector<float> uv;                          // u, v per vertex
+    std::vector<unsigned> triangles;                // three vertex indices per face
+    std::vector<std::vector<unsigned>> loops;       // the border of the chart, vertex indices
 };
 
 class AtlasSession {
@@ -53,13 +62,20 @@ public:
     // the normal of the patch of every face (3 floats per face): the direction in which the patches move in the presentation
     std::vector<float> patchNormalsPerFace() const;
 
-    // OBJ with the atlas UV (a vt per patch vertex, seams get their own vt)
+    // the charts as they lie in the atlas (for the UV view)
+    std::vector<UvChart> uvCharts() const;
+    // the color of a patch (the same in the 3D view and in the UV view)
+    static void patchColor(int patch, float* rgb);
+
+    // OBJ (with a material) or PLY by the extension, with the atlas UV, and `<name>_atlas.png` next to it: the texture of the file baked
+    // into the atlas, or a flat color per chart to paint over when the mesh has no texture.
     bool save(const std::string& path, std::string* error) const;
 
     // how many patches the quality asks for on a mesh of this size
     static int patchesFor(size_t faces, int quality);
 
 private:
+    std::vector<BakeChart> bakeCharts() const;
     TriMesh mesh_;
     std::string path_;
     RefineResult result_;
