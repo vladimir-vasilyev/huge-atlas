@@ -45,7 +45,8 @@ public:
 
 private:
     void drawUI();
-    void drawMainMenu();
+    void installNativeMenu();
+    void runFileDialogs();                 // the native open / save panels for the requests of the buttons and the menu (between two frames)
     void renderScene(int fbWidth, int fbHeight);
     void handleSceneInput();
     void openMesh(const std::string& path);
@@ -65,7 +66,6 @@ private:
     void packAtlasNow();
     void drawRefinePanel();
     void extractPatchesNow();              // patches of vsa_.label (the Extract button)
-    void drawExportDialogs();
     void bakeAtlasPreview();               // retexture: the source texture baked into the atlas layout
     void matchAtlasToOriginal();           // texture size and max mip level of the packer = what the original layout allows
     void measureLayouts();                 // original layout vs ours, and the quality of the retexturing
@@ -90,7 +90,6 @@ private:
     void drawHugeAtlas();
     void saveBadPatches();
     void loadBadPatch(const std::string& path);
-    void drawBadPatchDialog();
     struct Preset currentPreset() const;
     void applyPreset(const struct Preset& preset);
     bool saveHuge(const std::string& path);   // PLY with the atlas UV, and the baked texture next to it

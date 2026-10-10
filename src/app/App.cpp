@@ -5,6 +5,7 @@
 #include "param/FlatAdjacency.h"
 #include "param/MeshWriters.h"
 #include "render/ImageFile.h"
+#include "app/NativeUI.h"
 #include "app/Paths.h"
 #include "app/Preset.h"
 #include "app/UiTips.h"
@@ -14,7 +15,6 @@
 #include <imgui_internal.h>   // the central node of the dock space: where the 3D scene is drawn
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
-#include <ImGuiFileDialog.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -45,6 +45,61 @@ const char* glString(GLenum name)
 }
 
 } // namespace
+
+// The look of a macOS app: the system font, soft corners, the blue accent of the system, calm grays.
+static void applyNativeLook()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiStyle& st = ImGui::GetStyle();
+    // SF (the system font); the built-in font stays when the file is not there
+    if (std::filesystem::exists("/System/Library/Fonts/SFNS.ttf")) {
+        ImFontConfig cfg;
+        cfg.OversampleH = 2;
+        if (ImFont* f = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNS.ttf", 0.0f, &cfg)) { (void)f; st.FontSizeBase = 14.5f; }
+    }
+    st.WindowRounding = 8.0f; st.ChildRounding = 6.0f; st.FrameRounding = 6.0f; st.PopupRounding = 8.0f;
+    st.GrabRounding = 6.0f; st.ScrollbarRounding = 8.0f; st.TabRounding = 6.0f;
+    st.WindowPadding = ImVec2(14, 12); st.FramePadding = ImVec2(10, 6); st.ItemSpacing = ImVec2(8, 9); st.ItemInnerSpacing = ImVec2(8, 6);
+    st.GrabMinSize = 14.0f; st.ScrollbarSize = 12.0f; st.WindowBorderSize = 0.0f; st.FrameBorderSize = 0.0f; st.PopupBorderSize = 1.0f;
+    st.SeparatorTextBorderSize = 1.0f; st.SeparatorTextPadding = ImVec2(8, 6); st.WindowMenuButtonPosition = ImGuiDir_None;
+
+    const ImVec4 accent(0.04f, 0.52f, 1.00f, 1.00f), accentHover(0.25f, 0.62f, 1.00f, 1.00f), accentActive(0.00f, 0.43f, 0.90f, 1.00f);
+    ImVec4* c = st.Colors;
+    c[ImGuiCol_Text] = ImVec4(0.93f, 0.93f, 0.95f, 1.00f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.56f, 0.56f, 0.60f, 1.00f);
+    c[ImGuiCol_WindowBg] = ImVec4(0.118f, 0.118f, 0.125f, 1.00f);
+    c[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_PopupBg] = ImVec4(0.16f, 0.16f, 0.17f, 0.98f);
+    c[ImGuiCol_Border] = ImVec4(0.30f, 0.30f, 0.33f, 0.60f);
+    c[ImGuiCol_FrameBg] = ImVec4(0.20f, 0.20f, 0.22f, 1.00f);
+    c[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.26f, 0.29f, 1.00f);
+    c[ImGuiCol_FrameBgActive] = ImVec4(0.30f, 0.30f, 0.34f, 1.00f);
+    c[ImGuiCol_TitleBg] = ImVec4(0.14f, 0.14f, 0.15f, 1.00f);
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.17f, 0.17f, 0.18f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.14f, 0.14f, 0.15f, 0.80f);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.35f, 0.35f, 0.38f, 1.00f);
+    c[ImGuiCol_CheckMark] = accent;
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = accentHover;
+    c[ImGuiCol_Button] = ImVec4(0.28f, 0.28f, 0.31f, 1.00f);
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.35f, 0.35f, 0.39f, 1.00f);
+    c[ImGuiCol_ButtonActive] = ImVec4(0.42f, 0.42f, 0.46f, 1.00f);
+    c[ImGuiCol_Header] = ImVec4(0.24f, 0.24f, 0.27f, 1.00f);
+    c[ImGuiCol_HeaderHovered] = ImVec4(0.30f, 0.30f, 0.34f, 1.00f);
+    c[ImGuiCol_HeaderActive] = ImVec4(0.34f, 0.34f, 0.38f, 1.00f);
+    c[ImGuiCol_Separator] = ImVec4(0.30f, 0.30f, 0.33f, 0.60f);
+    c[ImGuiCol_Tab] = ImVec4(0.17f, 0.17f, 0.18f, 1.00f);
+    c[ImGuiCol_TabHovered] = ImVec4(0.30f, 0.30f, 0.34f, 1.00f);
+    c[ImGuiCol_TabSelected] = ImVec4(0.24f, 0.24f, 0.27f, 1.00f);
+    c[ImGuiCol_TabSelectedOverline] = accent;
+    c[ImGuiCol_DockingPreview] = ImVec4(accent.x, accent.y, accent.z, 0.40f);
+    c[ImGuiCol_TextSelectedBg] = ImVec4(accent.x, accent.y, accent.z, 0.40f);
+    c[ImGuiCol_PlotHistogram] = accent;
+    c[ImGuiCol_TableHeaderBg] = ImVec4(0.17f, 0.17f, 0.18f, 1.00f);
+    c[ImGuiCol_TableRowBgAlt] = ImVec4(1.0f, 1.0f, 1.0f, 0.03f);
+    (void)accentActive;
+}
 
 bool App::init(int width, int height, const char* title)
 {
@@ -95,6 +150,7 @@ bool App::init(int width, int height, const char* title)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif
     ImGui::StyleColorsDark();
+    applyNativeLook();
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window_, true) ||
         !ImGui_ImplOpenGL3_Init("#version 410")) {
@@ -105,6 +161,7 @@ bool App::init(int width, int height, const char* title)
     loadSettings();
     if (std::getenv("VSA_DEV")) devMode_ = true;
     if (!devMode_) wireframe_ = false;   // the simple interface shows the surface, not the triangles
+    installNativeMenu();
     glfwSetWindowUserPointer(window_, this);
     glfwSetDropCallback(window_, [](GLFWwindow* w, int count, const char** files) {
         if (count > 0) static_cast<App*>(glfwGetWindowUserPointer(w))->droppedPath_ = files[0];
@@ -180,6 +237,42 @@ struct App::HugeJob {
     ~HugeJob() { if (worker.joinable()) worker.join(); if (compareWorker.joinable()) compareWorker.join(); if (repackWorker.joinable()) repackWorker.join(); }
     void say(const std::string& s) { std::lock_guard<std::mutex> lock(mutex); stage = s; }
 };
+
+// The menu bar of macOS (the application menu is made by GLFW); the items only set requests, the work is done between two frames.
+void App::installNativeMenu()
+{
+        native::MenuHandlers h;
+        h.run = [this](int cmd) {
+            switch (cmd) {
+                case native::CmdOpen: openMeshRequested_ = true; break;
+                case native::CmdSave:
+                    if (hugeShown_ && hugeJob_ && hugeJob_->done) hugeSaveRequested_ = true; else requestSave();
+                    break;
+                case native::CmdSaveAs:
+                    if (hugeShown_ && hugeJob_ && hugeJob_->done) hugeSaveRequested_ = true; else saveAsRequested_ = true;
+                    break;
+                case native::CmdBinaryPly: binaryPly_ = !binaryPly_; break;
+                case native::CmdWireframe: wireframe_ = !wireframe_; break;
+                case native::CmdResetCamera: camera_.reset(); break;
+                case native::CmdDeveloperMode: devMode_ = !devMode_; saveSettings(); break;
+                case native::CmdSaveBadPatch: saveBadPatches(); break;
+                case native::CmdLoadBadPatch: loadBadRequested_ = true; break;
+            }
+        };
+        h.enabled = [this](int cmd) -> bool {
+            switch (cmd) {
+                case native::CmdSave: case native::CmdSaveAs: return meshRenderer_.hasMesh() || (hugeJob_ && hugeJob_->done);
+                case native::CmdSaveBadPatch: return patchesValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done);
+                default: return true;
+            }
+        };
+        h.checked = [this](int cmd) -> bool {
+            return cmd == native::CmdBinaryPly ? binaryPly_ : cmd == native::CmdWireframe ? wireframe_ : cmd == native::CmdDeveloperMode ? devMode_ : false;
+        };
+        native::installMenu(h);
+        native::setDebugMenuVisible(devMode_);
+        if (std::getenv("VSA_PRINT_MENU")) std::printf("MENU:\n%s", native::describeMenu().c_str());
+    }
 
 namespace {
 
@@ -430,6 +523,7 @@ void App::run()
             continue;
         }
 
+        runFileDialogs();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -1529,24 +1623,6 @@ void App::stopRefine(bool wait)
     refiner_.reset();
 }
 
-void App::drawBadPatchDialog()
-{
-    static const char* kBadKey = "BadPatchOpenKey";
-    const ImVec2 vp = ImGui::GetMainViewport()->Size;
-    if (loadBadRequested_) {
-        loadBadRequested_ = false;
-        IGFD::FileDialogConfig cfg;
-        cfg.path = std::filesystem::exists(std::filesystem::path(paths::debugOutDir()) / "BadPatch") ? std::filesystem::absolute(std::filesystem::path(paths::debugOutDir()) / "BadPatch").string() : lastDir_;
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal;
-        ImGuiFileDialog::Instance()->OpenDialog(kBadKey, "Load a bad patch (OBJ; the .preset next to it is applied)", ".obj", cfg);
-    }
-    if (ImGuiFileDialog::Instance()->Display(kBadKey, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
-        if (ImGuiFileDialog::Instance()->IsOk()) loadBadPatch(ImGuiFileDialog::Instance()->GetFilePathName());
-        ImGuiFileDialog::Instance()->Close();
-    }
-}
-
 void App::drawRefineModal()
 {
     if (!refiner_) return;
@@ -2083,44 +2159,6 @@ void App::drawHugeUI()
             showHugeResult();
             if (!devMode_) { simpleView_ = hugeView_ == 3 ? 2 : 0; presentation_ = false; }
         }
-    }
-
-    // file dialogs
-    static const char* kHugeOpen = "HugeOpenKey";
-    static const char* kHugeSave = "HugeSaveKey";
-    const ImVec2 vp = ImGui::GetMainViewport()->Size;
-    if (hugeOpenRequested_) {
-        hugeOpenRequested_ = false;
-        IGFD::FileDialogConfig cfg;
-        cfg.path = lastDir_;
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal;
-        ImGuiFileDialog::Instance()->OpenDialog(kHugeOpen, "Open a huge mesh (read straight into flat arrays)", "Meshes{.ply,.obj}", cfg);
-    }
-    if (ImGuiFileDialog::Instance()->Display(kHugeOpen, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-            startHuge(ImGuiFileDialog::Instance()->GetFilePathName());
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    if (hugeSaveRequested_) {
-        hugeSaveRequested_ = false;
-        IGFD::FileDialogConfig cfg;
-        cfg.path = lastDir_;
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
-        ImGuiFileDialog::Instance()->OpenDialog(kHugeSave, "Save the huge mesh with atlas UV (PLY)", ".ply", cfg);
-    }
-    if (ImGuiFileDialog::Instance()->Display(kHugeSave, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
-        if (ImGuiFileDialog::Instance()->IsOk() && hugeJob_ && hugeJob_->done) {
-            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-            std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
-            if (path.size() < 4 || path.substr(path.size() - 4) != ".ply") path += ".ply";
-            saveHuge(path);
-            status_ = hugeStatus_;
-        }
-        ImGuiFileDialog::Instance()->Close();
     }
 }
 
@@ -2666,102 +2704,6 @@ bool App::performSave(const std::string& requested)
     return true;
 }
 
-void App::drawExportDialogs()
-{
-    constexpr const char* kSaveKey = "SaveAsDlg";
-    if (saveAsRequested_) {
-        saveAsRequested_ = false;
-        std::string name = meshPath_;
-        const size_t slash = name.find_last_of('/');
-        if (slash != std::string::npos) name = name.substr(slash + 1);
-        const size_t dot = name.find_last_of('.');
-        if (dot != std::string::npos) name.resize(dot);
-        IGFD::FileDialogConfig cfg;
-        cfg.path = lastDir_;
-        cfg.fileName = (name.empty() ? std::string("mesh") : name) + "_atlas.obj";
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
-        ImGuiFileDialog::Instance()->OpenDialog(kSaveKey, "Save mesh (OBJ or PLY)", "Meshes{.obj,.ply}", cfg);
-    }
-    {
-        const ImVec2 vpSize = ImGui::GetMainViewport()->Size;
-        if (ImGuiFileDialog::Instance()->Display(kSaveKey, ImGuiWindowFlags_NoCollapse, ImVec2(vpSize.x * 0.5f, vpSize.y * 0.5f))) {
-            if (ImGuiFileDialog::Instance()->IsOk()) {
-                lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-                performSave(ImGuiFileDialog::Instance()->GetFilePathName());
-            }
-            ImGuiFileDialog::Instance()->Close();
-        }
-    }
-
-    constexpr const char* kMaskKey = "ExportMaskDlg";
-    if (exportMaskRequested_) {
-        exportMaskRequested_ = false;
-        IGFD::FileDialogConfig cfg;
-        cfg.path = lastDir_;
-        cfg.fileName = "atlas_mask.png";
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
-        ImGuiFileDialog::Instance()->OpenDialog(kMaskKey, "Export occupancy mask (alpha channel)", ".png", cfg);
-    }
-    {
-        const ImVec2 vpSize = ImGui::GetMainViewport()->Size;
-        if (ImGuiFileDialog::Instance()->Display(kMaskKey, ImGuiWindowFlags_NoCollapse, ImVec2(vpSize.x * 0.5f, vpSize.y * 0.5f))) {
-            if (ImGuiFileDialog::Instance()->IsOk()) {
-                lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-                std::vector<MaskChart> mc;
-                for (size_t i = 0; i < params_.size(); ++i)
-                    if (paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty())
-                        mc.push_back({&params_[i].patch.mesh, &atlas_.uv[i]});
-                const int res = atlas_.resolution > 0 ? atlas_.resolution : 2048;   // the shelf packer has no texel grid: 2048
-                std::string err;
-                const std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
-                char buf[256];
-                if (writeAtlasPNG(path, mc, res, true, &err))
-                    std::snprintf(buf, sizeof(buf), "mask written: %s (%d x %d, alpha = occupancy)", path.c_str(), res, res);
-                else
-                    std::snprintf(buf, sizeof(buf), "mask export failed: %s", err.c_str());
-                paramStatus_ = buf;
-            }
-            ImGuiFileDialog::Instance()->Close();
-        }
-    }
-
-    constexpr const char* kExportKey = "ExportObjDlg";
-    if (exportObjRequested_) {
-        exportObjRequested_ = false;
-        IGFD::FileDialogConfig cfg;
-        cfg.path = lastDir_;
-        cfg.fileName = "atlas.obj";
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_ConfirmOverwrite;
-        ImGuiFileDialog::Instance()->OpenDialog(kExportKey, "Export OBJ with UV", ".obj", cfg);
-    }
-    const ImVec2 vp = ImGui::GetMainViewport()->Size;
-    if (ImGuiFileDialog::Instance()->Display(kExportKey, ImGuiWindowFlags_NoCollapse, ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-            std::vector<const Patch*> pv;
-            std::vector<const std::vector<Eigen::Vector2d>*> uvv;
-            for (size_t i = 0; i < params_.size(); ++i) {
-                pv.push_back(&params_[i].patch);
-                uvv.push_back(paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty() ? &atlas_.uv[i] : nullptr);
-            }
-            const std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
-            char meta[200] = "";
-            if (atlas_.resolution > 0)
-                std::snprintf(meta, sizeof(meta), "atlas resolution=%d maxMipLevel=%d gutter=%d margin=%d texelsPerUnit=%.6g",
-                              atlas_.resolution, atlas_.maxMipLevel, atlas_.gutter, atlas_.margin, atlas_.texelsPerUnit);
-            const int faces = exportAtlasOBJ(path, mesh_, pv, uvv, meta);
-            char buf[256];
-            if (faces < 0) std::snprintf(buf, sizeof(buf), "export failed: %s", path.c_str());
-            else std::snprintf(buf, sizeof(buf), "exported %d of %d faces to %s", faces, int(mesh_.n_faces()), path.c_str());
-            paramStatus_ = buf;
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-}
-
 void App::drawLinabfPanel()
 {
     if (!ImGui::Begin("LinABF")) { ImGui::End(); return; }
@@ -3144,68 +3086,98 @@ void App::handleSceneInput()
     }
 }
 
-void App::drawMainMenu()
+// The open and save panels are the ones of macOS. They are modal and run here, between two frames, so that ImGui never sees a
+// mouse button that was released inside a panel.
+void App::runFileDialogs()
 {
-    constexpr const char* kDialogKey = "OpenMeshDlg";
-    bool openRequested = false;
+    namespace fs = std::filesystem;
+    auto remember = [&](const std::string& path) {
+        std::error_code ec;
+        const fs::path dir = fs::path(path).parent_path();
+        if (!dir.empty() && fs::is_directory(dir, ec)) lastDir_ = dir.string();
+    };
+    auto stem = [&](const std::string& path, const char* fallback) {
+        std::string name = fs::path(path).stem().string();
+        return name.empty() ? std::string(fallback) : name;
+    };
 
-    if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ui::MenuItem("Open...", "Cmd+O"))
-                openRequested = true;
-            ImGui::Separator();
-            if (ui::MenuItem("Save", "Cmd+S", false, meshRenderer_.hasMesh())) requestSave();
-            if (ui::MenuItem("Save As...", "Cmd+Shift+S", false, meshRenderer_.hasMesh())) saveAsRequested_ = true;
-            ui::MenuItem("Binary PLY", nullptr, &binaryPly_);
-            ImGui::Separator();
-            if (ui::MenuItem("Quit", "Cmd+Q"))
-                glfwSetWindowShouldClose(window_, GLFW_TRUE);
-            ImGui::EndMenu();
-        }
-        if (devMode_ && ImGui::BeginMenu("Debug")) {
-            if (ui::MenuItem("Save Bad Patch", nullptr, false, patchesValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done)))
-                saveBadPatches();
-            if (ui::MenuItem("Load Bad Patch...")) loadBadRequested_ = true;
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("View")) {
-            if (devMode_) ui::MenuItem("Wireframe", nullptr, &wireframe_);
-            if (ui::MenuItem("Reset camera"))
-                camera_.reset();
-            ImGui::Separator();
-            if (ui::MenuItem("Developer mode", nullptr, &devMode_)) saveSettings();
-            ImGui::EndMenu();
-        }
-        ImGui::EndMainMenuBar();
-    }
-
-    if (openMeshRequested_) { openRequested = true; openMeshRequested_ = false; }
     if (!droppedPath_.empty()) { const std::string p = droppedPath_; droppedPath_.clear(); openMeshSmart(p); }
 
-    // Cmd+O on macOS (ImGui maps Super to Cmd)
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O) || ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_O))
-        openRequested = true;
-
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiKey_S) && meshRenderer_.hasMesh()) requestSave();
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Super | ImGuiMod_Shift | ImGuiKey_S) && meshRenderer_.hasMesh()) saveAsRequested_ = true;
-
-    if (openRequested) {
-        IGFD::FileDialogConfig cfg;
-        cfg.path = lastDir_;
-        cfg.countSelectionMax = 1;
-        cfg.flags = ImGuiFileDialogFlags_Modal;
-        ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, "Open mesh",
-                                                "Meshes{.obj,.off,.ply,.stl},.*", cfg);
+    if (openMeshRequested_) {
+        openMeshRequested_ = false;
+        const std::string path = native::openFile("Open a mesh", {"obj", "ply", "off", "stl"}, lastDir_);
+        if (!path.empty()) { remember(path); openMeshSmart(path); }
     }
-
-    const ImVec2 vp = ImGui::GetMainViewport()->Size;
-    if (ImGuiFileDialog::Instance()->Display(kDialogKey, ImGuiWindowFlags_NoCollapse,
-                                             ImVec2(vp.x * 0.5f, vp.y * 0.5f))) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            lastDir_ = ImGuiFileDialog::Instance()->GetCurrentPath();
-            openMeshSmart(ImGuiFileDialog::Instance()->GetFilePathName());
+    if (hugeOpenRequested_) {
+        hugeOpenRequested_ = false;
+        const std::string path = native::openFile("Open a huge mesh (it is read straight into flat arrays)", {"ply", "obj"}, lastDir_);
+        if (!path.empty()) { remember(path); startHuge(path); }
+    }
+    if (hugeSaveRequested_) {
+        hugeSaveRequested_ = false;
+        if (hugeJob_ && hugeJob_->done) {
+            std::string path = native::saveFile("Save the mesh with the atlas UV (PLY)", stem(hugeJob_->path, "mesh") + "_atlas.ply", {"ply"}, lastDir_);
+            if (!path.empty()) {
+                remember(path);
+                if (path.size() < 4 || path.substr(path.size() - 4) != ".ply") path += ".ply";
+                saveHuge(path);
+                status_ = hugeStatus_;
+            }
         }
-        ImGuiFileDialog::Instance()->Close();
+    }
+    if (saveAsRequested_) {
+        saveAsRequested_ = false;
+        const std::string path = native::saveFile("Save the mesh (OBJ or PLY)", stem(meshPath_, "mesh") + "_atlas.obj", {"obj", "ply"}, lastDir_);
+        if (!path.empty()) { remember(path); performSave(path); }
+    }
+    if (exportMaskRequested_) {
+        exportMaskRequested_ = false;
+        const std::string path = native::saveFile("Export the occupancy mask (alpha channel)", "atlas_mask.png", {"png"}, lastDir_);
+        if (!path.empty()) {
+            remember(path);
+            std::vector<MaskChart> mc;
+            for (size_t i = 0; i < params_.size(); ++i)
+                if (paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty())
+                    mc.push_back({&params_[i].patch.mesh, &atlas_.uv[i]});
+            const int res = atlas_.resolution > 0 ? atlas_.resolution : 2048;   // the shelf packer has no texel grid: 2048
+            std::string err;
+            char buf[256];
+            if (writeAtlasPNG(path, mc, res, true, &err))
+                std::snprintf(buf, sizeof(buf), "mask written: %s (%d x %d, alpha = occupancy)", path.c_str(), res, res);
+            else
+                std::snprintf(buf, sizeof(buf), "mask export failed: %s", err.c_str());
+            paramStatus_ = buf;
+        }
+    }
+    if (exportObjRequested_) {
+        exportObjRequested_ = false;
+        const std::string path = native::saveFile("Export OBJ with UV", "atlas.obj", {"obj"}, lastDir_);
+        if (!path.empty()) {
+            remember(path);
+            std::vector<const Patch*> pv;
+            std::vector<const std::vector<Eigen::Vector2d>*> uvv;
+            for (size_t i = 0; i < params_.size(); ++i) {
+                pv.push_back(&params_[i].patch);
+                uvv.push_back(paramDone_[i] && i < atlas_.uv.size() && !atlas_.uv[i].empty() ? &atlas_.uv[i] : nullptr);
+            }
+            char meta[200] = "";
+            if (atlas_.resolution > 0)
+                std::snprintf(meta, sizeof(meta), "atlas resolution=%d maxMipLevel=%d gutter=%d margin=%d texelsPerUnit=%.6g",
+                              atlas_.resolution, atlas_.maxMipLevel, atlas_.gutter, atlas_.margin, atlas_.texelsPerUnit);
+            const int faces = exportAtlasOBJ(path, mesh_, pv, uvv, meta);
+            char buf[256];
+            if (faces < 0) std::snprintf(buf, sizeof(buf), "export failed: %s", path.c_str());
+            else std::snprintf(buf, sizeof(buf), "exported %d of %d faces to %s", faces, int(mesh_.n_faces()), path.c_str());
+            paramStatus_ = buf;
+        }
+    }
+    if (loadBadRequested_) {
+        loadBadRequested_ = false;
+        const fs::path bad = fs::path(paths::debugOutDir()) / "BadPatch";
+        std::error_code ec;
+        const std::string path = native::openFile("Load a bad patch (OBJ; the .preset next to it is applied)", {"obj"},
+                                                  fs::exists(bad, ec) ? fs::absolute(bad).string() : lastDir_);
+        if (!path.empty()) loadBadPatch(path);
     }
 }
 
@@ -3376,7 +3348,11 @@ void App::drawAtlasWindow()
     ImGui::SeparatorText("3. Atlas");
     if (!busy) {
         ImGui::BeginDisabled(!haveMesh || hugeResult);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.04f, 0.52f, 1.00f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.62f, 1.00f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.00f, 0.43f, 0.90f, 1.00f));
         if (ui::Button("Make atlas", ImVec2(-1, 40))) startSimpleAtlas();
+        ImGui::PopStyleColor(3);
         ImGui::EndDisabled();
         if (hugeResult) ImGui::TextDisabled("open another mesh to make a new atlas");
     } else if (regularRunning) {
@@ -3448,6 +3424,7 @@ void App::drawAtlasWindow()
 void App::drawUI()
 {
     ImGuiIO& io = ImGui::GetIO();
+    native::setDebugMenuVisible(devMode_);
 
 #ifdef IMGUI_HAS_DOCK
     // The central area is transparent: the 3D scene shows through it
@@ -3494,8 +3471,6 @@ void App::drawUI()
         ui::Checkbox("Rotate", &rotate_);
     }
     if (devMode_) ImGui::End();
-
-    drawMainMenu();
 
     if (devMode_ && ImGui::Begin("Mesh")) {
         ImGui::TextWrapped("%s", status_.c_str());
@@ -3584,10 +3559,8 @@ void App::drawUI()
     } else {
         refineTick();
     }
-    drawExportDialogs();
     drawHugeUI();
     drawRefineModal();
-    drawBadPatchDialog();
     if (const char* preview = std::getenv("VSA_TIP_PREVIEW")) uiTipPreview(preview, 560.0f, 120.0f);
 
     handleSceneInput();

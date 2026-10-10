@@ -5,7 +5,7 @@ if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
-project(VSAParam LANGUAGES C CXX)
+project(VSAParam LANGUAGES C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -266,6 +266,7 @@ set(APP_SOURCES
     src/app/UiTips.h
     src/app/UiTips.cpp
     src/app/Paths.cpp
+    src/app/NativeUI.mm
     src/render/GL.h
     src/render/GL.cpp
     src/render/Shader.h
@@ -283,8 +284,8 @@ set(APP_SOURCES
 )
 
 add_executable(vsa_app ${APP_SOURCES})
-target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)
-target_link_libraries(vsa_app PRIVATE vsa_core ImGuiFileDialog imgui glfw OpenGL::GL)
+target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
+target_link_libraries(vsa_app PRIVATE vsa_core imgui glfw OpenGL::GL "-framework Cocoa" "-framework UniformTypeIdentifiers")
 target_compile_options(vsa_app PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # Xcode conveniences: file groups mirror the tree, scheme working directory = project root
