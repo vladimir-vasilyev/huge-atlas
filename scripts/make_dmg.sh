@@ -32,6 +32,7 @@ sed "s/@VERSION@/${VERSION}/g" packaging/Info.plist.in > "$APP/Contents/Info.pli
 cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp data/cube.obj data/bunny.ply "$APP/Contents/Resources/data/"
 cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
+cp packaging/imgui.ini "$APP/Contents/Resources/imgui.ini"   # the layout of the windows for the first start
 cp -R data/textured_hemisphere "$APP/Contents/Resources/data/"
 
 IDENTITY="${CODESIGN_IDENTITY:--}"

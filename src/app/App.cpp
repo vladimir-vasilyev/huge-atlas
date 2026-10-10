@@ -80,7 +80,15 @@ bool App::init(int width, int height, const char* title)
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     static std::string iniPath;   // ImGui keeps the pointer: a bundle cannot write imgui.ini into "/"
-    if (paths::runningFromBundle()) { iniPath = paths::userDataDir() + "/imgui.ini"; io.IniFilename = iniPath.c_str(); }
+    if (paths::runningFromBundle()) {
+        iniPath = paths::userDataDir() + "/imgui.ini";
+        io.IniFilename = iniPath.c_str();
+        // the first start: the layout of the windows that comes with the app (packaging/imgui.ini), until the user has an own one
+        std::error_code ec;
+        const std::filesystem::path shipped = std::filesystem::path(paths::resourcesDir()) / "imgui.ini";
+        if (!std::filesystem::exists(iniPath, ec) && std::filesystem::exists(shipped, ec))
+            std::filesystem::copy_file(shipped, iniPath, ec);
+    }
     lastDir_ = paths::startDir();
 #ifdef IMGUI_HAS_DOCK
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
