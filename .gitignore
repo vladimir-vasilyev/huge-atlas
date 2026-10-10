@@ -19,3 +19,5 @@ Screenshot *.png
 
 # packaging output
 dist/
+# the layout of the windows that ships with the app (the runtime imgui.ini above stays ignored)
+!packaging/imgui.ini
