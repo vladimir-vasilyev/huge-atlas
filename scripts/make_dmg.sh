@@ -3,8 +3,12 @@
 # anything: dist/huge-atlas-<version>-<arch>.dmg (open it, drag the app to Applications).
 #   ./scripts/make_dmg.sh            build + app + dmg
 #   SKIP_BUILD=1 ./scripts/make_dmg.sh   use the existing build-xcode/Release/vsa_app
-# The app is signed ad hoc (no Apple Developer ID): see the README for the first start. With a Developer ID set
-# CODESIGN_IDENTITY="Developer ID Application: ..." and (for notarization) run notarytool on the dmg yourself.
+# Without a Developer ID the app is signed ad hoc: see the README for the first start (macOS blocks it once).
+# With one, no warning at all:
+#   CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"  sign with the hardened runtime and a timestamp
+#   NOTARY_PROFILE=huge-atlas   notarize the app and the disk image and staple the tickets; the profile is made once with
+#     xcrun notarytool store-credentials huge-atlas --apple-id <id> --team-id <TEAMID> --password <app-specific password>
+# e.g.  CODESIGN_IDENTITY="Developer ID Application: ..." NOTARY_PROFILE=huge-atlas ./scripts/make_dmg.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,12 +34,35 @@ cp data/cube.obj data/bunny.ply "$APP/Contents/Resources/data/"
 cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
 cp -R data/textured_hemisphere "$APP/Contents/Resources/data/"
 
-codesign --force --deep --sign "${CODESIGN_IDENTITY:--}" "$APP"
+IDENTITY="${CODESIGN_IDENTITY:--}"
+if [ "$IDENTITY" = "-" ]; then
+    codesign --force --deep --sign - "$APP"
+else
+    codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$APP"
+fi
 codesign --verify --deep --strict "$APP"
+
+notarize() {   # notarize <file>: submit and wait; stops the script when Apple rejects it
+    xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait
+}
+if [ -n "${NOTARY_PROFILE:-}" ] && [ "$IDENTITY" != "-" ]; then
+    ditto -c -k --keepParent "$APP" dist/app-for-notary.zip
+    notarize dist/app-for-notary.zip
+    rm -f dist/app-for-notary.zip
+    xcrun stapler staple "$APP"   # the ticket travels with the app when it is copied out of the disk image
+fi
 
 mkdir -p dist/dmg-root
 cp -R "$APP" dist/dmg-root/
 ln -s /Applications dist/dmg-root/Applications
 hdiutil create -volname "huge-atlas ${VERSION}" -srcfolder dist/dmg-root -ov -format UDZO "$DMG" >/dev/null
 rm -rf dist/dmg-root
+if [ "$IDENTITY" != "-" ]; then
+    codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+    if [ -n "${NOTARY_PROFILE:-}" ]; then
+        notarize "$DMG"
+        xcrun stapler staple "$DMG"
+        spctl -a -vv -t open --context context:primary-signature "$DMG"
+    fi
+fi
 echo "ready: $DMG ($(du -h "$DMG" | cut -f1))"
