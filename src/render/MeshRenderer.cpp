@@ -99,9 +99,9 @@ void main() {
     }
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     float facing = abs(n.z);
-    // glassy look: lighter and more opaque towards the silhouette
-    vec3 col = base * (0.65 + 0.35 * facing) + vec3(0.18) * (1.0 - facing);
-    fragColor = vec4(col, uAlpha * (0.45 + 0.55 * (1.0 - facing)));
+    // the shading of the opaque pass; a translucent shell gets a lighter rim, and at opacity 1 it is exactly the opaque look
+    vec3 col = base * (facing * 0.75 + 0.25) + vec3(0.18) * (1.0 - facing) * (1.0 - uAlpha);
+    fragColor = vec4(col, uAlpha);
 }
 )";
 
@@ -532,9 +532,12 @@ void MeshRenderer::drawGhosts(const float vp[16], const float view[16], float of
         glBindTexture(GL_TEXTURE_2D, texture_);
     }
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);   // the translucent shells do not hide each other or what is behind them
+    const bool opaque = alpha >= 0.999f;   // fully opaque patches: no blending, they hide each other and what is behind them
+    if (!opaque) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);   // the translucent shells do not hide each other or what is behind them
+    }
     if (cullBackFaces) { glEnable(GL_CULL_FACE); glCullFace(GL_BACK); }
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
