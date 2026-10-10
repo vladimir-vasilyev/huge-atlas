@@ -14,3 +14,5 @@ data/doom-combat-scene_obj/
 CLAUDE.md
 # third-party papers (not redistributed)
 docs/papers/
+# raw macOS screenshots (the README uses docs/screenshot.jpg)
+Screenshot *.png

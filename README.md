@@ -2,6 +2,10 @@
 
 Unwrap 100 million triangles seamlessly—with the market's only tool built for massive meshes.
 
+![huge-atlas: a 3.2M face scan unwrapped in huge mode, 1102 patches packed into a 4096 x 4096 atlas, the baked texture on the model](docs/screenshot.jpg)
+
+*The Doom combat scene scan (3.2M faces, [Artec 3D](https://www.artec3d.com), CC BY 3.0) in huge mode: 1102 patches, a 4096 x 4096 atlas with the texture baked into it.*
+
 A macOS tool (C++17, OpenGL 4.1 Core, Dear ImGui) that segments a triangle mesh into patches with
 **Variational Shape Approximation** (Cohen-Steiner, Alliez, Desbrun, SIGGRAPH 2004), unwraps every patch with
 **Linear Angle Based Parameterization** (Zayer, Lévy, Seidel, SGP 2007), packs the charts into one UV atlas that is safe
