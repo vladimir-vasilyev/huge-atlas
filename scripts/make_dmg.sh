@@ -9,30 +9,45 @@
 #   NOTARY_PROFILE=huge-atlas   notarize the app and the disk image and staple the tickets; the profile is made once with
 #     xcrun notarytool store-credentials huge-atlas --apple-id <id> --team-id <TEAMID> --password <app-specific password>
 # e.g.  CODESIGN_IDENTITY="Developer ID Application: ..." NOTARY_PROFILE=huge-atlas ./scripts/make_dmg.sh
+#   FLAVOR=native ./scripts/make_dmg.sh   the native (AppKit) window instead of the ImGui one: dist/huge-atlas-native.app and
+#                                         dist/huge-atlas-native-<version>-<arch>.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="$(tr -d '[:space:]' < VERSION)"
 ARCH="$(uname -m)"
 BUILD=build-xcode
-APP="dist/huge-atlas.app"
-DMG="dist/huge-atlas-${VERSION}-${ARCH}.dmg"
+if [ "${FLAVOR:-imgui}" = "native" ]; then
+    TARGET=huge_atlas_native; NAME=huge-atlas-native
+else
+    TARGET=vsa_app; NAME=huge-atlas
+fi
+APP="dist/${NAME}.app"
+DMG="dist/${NAME}-${VERSION}-${ARCH}.dmg"
 
 if [ -z "${SKIP_BUILD:-}" ]; then
     cmake -G Xcode -B "$BUILD" >/dev/null
-    cmake --build "$BUILD" --config Release --target vsa_app
+    cmake --build "$BUILD" --config Release --target "$TARGET"
 fi
-BIN="$BUILD/Release/vsa_app"
+BIN="$BUILD/Release/$TARGET"
 [ -x "$BIN" ] || { echo "no $BIN: build first"; exit 1; }
 
 rm -rf "$APP" "$DMG" dist/dmg-root
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/data"
 cp "$BIN" "$APP/Contents/MacOS/huge-atlas"
 sed "s/@VERSION@/${VERSION}/g" packaging/Info.plist.in > "$APP/Contents/Info.plist"
+if [ "$TARGET" = huge_atlas_native ]; then   # another bundle id and name: it can live next to the ImGui version
+    sed -i '' -e 's/io.github.vladimir-vasilyev.huge-atlas/io.github.vladimir-vasilyev.huge-atlas-native/' \
+        -e 's|<key>CFBundleName</key><string>huge-atlas</string>|<key>CFBundleName</key><string>huge-atlas native</string>|' \
+        -e 's|<key>CFBundleDisplayName</key><string>huge-atlas</string>|<key>CFBundleDisplayName</key><string>huge-atlas native</string>|' \
+        "$APP/Contents/Info.plist"
+fi
 cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp data/cube.obj data/bunny.ply "$APP/Contents/Resources/data/"
 cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
-cp packaging/imgui.ini "$APP/Contents/Resources/imgui.ini"   # the layout of the windows for the first start
+if [ "$TARGET" = vsa_app ]; then
+    cp packaging/imgui.ini "$APP/Contents/Resources/imgui.ini"   # the layout of the windows for the first start
+fi
 cp -R data/textured_hemisphere "$APP/Contents/Resources/data/"
 
 IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -56,7 +71,7 @@ fi
 mkdir -p dist/dmg-root
 cp -R "$APP" dist/dmg-root/
 ln -s /Applications dist/dmg-root/Applications
-hdiutil create -volname "huge-atlas ${VERSION}" -srcfolder dist/dmg-root -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "${NAME} ${VERSION}" -srcfolder dist/dmg-root -ov -format UDZO "$DMG" >/dev/null
 rm -rf dist/dmg-root
 if [ "$IDENTITY" != "-" ]; then
     codesign --force --timestamp --sign "$IDENTITY" "$DMG"

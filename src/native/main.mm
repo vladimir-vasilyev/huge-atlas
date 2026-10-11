@@ -451,6 +451,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     BOOL _developer;
     BOOL _wire;
     prefs::Values _prefs;
+    NSString* _pendingOpen;     // a file the system asked to open before the window was made
     std::atomic<bool> _cancel;
     std::thread _worker;
     BOOL _running;
@@ -724,6 +725,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
         return;
     }
 
+    if (_pendingOpen) { [self loadPath:_pendingOpen]; _pendingOpen = nil; }
     const char* arg = getenv("HUGE_NATIVE_OPEN");
     if (arg) {
         [self loadPath:[NSString stringWithUTF8String:arg]];
@@ -732,6 +734,14 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     } else if (getenv("HUGE_NATIVE_SHOT")) {
         [self autoShotAndQuit];
     }
+}
+
+// a file opened from Finder or dropped on the icon of the Dock (it can come before the window exists)
+- (BOOL)application:(NSApplication*)app openFile:(NSString*)filename
+{
+    if (!_window) { _pendingOpen = filename; return YES; }
+    [self loadPath:filename];
+    return YES;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)app { return YES; }
