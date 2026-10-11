@@ -5,6 +5,9 @@
 #include "param/AtlasBake.h"
 #include "param/AtlasMask.h"
 #include "param/HorizonPacker.h"
+#include "param/LayoutReport.h"
+#include "param/MipSafety.h"
+#include "param/UVMetrics.h"
 #include "param/MeshWriters.h"
 #include "render/ImageFile.h"
 #include "render/MeshRenderer.h"
@@ -134,20 +137,32 @@ bool AtlasSession::run(const SessionSettings& s, const Progress& progress, const
     auto stop = [&]() { if (cancel) { if (error) *error = "cancelled"; return true; } return false; };
 
     say(0.02, "Segmenting the mesh");
-    const FaceData fd = computeFaceData(mesh_);
+    FaceData fd = computeFaceData(mesh_);
+    if (s.dev.normalIterations > 0) {
+        NormalSmoothing ns;
+        ns.iterations = s.dev.normalIterations;
+        ns.sigmaDegrees = s.dev.normalSigma;
+        smoothFaceNormals(mesh_, fd, ns);
+    }
     const std::vector<Moments> fm = computeFaceMoments(mesh_, fd);
     const VSAInput in{mesh_, fd, fm};
     const int k = std::min(s.manualPatches ? std::max(1, s.patches) : patchesFor(mesh_.n_faces(), s.quality), int(mesh_.n_faces()));
     VSAState vs;
     vs.metric = Metric::L21;
-    vs.smooth = SmoothParams{0.1, 0.0, 10};
+    vs.smooth = SmoothParams{s.dev.smoothing, 0.0, 10};
+    k_ = size_t(k);
     initFarthestSeeds(in, vs, k, 12345);
-    runLloyd(in, vs, LloydParams());
+    LloydParams lp;
+    lp.maxIterations = s.dev.lloydIterations;
+    runLloyd(in, vs, lp);
     if (stop()) return false;
 
     say(0.2, "Unfolding the patches");
     RefineOptions ro;
-    ro.maxDepth = 10;
+    ro.maxDepth = s.dev.maxDepth;
+    ro.splitAtOnceAboveFaces = s.dev.splitAtOnce;
+    ro.param.allowLscm = s.dev.allowLscm;
+    ro.param.repairNearMisses = s.dev.repairNearMisses;
     Refiner refiner(mesh_, vs.label, ro);
     int rounds = 0;
     while (refiner.step()) {
@@ -256,4 +271,60 @@ bool AtlasSession::save(const std::string& requested, std::string* error) const
     const int faces = endsPly ? writePlyAtlas(path, pv, uvv, textureName, true, meta) : exportAtlasOBJ(path, mesh_, pv, uvv, meta, textureName);
     if (faces < 0) { if (error) *error = "cannot write " + path; return false; }
     return true;
+}
+
+std::string AtlasSession::report() const
+{
+    if (!resultValid_) return "";
+    char buf[300];
+    std::string out;
+    const RefineStats& st = result_.stats;
+    std::snprintf(buf, sizeof(buf), "faces %zu, started from %zu patches, ended with %zu (%d unresolved)\n", mesh_.n_faces(), k_,
+                  result_.params.size(), st.unresolved);
+    out += buf;
+    std::snprintf(buf, sizeof(buf), "refinement: %d rounds, %d bad at the start, %d splits (peel %d, normals %d, crossings %d, farthest %d, flood %d, voronoi %d)\n",
+                  st.rounds, st.initialBad, st.splits, st.splitsByPeel, st.splitsByNormals, st.splitsByCrossingHint, st.splitsByFarthest,
+                  st.splitsByFlood, st.splitsByVoronoi);
+    out += buf;
+    int count[8] = {0};
+    for (const PatchParam& p : result_.params) ++count[int(p.method)];
+    out += "unfolded by:";
+    for (int m = 1; m < 8; ++m) {
+        if (!count[m]) continue;
+        std::snprintf(buf, sizeof(buf), " %s %d,", paramMethodName(ParamMethod(m)), count[m]);
+        out += buf;
+    }
+    out += "\n";
+    if (!st.depthHistogram.empty()) {
+        out += "depth of splitting:";
+        for (size_t d = 0; d < st.depthHistogram.size(); ++d) { std::snprintf(buf, sizeof(buf), " %zu:%d", d, st.depthHistogram[d]); out += buf; }
+        out += "\n";
+    }
+    std::snprintf(buf, sizeof(buf), "atlas %d x %d, gutter %d, used %.1f%%, total %.1f s\n", atlas_.resolution, atlas_.resolution, atlas_.gutter,
+                  100.0 * atlas_.efficiency, seconds_);
+    out += buf;
+    return out;
+}
+
+std::string AtlasSession::compare(std::string* error) const
+{
+    if (!resultValid_) { if (error) *error = "make the atlas first"; return ""; }
+    const int R = std::max(256, atlas_.resolution);
+    const bool masked = extras_.faceMaterial.size() == mesh_.n_faces();   // only the faces of the texture's material
+    const bool hadOriginal = extras_.cornerUV.size() == mesh_.n_faces() * 6;
+    std::vector<float> original = extras_.cornerUV, ours = bakedUV_;
+    for (float& x : ours) if (x < 0.0f) x = std::nanf("");   // -1 marked "no uv"
+    for (size_t f = 0; masked && f < mesh_.n_faces(); ++f)
+        if (extras_.faceMaterial[f] != textureMaterial_)
+            for (int k = 0; k < 6; ++k) {
+                ours[f * 6 + k] = std::nanf("");
+                if (hadOriginal) original[f * 6 + k] = std::nanf("");
+            }
+    UVLayoutStats lo, ln = analyzeUVLayout(mesh_, ours, R);
+    MipSafetyResult mo, mn = measureMipSafety(mesh_, ours, R, true, 7, false);
+    if (hadOriginal) {
+        lo = analyzeUVLayout(mesh_, original, R);
+        mo = measureMipSafety(mesh_, original, R, true, 7, false);
+    }
+    return formatLayoutComparison(lo, ln, mo, mn, hadOriginal);
 }

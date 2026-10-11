@@ -11,6 +11,8 @@
 #include "render/GridRenderer.h"
 #include "app/NativeUI.h"
 #include "native/HugeSession.h"
+#import "native/DeveloperPanel.h"
+#import "native/Settings.h"
 #include "native/Session.h"
 
 #include <atomic>
@@ -27,6 +29,7 @@
     int _mode;              // 0 patches, 1 plain shading, 2 presentation, 3 texture
     BOOL _hasMesh;
     BOOL _hasTexture;
+    BOOL _wire;             // the developer mode: the wire of the triangles over the mesh
     BOOL _cull;             // big meshes: the back faces are not drawn
     float _offset, _alpha;  // presentation: how far the translucent copies of the patches move, how opaque they are
     int _pass1, _pass2;     // presentation: what a pass shows (0 patch colors, 1 texture, 2 shading); -1 = decided by the mesh
@@ -42,6 +45,7 @@
 - (void)setOffset:(float)offset alpha:(float)alpha;
 - (void)setPass1:(int)p1 pass2:(int)p2;
 - (void)resetCamera;
+- (void)setWireframe:(BOOL)on;
 @end
 
 @implementation SceneView
@@ -131,6 +135,7 @@
 - (void)setMode:(int)mode { _mode = mode; [self setNeedsDisplay:YES]; }
 - (void)setOffset:(float)offset alpha:(float)alpha { _offset = offset; _alpha = alpha; [self setNeedsDisplay:YES]; }
 - (void)setPass1:(int)p1 pass2:(int)p2 { _pass1 = p1; _pass2 = p2; [self setNeedsDisplay:YES]; }
+- (void)setWireframe:(BOOL)on { _wire = on; [self setNeedsDisplay:YES]; }
 - (void)resetCamera { if (_hasMesh) _camera.reset(); else _camera.resetAbove(); [self setNeedsDisplay:YES]; }
 
 - (void)drawRect:(NSRect)dirty
@@ -166,7 +171,7 @@
             _renderer.drawGhosts(vp, v, _offset, _alpha, _cull, p2 == 1, p2 == 2);
             if (!skipFirst && secondFirst) first();
         } else {
-            _renderer.draw(vp, v, false, 0.0f, _mode == 3 && tex, _cull, _mode == 1);
+            _renderer.draw(vp, v, _wire && !_cull, 0.0f, _mode == 3 && tex, _cull, _mode == 1);
         }
     }
     [self.openGLContext flushBuffer];
@@ -441,6 +446,11 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     BOOL _useHuge;              // the mesh is a big scan: it is read by the huge mode when the atlas is made
     BOOL _textureTouched;       // the user chose a texture size: it is not suggested from the size of the mesh any more
     NSButton* _repackButton;
+    DeveloperPanel* _dev;
+    NSMenuItem* _wireItem;
+    BOOL _developer;
+    BOOL _wire;
+    prefs::Values _prefs;
     std::atomic<bool> _cancel;
     std::thread _worker;
     BOOL _running;
@@ -461,6 +471,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     s.patches = _patchField.intValue;
     s.resolution = int(_textureSize.selectedItem.tag);
     s.maxMipLevel = int(_mip.integerValue);
+    if (_developer) s.dev = [_dev options];
     return s;
 }
 
@@ -559,12 +570,13 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _repackButton = [NSButton buttonWithTitle:@"Repack Atlas" target:self action:@selector(repackAtlas:)];
     _repackButton.enabled = NO;
     _repackButton.toolTip = @"Pack the same patches again with the texture size and mip levels set above (⌥⌘R)";
+    _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:)];
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel, open,
         label(@"Settings", 11, YES, YES), label(@"Quality", 12), _quality, _manual, patchRow,
         label(@"Texture size", 12), _textureSize, label(@"Mip levels", 12), _mip, _mipLabel,
         label(@"Atlas", 11, YES, YES), makeRow, _progress, _status,
-        label(@"Result", 11, YES, YES), _result, _repackButton, _presentGroup]];
+        label(@"Result", 11, YES, YES), _result, _repackButton, _presentGroup, _dev.view]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 8;
@@ -608,6 +620,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
                         (NSView*)_pass1, (NSView*)_pass2])
         [v.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
     [stack setCustomSpacing:20 afterView:_repackButton];
+    [stack setCustomSpacing:20 afterView:_presentGroup];
+    [_dev.view.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
     [self updateMipLabel];
     [self presentationChanged:nil];
     return fx;
@@ -650,6 +664,10 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 - (void)applicationDidFinishLaunching:(NSNotification*)n
 {
     if (getenv("HUGE_NATIVE_DARK")) NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];   // a check of the dark mode
+    _prefs = prefs::load();
+    if (getenv("HUGE_NATIVE_DEV")) _prefs.developer = true;   // testing hook
+    _developer = _prefs.developer;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(prefsChanged:) name:prefs::Changed object:nil];
     [self buildMenus];
     _scene = [[SceneView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
     __weak AppController* weakSelf = self;
@@ -693,6 +711,18 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     _status.stringValue = @"Open a mesh to begin";
+    // the sidebar starts with the defaults of the Settings window
+    [_quality selectItemAtIndex:_prefs.quality];
+    [_textureSize selectItemWithTag:_prefs.textureSize];
+    _mip.integerValue = _prefs.mipLevels;
+    [self updateMipLabel];
+    [self applyDeveloperMode];
+    if (getenv("HUGE_NATIVE_WIRE") && _developer) [self toggleWireframe:nil];   // testing hook
+    if (const char* st = getenv("HUGE_NATIVE_SETTINGS")) {   // testing hook: the Settings window (pane 0 or 1), shot of the window itself
+        showSettingsWindow(atoi(st));
+        [self autoShotAndQuit];
+        return;
+    }
 
     const char* arg = getenv("HUGE_NATIVE_OPEN");
     if (arg) {
@@ -771,8 +801,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     NSMenu* app = top(name);
     add(app, [@"About " stringByAppendingString:name], @selector(orderFrontStandardAboutPanel:), @"", 0, NSApp);
     [app addItem:[NSMenuItem separatorItem]];
-    NSMenuItem* settings = add(app, @"Settings…", @selector(showSettings:), @",", NSEventModifierFlagCommand, self);
-    settings.enabled = NO;   // the Settings window comes with the next step; the item has its place and its shortcut already
+    add(app, @"Settings…", @selector(showSettings:), @",", NSEventModifierFlagCommand, self);
     [app addItem:[NSMenuItem separatorItem]];
     NSMenu* services = [[NSMenu alloc] initWithTitle:@"Services"];
     [app addItemWithTitle:@"Services" action:nil keyEquivalent:@""].submenu = services;
@@ -814,6 +843,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     add(view, @"Reset Camera", @selector(resetCamera:), @"0", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Show UV Layout", @selector(toggleUVLayout:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    _wireItem = add(view, @"Show Wireframe", @selector(toggleWireframe:), @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Sidebar", @selector(toggleSidebar:), @"s", NSEventModifierFlagCommand | NSEventModifierFlagControl);
     add(view, @"Enter Full Screen", @selector(toggleFullScreen:), @"f", NSEventModifierFlagCommand | NSEventModifierFlagControl);
 
@@ -843,7 +873,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (a == @selector(cancelAtlas:)) return _running && !_useHuge;   // the huge mode cannot be stopped in the middle
     if (a == @selector(repackAtlas:)) return !_running && [self hasResult];
     if (a == @selector(saveAs:)) return !_running && [self hasResult];
-    if (a == @selector(showSettings:)) return NO;
+    if (a == @selector(toggleWireframe:)) { item.state = _wire ? NSControlStateValueOn : NSControlStateValueOff; item.hidden = !_developer; return _developer; }
+    if (a == @selector(compareLayouts:)) return !_running && [self hasResult];
     if (a == @selector(showPatches:)) { item.state = _mode == 0 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
     if (a == @selector(showPlain:)) item.state = _mode == 1 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(showPresentation:)) { item.state = _mode == 2 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
@@ -877,7 +908,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 {
     std::string err;
     const size_t estimate = HugeSession::estimateFaces(path.UTF8String);
-    if (estimate > 3000000) {   // a big scan is not loaded for viewing, the huge mode reads it straight from the file
+    if (estimate > size_t(_prefs.hugeMillions) * 1000000) {   // a big scan is not loaded for viewing, the huge mode reads it straight from the file
         _useHuge = YES;
         _huge.setFile(path.UTF8String);
         _session = AtlasSession();
@@ -930,6 +961,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _progress.hidden = !running;
     _cancelButton.hidden = !running || _useHuge;   // the huge mode cannot be stopped in the middle
     for (NSControl* c in @[(NSControl*)_quality, (NSControl*)_manual, (NSControl*)_textureSize, (NSControl*)_mip]) c.enabled = !running;
+    [_dev setEnabled:!running];
     [self updateEnabled];
 }
 
@@ -1035,7 +1067,12 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
         [_uv setCharts:_session.uvCharts() texture:(_session.hasBakedTexture() ? _session.bakedPixels() : nullptr) side:_session.bakedResolution()];
     }
     _result.stringValue = text;
-    [_uvItem.animator setCollapsed:NO];
+    {
+        const std::string rep = _useHuge ? _huge.report() : _session.report();
+        [_dev setReport:[NSString stringWithUTF8String:rep.c_str()]];
+        if (getenv("HUGE_NATIVE_AUTORUN") && !keepView) printf("NATIVE REPORT:\n%s", rep.c_str());
+    }
+    if (_prefs.openUV) [_uvItem.animator setCollapsed:NO];
     [self setViewMode:keepView ? _mode : ([self hasBaked] ? 3 : 0)];
     [self updateEnabled];
     if (getenv("HUGE_NATIVE_AUTORUN")) {
@@ -1067,6 +1104,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
             const bool ok = _useHuge ? _huge.save(out, &err) : _session.save(out, &err);
             printf("NATIVE SAVE: %s %s\n", ok ? "ok" : "failed", err.c_str());
         }
+        if (getenv("HUGE_NATIVE_COMPARE")) { [self compareLayouts:nil]; return; }   // testing hook: the comparison, printed; it quits when done
         [self autoShotAndQuit];
     }
 }
@@ -1110,7 +1148,49 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 - (void)showTexture:(id)sender { [self setViewMode:3]; }
 - (void)viewSwitched:(NSSegmentedControl*)s { [self setViewMode:int(s.selectedSegment)]; }
 - (void)resetCamera:(id)sender { [_scene resetCamera]; }
-- (void)showSettings:(id)sender {}
+- (void)showSettings:(id)sender { showSettingsWindow(0); }
+- (void)toggleWireframe:(id)sender { _wire = !_wire; [_scene setWireframe:_wire]; }
+
+// the preferences changed (the Settings window): the developer mode, the defaults of the sidebar
+- (void)prefsChanged:(NSNotification*)n
+{
+    const prefs::Values old = _prefs;
+    _prefs = prefs::load();
+    [self applyDeveloperMode];
+    if (_prefs.quality != old.quality) [_quality selectItemAtIndex:_prefs.quality];
+    if (_prefs.textureSize != old.textureSize) { [_textureSize selectItemWithTag:_prefs.textureSize]; _textureTouched = YES; }
+    if (_prefs.mipLevels != old.mipLevels) _mip.integerValue = _prefs.mipLevels;
+    [self updateMipLabel];
+}
+
+- (void)applyDeveloperMode
+{
+    _developer = _prefs.developer;
+    _dev.view.hidden = !_developer;
+    if (!_developer && _wire) { _wire = NO; [_scene setWireframe:NO]; }
+}
+
+// the measures of the original layout and of the new atlas, in a window of text (the measuring takes a while on a big scan)
+- (void)compareLayouts:(id)sender
+{
+    if (_running || ![self hasResult]) return;
+    _dev.compareButton.enabled = NO;
+    _status.stringValue = @"Measuring the layouts…";
+    __weak AppController* weakSelf = self;
+    std::thread([self, weakSelf]() {
+        std::string err;
+        const std::string text = _useHuge ? _huge.compare(&err) : _session.compare(&err);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AppController* me = weakSelf;
+            if (!me) return;
+            me->_dev.compareButton.enabled = YES;
+            if (text.empty()) { me->_status.stringValue = [NSString stringWithFormat:@"Cannot compare: %s", err.c_str()]; return; }
+            me->_status.stringValue = @"Done";
+            showTextWindow(@"Original Layout and New Atlas", [NSString stringWithUTF8String:text.c_str()]);
+            if (getenv("HUGE_NATIVE_AUTORUN")) { printf("NATIVE COMPARE:\n%s", text.c_str()); [me autoShotAndQuit]; }
+        });
+    }).detach();
+}
 
 // ---- a picture of the own window for the checks without a person (own window: needs no screen recording permission)
 - (void)autoShotAndQuit
@@ -1118,7 +1198,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     const char* shot = getenv("HUGE_NATIVE_SHOT");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         if (shot) {
-            CGImageRef img = CGWindowListCreateImage(CGRectNull, kCGWindowListOptionIncludingWindow, CGWindowID(self->_window.windowNumber),
+            CGImageRef img = CGWindowListCreateImage(CGRectNull, kCGWindowListOptionIncludingWindow, CGWindowID((getenv("HUGE_NATIVE_SETTINGS") && settingsWindow() ? settingsWindow() : self->_window).windowNumber),
                                                      kCGWindowImageBoundsIgnoreFraming);
             if (img) {
                 NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:img];

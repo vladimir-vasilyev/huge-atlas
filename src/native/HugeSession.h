@@ -42,6 +42,9 @@ public:
     const unsigned char* bakedPixels() const { return baked_.data(); }
     std::vector<UvChart> uvCharts() const;             // the borders of the charts in the atlas (the huge mode keeps no triangles)
 
+    std::string report() const;                        // what the last run did, as text for the developer mode
+    std::string compare(std::string* error) const;     // the original layout and the new atlas side by side
+
     // PLY with the atlas UV, and `<name>_atlas.png` next to it when there is a baked texture
     bool save(const std::string& path, std::string* error) const;
 
@@ -60,4 +63,5 @@ private:
     int bakedResolution_ = 0;
     bool resultValid_ = false;
     double seconds_ = 0.0;
+    size_t k_ = 0;
 };

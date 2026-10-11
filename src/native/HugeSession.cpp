@@ -1,5 +1,10 @@
 #include "native/HugeSession.h"
 
+#include "param/FlatAdjacency.h"
+#include "param/LayoutReport.h"
+#include "param/MipSafety.h"
+#include "param/UVMetrics.h"
+
 #include "param/AtlasMask.h"
 #include "param/FlatBake.h"
 #include "render/ImageFile.h"
@@ -61,8 +66,16 @@ bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::s
     const double base = 0.06 * std::sqrt(double(std::max<size_t>(mesh_.faceCount(), 1)));
     CoarseOptions co;
     co.k = s.manualPatches ? std::max(1, s.patches) : int(std::max(8.0, std::min(1000.0, std::round(base * kFactor[q]))));
-    co.simplifyPercent = kPercent[q];
-    co.lloyd.maxIterations = 30;
+    co.simplifyPercent = s.dev.simplifyPercent > 0.0 ? s.dev.simplifyPercent : kPercent[q];
+    co.lloyd.maxIterations = s.dev.lloydIterations;
+    co.smooth.lambda = s.dev.smoothing;
+    co.normals.iterations = s.dev.normalIterations;
+    co.normals.sigmaDegrees = s.dev.normalSigma;
+    co.refine.maxDepth = s.dev.maxDepth;
+    co.refine.splitAtOnceAboveFaces = s.dev.splitAtOnce;
+    co.refine.param.allowLscm = s.dev.allowLscm;
+    co.refine.param.repairNearMisses = s.dev.repairNearMisses;
+    k_ = size_t(co.k);
     co.onStage = [&](const std::string& what) { say(what); };
     result_ = runFlatPipeline(mesh_, co);
 
@@ -154,4 +167,48 @@ bool HugeSession::save(const std::string& requested, std::string* error) const
         if (!writePNG(dir + "/" + textureFile, R, R, flipped, &pngError)) { if (error) *error = "texture: " + pngError; return false; }
     }
     return writeFlatPlyAtlas(path, mesh_, result_, &transform_, error, textureFile);
+}
+
+std::string HugeSession::report() const
+{
+    if (!resultValid_) return "";
+    const FlatStats& st = result_.stats;
+    const CoarseStats& c = st.coarse;
+    char buf[400];
+    std::string out;
+    std::snprintf(buf, sizeof(buf), "faces %zu, started from %zu patches; simplified copy %zu faces, %d coarse patches (%d bad at the start, %d splits, %d unresolved)\n",
+                  mesh_.faceCount(), k_, c.coarseFaces, c.coarsePatches, c.coarseInitialBad, c.coarseSplits, c.coarseUnresolved);
+    out += buf;
+    std::snprintf(buf, sizeof(buf), "pieces %zu: lifted %zu, through the ordinary pipeline %zu; patches %zu (%zu unresolved, %zu repaired), faces without uv %zu\n",
+                  st.pieces, st.liftedPieces, st.fallbackPieces, result_.patches.size(), st.patchesUnresolved, st.patchesRepaired, st.facesWithoutUV);
+    out += buf;
+    std::snprintf(buf, sizeof(buf), "seconds: simplify %.1f, coarse VSA %.1f, coarse refinement %.1f, adjacency %.1f, cleaning %.1f, lift %.1f, ordinary pipeline %.1f\n",
+                  c.simplifySeconds, c.coarseVsaSeconds, c.coarseRefineSeconds, st.adjacencySeconds, st.cleanSeconds, st.liftSeconds, st.fallbackSeconds);
+    out += buf;
+    std::snprintf(buf, sizeof(buf), "atlas %d x %d, used %.1f%%, total %.1f s\n", atlas_.resolution, atlas_.resolution, 100.0 * atlas_.efficiency, seconds_);
+    out += buf;
+    return out;
+}
+
+std::string HugeSession::compare(std::string* error) const
+{
+    if (!resultValid_) { if (error) *error = "make the atlas first"; return ""; }
+    const int R = std::max(256, atlas_.resolution);
+    const std::vector<int32_t> nbr = buildFaceNeighbors(mesh_);
+    std::vector<float> ours = result_.cornerUV, original = surface_.cornerUV;
+    const bool hadOriginal = original.size() == mesh_.faceCount() * 6;
+    const bool masked = surface_.faceMaterial.size() == mesh_.faceCount();
+    for (size_t f = 0; masked && f < mesh_.faceCount(); ++f)
+        if (surface_.faceMaterial[f] != textureMaterial_)
+            for (int k = 0; k < 6; ++k) {
+                ours[f * 6 + k] = std::nanf("");
+                if (hadOriginal) original[f * 6 + k] = std::nanf("");
+            }
+    UVLayoutStats lo, ln = analyzeUVLayout(mesh_, nbr, ours, R);
+    MipSafetyResult mo, mn = measureMipSafety(mesh_, nbr, ours, R, true, 7, false);
+    if (hadOriginal) {
+        lo = analyzeUVLayout(mesh_, nbr, original, R);
+        mo = measureMipSafety(mesh_, nbr, original, R, true, 7, false);
+    }
+    return formatLayoutComparison(lo, ln, mo, mn, hadOriginal);
 }

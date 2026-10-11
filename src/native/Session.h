@@ -13,12 +13,26 @@
 
 // The work behind the native window: load a mesh, make the atlas, give the colors of the patches, save. Nothing here knows about the
 // user interface; `run` is meant to be called from a thread of its own.
+// What the developer mode adds: the knobs of the pipeline (the defaults are the values the ordinary mode uses).
+struct DeveloperOptions {
+    double smoothing = 0.1;          // border smoothing of the VSA regions (lambda)
+    int    normalIterations = 0;     // smoothing of the normal field before the VSA (0 = off)
+    double normalSigma = 25.0;       // ... and its angle (degrees)
+    int    lloydIterations = 30;
+    int    maxDepth = 10;            // how many times a patch may be split again
+    int    splitAtOnce = 40000;      // patches above this many faces are split at once when plain LinABF fails (0 = never)
+    bool   allowLscm = true;         // LSCM before Tutte
+    bool   repairNearMisses = true;  // a map with a few flips is repaired locally
+    double simplifyPercent = 0.0;    // huge mode: size of the simplified copy in percent (0 = by quality)
+};
+
 struct SessionSettings {
     int  quality = 1;               // 0 fast, 1 balanced, 2 detailed
     bool manualPatches = false;
     int  patches = 100;
     int  resolution = 2048;
     int  maxMipLevel = 3;
+    DeveloperOptions dev;
 };
 
 // One chart of the atlas for the UV view: its vertices in the atlas (u, v in [0, 1]), its triangles and the loops of its border.
@@ -75,6 +89,11 @@ public:
     // into the atlas, or a flat color per chart to paint over when the mesh has no texture.
     bool save(const std::string& path, std::string* error) const;
 
+    // What the last run did, as text for the developer mode: patches, the methods that unfolded them, splits, packing.
+    std::string report() const;
+    // The original layout and the new atlas side by side (needs the atlas; without UV in the file only the atlas is measured).
+    std::string compare(std::string* error) const;
+
     // how many patches the quality asks for on a mesh of this size
     static int patchesFor(size_t faces, int quality);
 
@@ -87,6 +106,7 @@ private:
     AtlasResult atlas_;
     bool resultValid_ = false;
     double seconds_ = 0.0;
+    size_t k_ = 0;
 
     ObjExtras extras_;
     std::vector<unsigned char> sourcePixels_;

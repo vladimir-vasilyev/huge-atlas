@@ -113,6 +113,7 @@ add_library(vsa_core STATIC
     src/param/AtlasBake.cpp
     src/param/UVMetrics.h
     src/param/UVMetrics.cpp
+    src/param/LayoutReport.cpp
     src/param/MipSafety.h
     src/param/MipSafety.cpp
     src/param/MeshWriters.h
@@ -315,6 +316,8 @@ add_executable(huge_atlas_native
     src/native/main.mm
     src/native/Session.cpp
     src/native/HugeSession.cpp
+    src/native/Settings.mm
+    src/native/DeveloperPanel.mm
     src/app/NativeUI.mm
     src/render/GL.cpp
     src/render/Shader.cpp
