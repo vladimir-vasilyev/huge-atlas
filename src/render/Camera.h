@@ -7,6 +7,8 @@
 class Camera {
 public:
     void reset() { *this = Camera(); }
+    // The view of an empty scene: seen from above at an angle, so the floor grid is visible.
+    void resetAbove();
 
     // Cursor coordinates in window pixels (any consistent system), w/h - size of the area.
     void beginRotate(double x, double y, int w, int h) { last_ = project(x, y, w, h); }

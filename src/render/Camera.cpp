@@ -35,6 +35,20 @@ void Camera::rotateTo(double x, double y, int w, int h)
     last_ = b;
 }
 
+void Camera::resetAbove()
+{
+    *this = Camera();
+    // pitch 28 degrees (looking down), then yaw -32 degrees; q = qPitch * qYaw (the yaw acts first in the world frame)
+    const double pitch = 28.0 * M_PI / 180.0, yaw = -32.0 * M_PI / 180.0;
+    const double a[4] = {std::cos(0.5 * pitch), std::sin(0.5 * pitch), 0, 0};
+    const double b[4] = {std::cos(0.5 * yaw), 0, std::sin(0.5 * yaw), 0};
+    q_[0] = a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3];
+    q_[1] = a[0]*b[1] + a[1]*b[0] + a[2]*b[3] - a[3]*b[2];
+    q_[2] = a[0]*b[2] - a[1]*b[3] + a[2]*b[0] + a[3]*b[1];
+    q_[3] = a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0];
+    dist_ = 3.2;
+}
+
 // An area that is narrower than about 0.7 : 1 (between docked panels) sees a wider vertical field, so the model keeps
 // its margins at the sides instead of touching them.
 static double fieldFit(double aspect) { return std::max(1.0, 0.7 / std::max(aspect, 1e-3)); }

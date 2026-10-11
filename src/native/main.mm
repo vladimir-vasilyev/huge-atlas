@@ -8,6 +8,7 @@
 #include "render/GL.h"
 #include "render/Camera.h"
 #include "render/MeshRenderer.h"
+#include "render/GridRenderer.h"
 #include "app/NativeUI.h"
 #include "native/HugeSession.h"
 #include "native/Session.h"
@@ -20,6 +21,7 @@
 
 @interface SceneView : NSOpenGLView {
     MeshRenderer _renderer;
+    GridRenderer _grid;
     Camera _camera;
     BOOL _ready;
     int _mode;              // 0 patches, 1 plain shading, 2 presentation, 3 texture
@@ -73,6 +75,8 @@
     std::string log;
     _ready = _renderer.init(&log);
     if (!_ready) NSLog(@"MeshRenderer: %s", log.c_str());
+    if (!_grid.init(&log)) NSLog(@"GridRenderer: %s", log.c_str());
+    _camera.resetAbove();
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
 }
@@ -93,6 +97,7 @@
     [self ensureReady];
     _renderer.invalidateGeometry();
     _renderer.upload(mesh, colors, {}, uv);
+    if (!_hasMesh) _camera.reset();   // from the grid view to the model
     _hasMesh = YES;
     _cull = NO;
     [self setNeedsDisplay:YES];
@@ -102,12 +107,13 @@
 {
     [self ensureReady];
     _renderer.uploadFlat(mesh, uv, rgba);
+    if (!_hasMesh) _camera.reset();
     _hasMesh = YES;
     _cull = mesh.faceCount() > 500000;   // as in the other build: a scan is drawn without its back faces
     [self setNeedsDisplay:YES];
 }
 
-- (void)clearMesh { _hasMesh = NO; _hasTexture = NO; [self setNeedsDisplay:YES]; }
+- (void)clearMesh { _hasMesh = NO; _hasTexture = NO; _camera.resetAbove(); [self setNeedsDisplay:YES]; }
 
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels
 {
@@ -125,7 +131,7 @@
 - (void)setMode:(int)mode { _mode = mode; [self setNeedsDisplay:YES]; }
 - (void)setOffset:(float)offset alpha:(float)alpha { _offset = offset; _alpha = alpha; [self setNeedsDisplay:YES]; }
 - (void)setPass1:(int)p1 pass2:(int)p2 { _pass1 = p1; _pass2 = p2; [self setNeedsDisplay:YES]; }
-- (void)resetCamera { _camera.reset(); [self setNeedsDisplay:YES]; }
+- (void)resetCamera { if (_hasMesh) _camera.reset(); else _camera.resetAbove(); [self setNeedsDisplay:YES]; }
 
 - (void)drawRect:(NSRect)dirty
 {
@@ -139,6 +145,11 @@
     }];
     glClearColor(r, g, bl, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (_ready && !_hasMesh && b.size.height > 0) {
+        float vp[16];
+        _camera.viewProj(float(b.size.width / b.size.height), vp);
+        _grid.draw(vp, 0.2126f * r + 0.7152f * g + 0.0722f * bl < 0.5f);
+    }
     if (_ready && _hasMesh && b.size.height > 0) {
         float vp[16], v[16];
         _camera.viewProj(float(b.size.width / b.size.height), vp);
@@ -688,6 +699,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
         [self loadPath:[NSString stringWithUTF8String:arg]];
         if (getenv("HUGE_NATIVE_AUTORUN")) [self makeAtlas:nil];
         else [self autoShotAndQuit];
+    } else if (getenv("HUGE_NATIVE_SHOT")) {
+        [self autoShotAndQuit];
     }
 }
 

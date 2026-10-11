@@ -23,6 +23,7 @@
 #include "render/DebugTriangle.h"
 #include "core/ObjLoader.h"
 #include "render/MeshRenderer.h"
+#include "render/GridRenderer.h"
 #include "render/SceneFramebuffer.h"
 
 #include <imgui.h>
@@ -120,6 +121,7 @@ private:
     float angle_ = 0.0f;
 
     DebugTriangle triangle_;
+    GridRenderer grid_;
 
     // Stage 1: mesh and its display
     TriMesh          mesh_;

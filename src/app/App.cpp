@@ -178,6 +178,8 @@ bool App::init(int width, int height, const char* title)
         std::fprintf(stderr, "MeshRenderer shader error:\n%s\n", log.c_str());
         return false;
     }
+    if (!grid_.init(&log)) std::fprintf(stderr, "GridRenderer shader error:\n%s\n", log.c_str());
+    camera_.resetAbove();   // no mesh at start: the coordinate grid is seen from above
     showTriangle_ = false;
     rotate_ = false;
     if (const char* d = std::getenv("VSA_NORMAL_ITER")) normalSmoothing_.iterations = std::atoi(d);   // testing hooks
@@ -186,7 +188,7 @@ bool App::init(int width, int height, const char* title)
     if (const char* po = std::getenv("VSA_PRESENT_OFFSET")) presentOffset_ = float(std::atof(po));
     if (const char* pa = std::getenv("VSA_PRESENT_ALPHA")) presentAlpha_ = float(std::atof(pa));
     const char* envMesh = std::getenv("VSA_MESH");   // testing hooks: VSA_MESH, VSA_K, VSA_AUTO_ATLAS
-    openMesh(envMesh ? envMesh : paths::defaultMesh());   // default file; on failure only a status message
+    if (envMesh) openMesh(envMesh);   // without a file the scene shows the coordinate grid
     if (const char* envK = std::getenv("VSA_K")) vsaK_ = std::max(1, std::atoi(envK));
     if (const char* envW = std::getenv("VSA_WIREFRAME")) wireframe_ = std::atoi(envW) != 0;
     if (const char* envM = std::getenv("VSA_MSAA")) msaaSamples_ = std::atoi(envM);
@@ -253,7 +255,7 @@ void App::installNativeMenu()
                     break;
                 case native::CmdBinaryPly: binaryPly_ = !binaryPly_; break;
                 case native::CmdWireframe: wireframe_ = !wireframe_; break;
-                case native::CmdResetCamera: camera_.reset(); break;
+                case native::CmdResetCamera: if (meshRenderer_.hasMesh()) camera_.reset(); else camera_.resetAbove(); break;
                 case native::CmdDeveloperMode: devMode_ = !devMode_; saveSettings(); break;
                 case native::CmdSaveBadPatch: saveBadPatches(); break;
                 case native::CmdLoadBadPatch: loadBadRequested_ = true; break;
@@ -3417,7 +3419,7 @@ void App::drawAtlasWindow()
     }
     if (!hugeStatus_.empty() && (hugeShown_ || !pendingHugePath_.empty()) && !hugeRunning) ImGui::TextWrapped("%s", hugeStatus_.c_str());
     ImGui::Separator();
-    if (ui::Button("Reset camera")) camera_.reset();
+    if (ui::Button("Reset camera")) { if (meshRenderer_.hasMesh()) camera_.reset(); else camera_.resetAbove(); }
     ImGui::End();
 }
 
@@ -3518,7 +3520,7 @@ void App::drawUI()
         if (ui::RadioButton("Regions", &colorMode_, 2)) uploadMesh();
         ImGui::SameLine();
         if (ui::RadioButton("Weights", &colorMode_, 3)) uploadMesh();
-        if (ui::Button("Reset camera")) camera_.reset();
+        if (ui::Button("Reset camera")) { if (meshRenderer_.hasMesh()) camera_.reset(); else camera_.resetAbove(); }
         ImGui::Separator();
         if (meshRenderer_.hasMesh()) {
             ImGui::Text("Vertices : %d", diag_.vertices);
@@ -3615,6 +3617,11 @@ void App::renderScene(int fbWidth, int fbHeight)
     if (showTriangle_ && vh > 0)
         triangle_.draw(angle_, float(vw) / float(vh));
 
+    if (!meshRenderer_.hasMesh() && vh > 0) {
+        float vp[16];
+        camera_.viewProj(float(vw) / float(vh), vp);
+        grid_.draw(vp, 0.2126f * clearColor_[0] + 0.7152f * clearColor_[1] + 0.0722f * clearColor_[2] < 0.5f);
+    }
     if (meshRenderer_.hasMesh() && vh > 0) {
         float vp[16], v[16];
         camera_.viewProj(float(vw) / float(vh), vp);
@@ -3668,6 +3675,7 @@ void App::shutdown()
         glfwMakeContextCurrent(window_);
         triangle_.destroy();
         meshRenderer_.destroy();
+        grid_.destroy();
         scene_.destroy();
         if (gpuQuery_[0]) { glDeleteQueries(2, gpuQuery_); gpuQuery_[0] = gpuQuery_[1] = 0; }
     }
