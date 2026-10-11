@@ -27,6 +27,7 @@ struct UvChart {
     std::vector<float> uv;                          // u, v per vertex
     std::vector<unsigned> triangles;                // three vertex indices per face
     std::vector<std::vector<unsigned>> loops;       // the border of the chart, vertex indices
+    std::vector<unsigned> segments;                 // border edges as pairs of vertex indices (the huge mode keeps only these)
 };
 
 class AtlasSession {
@@ -62,6 +63,9 @@ public:
     // the normal of the patch of every face (3 floats per face): the direction in which the patches move in the presentation
     std::vector<float> patchNormalsPerFace() const;
 
+    // The atlas packed again with another texture size / mip levels (and the texture baked again): nothing before the packing is run again.
+    bool repack(const SessionSettings& settings, std::string* error);
+
     // the charts as they lie in the atlas (for the UV view)
     std::vector<UvChart> uvCharts() const;
     // the color of a patch (the same in the 3D view and in the UV view)
@@ -75,6 +79,7 @@ public:
     static int patchesFor(size_t faces, int quality);
 
 private:
+    bool packAndBake(const SessionSettings& settings, std::string* error);
     std::vector<BakeChart> bakeCharts() const;
     TriMesh mesh_;
     std::string path_;

@@ -76,6 +76,55 @@ bool AtlasSession::load(const std::string& path, std::string* error)
     return true;
 }
 
+// Packs the unfolded patches of result_ into an atlas and bakes the texture of the file into it (resultValid_ is set when it worked).
+bool AtlasSession::packAndBake(const SessionSettings& s, std::string* error)
+{
+    std::vector<AtlasInput> inputs(result_.params.size());
+    for (size_t i = 0; i < result_.params.size(); ++i) {
+        const PatchParam& p = result_.params[i];
+        if (p.method == ParamMethod::None || p.uv.empty()) continue;
+        const TriMesh& pm = p.patch.mesh;
+        double uvArea = 0.0, area3 = 0.0;
+        for (auto f : pm.faces()) {
+            Eigen::Vector2d q[3];
+            Vec3 v[3];
+            int c = 0;
+            for (auto fv : pm.fv_range(f)) { q[c] = p.uv[fv.idx()]; v[c] = pm.point(fv); ++c; }
+            uvArea += std::abs(0.5 * ((q[1] - q[0]).x() * (q[2] - q[0]).y() - (q[1] - q[0]).y() * (q[2] - q[0]).x()));
+            area3 += 0.5 * ((v[1] - v[0]) % (v[2] - v[0])).norm();
+        }
+        inputs[i] = {&p.uv, uvArea, area3, &pm};
+    }
+    HorizonOptions ho;
+    ho.resolution = s.resolution;
+    ho.maxMipLevel = s.maxMipLevel;
+    AtlasResult atlas = packHorizon(inputs, ho);
+    if (!atlas.ok) { if (error) *error = "packing failed: " + atlas.message; return false; }
+    atlas_ = std::move(atlas);
+    resultValid_ = true;
+
+    // the atlas as texture coordinates, and the texture of the file baked into it
+    std::vector<BakeChart> charts = bakeCharts();
+    bakedUV_ = cornerUVFromAtlas(mesh_, charts);
+    for (size_t f = 0; f < mesh_.n_faces(); ++f)
+        if (std::isnan(bakedUV_[f * 6])) for (int k = 0; k < 6; ++k) bakedUV_[f * 6 + k] = -1.0f;
+    baked_.clear();
+    if (hasSourceTexture()) {
+        BakeSource src{sourceW_, sourceH_, sourcePixels_.data()};
+        BakeOptions bo;
+        bo.resolution = atlas_.resolution;
+        bo.margin = atlas_.margin;
+        baked_ = bakeAtlasTexture(mesh_, charts, &src, extras_.cornerUV, extras_.faceMaterial, textureMaterial_, bo);
+    }
+    return true;
+}
+
+bool AtlasSession::repack(const SessionSettings& s, std::string* error)
+{
+    if (!resultValid_) { if (error) *error = "there is no atlas to pack again"; return false; }
+    return packAndBake(s, error);
+}
+
 bool AtlasSession::run(const SessionSettings& s, const Progress& progress, const std::atomic<bool>& cancel, std::string* error)
 {
     if (!hasMesh()) { if (error) *error = "open a mesh first"; return false; }
@@ -109,51 +158,10 @@ bool AtlasSession::run(const SessionSettings& s, const Progress& progress, const
     RefineResult rr = refiner.takeResult();
     if (stop()) return false;
 
-    say(0.85, "Packing the atlas");
-    std::vector<AtlasInput> inputs(rr.params.size());
-    for (size_t i = 0; i < rr.params.size(); ++i) {
-        const PatchParam& p = rr.params[i];
-        if (p.method == ParamMethod::None || p.uv.empty()) continue;
-        const TriMesh& pm = p.patch.mesh;
-        double uvArea = 0.0, area3 = 0.0;
-        for (auto f : pm.faces()) {
-            Eigen::Vector2d q[3];
-            Vec3 v[3];
-            int c = 0;
-            for (auto fv : pm.fv_range(f)) { q[c] = p.uv[fv.idx()]; v[c] = pm.point(fv); ++c; }
-            uvArea += std::abs(0.5 * ((q[1] - q[0]).x() * (q[2] - q[0]).y() - (q[1] - q[0]).y() * (q[2] - q[0]).x()));
-            area3 += 0.5 * ((v[1] - v[0]) % (v[2] - v[0])).norm();
-        }
-        inputs[i] = {&p.uv, uvArea, area3, &pm};
-    }
-    HorizonOptions ho;
-    ho.resolution = s.resolution;
-    ho.maxMipLevel = s.maxMipLevel;
-    AtlasResult atlas = packHorizon(inputs, ho);
-    if (!atlas.ok) { if (error) *error = "packing failed: " + atlas.message; return false; }
-
     result_ = std::move(rr);
-    atlas_ = std::move(atlas);
-    resultValid_ = true;
+    say(0.85, "Packing the atlas");
+    if (!packAndBake(s, error)) { resultValid_ = false; return false; }
     if (stop()) { resultValid_ = false; return false; }
-
-    // the atlas as texture coordinates, and the texture of the file baked into it
-    say(0.92, "Baking the texture");
-    std::vector<BakeChart> charts;
-    for (size_t i = 0; i < result_.params.size(); ++i)
-        if (i < atlas_.uv.size() && !atlas_.uv[i].empty()) charts.push_back({&result_.params[i].patch, &atlas_.uv[i]});
-    bakedUV_ = cornerUVFromAtlas(mesh_, charts);
-    for (size_t f = 0; f < mesh_.n_faces(); ++f)
-        if (std::isnan(bakedUV_[f * 6])) for (int k = 0; k < 6; ++k) bakedUV_[f * 6 + k] = -1.0f;
-    baked_.clear();
-    if (hasSourceTexture()) {
-        BakeSource src{sourceW_, sourceH_, sourcePixels_.data()};
-        BakeOptions bo;
-        bo.resolution = atlas_.resolution;
-        bo.margin = atlas_.margin;
-        baked_ = bakeAtlasTexture(mesh_, charts, &src, extras_.cornerUV, extras_.faceMaterial, textureMaterial_, bo);
-        if (getenv("HUGE_NATIVE_DEBUG")) std::fprintf(stderr, "bake: %zu charts, %d x %d source, baked %zu bytes\n", charts.size(), sourceW_, sourceH_, baked_.size());
-    }
     seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     say(1.0, "Done");
     return true;

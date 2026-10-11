@@ -312,6 +312,7 @@ set_target_properties(all_tests PROPERTIES FOLDER "Tests")
 add_executable(huge_atlas_native
     src/native/main.mm
     src/native/Session.cpp
+    src/native/HugeSession.cpp
     src/app/NativeUI.mm
     src/render/GL.cpp
     src/render/Shader.cpp

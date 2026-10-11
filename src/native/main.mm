@@ -9,6 +9,7 @@
 #include "render/Camera.h"
 #include "render/MeshRenderer.h"
 #include "app/NativeUI.h"
+#include "native/HugeSession.h"
 #include "native/Session.h"
 
 #include <atomic>
@@ -24,12 +25,15 @@
     int _mode;              // 0 patches, 1 plain shading, 2 presentation, 3 texture
     BOOL _hasMesh;
     BOOL _hasTexture;
+    BOOL _cull;             // big meshes: the back faces are not drawn
     float _offset, _alpha;  // presentation: how far the translucent copies of the patches move, how opaque they are
     int _pass1, _pass2;     // presentation: what a pass shows (0 patch colors, 1 texture, 2 shading); -1 = decided by the mesh
     NSPoint _last;
 }
 @property (nonatomic, copy) void (^onDropURL)(NSURL*);
 - (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors faceUV:(const std::vector<float>&)uv;
+- (void)showFlat:(const FlatMesh&)mesh cornerUV:(const std::vector<float>&)uv rgba:(const std::vector<unsigned char>&)rgba;
+- (void)clearMesh;
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels;
 - (void)setPatchNormals:(const std::vector<float>&)normals;
 - (void)setMode:(int)mode;
@@ -90,8 +94,20 @@
     _renderer.invalidateGeometry();
     _renderer.upload(mesh, colors, {}, uv);
     _hasMesh = YES;
+    _cull = NO;
     [self setNeedsDisplay:YES];
 }
+
+- (void)showFlat:(const FlatMesh&)mesh cornerUV:(const std::vector<float>&)uv rgba:(const std::vector<unsigned char>&)rgba
+{
+    [self ensureReady];
+    _renderer.uploadFlat(mesh, uv, rgba);
+    _hasMesh = YES;
+    _cull = mesh.faceCount() > 500000;   // as in the other build: a scan is drawn without its back faces
+    [self setNeedsDisplay:YES];
+}
+
+- (void)clearMesh { _hasMesh = NO; _hasTexture = NO; [self setNeedsDisplay:YES]; }
 
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels
 {
@@ -134,12 +150,12 @@
             auto fix = [&](int p) { return (p == 1 && !tex) ? 0 : p; };
             const int p1 = fix(_pass1 >= 0 ? _pass1 : (tex ? 0 : 2)), p2 = fix(_pass2 >= 0 ? _pass2 : (tex ? 1 : 0));
             const BOOL skipFirst = _offset <= 1e-6f, secondFirst = _alpha >= 0.999f;   // offset 0: one pass; opaque: the second goes first
-            auto first = [&] { _renderer.draw(vp, v, false, 0.0f, p1 == 1, false, p1 == 2); };
+            auto first = [&] { _renderer.draw(vp, v, false, 0.0f, p1 == 1, _cull, p1 == 2); };
             if (!skipFirst && !secondFirst) first();
-            _renderer.drawGhosts(vp, v, _offset, _alpha, false, p2 == 1, p2 == 2);
+            _renderer.drawGhosts(vp, v, _offset, _alpha, _cull, p2 == 1, p2 == 2);
             if (!skipFirst && secondFirst) first();
         } else {
-            _renderer.draw(vp, v, false, 0.0f, _mode == 3 && tex, false, _mode == 1);
+            _renderer.draw(vp, v, false, 0.0f, _mode == 3 && tex, _cull, _mode == 1);
         }
     }
     [self.openGLContext flushBuffer];
@@ -311,6 +327,11 @@
         CGPathRelease(fill);
         CGContextSetRGBStrokeColor(g, rgb[0], rgb[1], rgb[2], 0.95);
         CGContextSetLineWidth(g, 1.5);
+        for (size_t i = 0; i + 1 < c.segments.size(); i += 2) {   // the huge mode: only the border edges
+            CGContextMoveToPoint(g, pt(c.segments[i]).x, pt(c.segments[i]).y);
+            CGContextAddLineToPoint(g, pt(c.segments[i + 1]).x, pt(c.segments[i + 1]).y);
+        }
+        CGContextStrokePath(g);
         for (const auto& loop : c.loops) {
             if (loop.size() < 2) continue;
             CGContextMoveToPoint(g, pt(loop[0]).x, pt(loop[0]).y);
@@ -405,6 +426,10 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     int _mode;
 
     AtlasSession _session;
+    HugeSession _huge;
+    BOOL _useHuge;              // the mesh is a big scan: it is read by the huge mode when the atlas is made
+    BOOL _textureTouched;       // the user chose a texture size: it is not suggested from the size of the mesh any more
+    NSButton* _repackButton;
     std::atomic<bool> _cancel;
     std::thread _worker;
     BOOL _running;
@@ -412,6 +437,10 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 @end
 
 @implementation AppController
+
+- (BOOL)hasMeshToWork { return _useHuge ? !_huge.path().empty() : _session.hasMesh(); }
+- (BOOL)hasResult { return _useHuge ? _huge.hasResult() : _session.hasResult(); }
+- (BOOL)hasBaked { return _useHuge ? _huge.hasBakedTexture() : _session.hasBakedTexture(); }
 
 - (SessionSettings)settings
 {
@@ -516,12 +545,15 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _presentGroup.spacing = 8;
     _presentGroup.hidden = YES;
 
+    _repackButton = [NSButton buttonWithTitle:@"Repack Atlas" target:self action:@selector(repackAtlas:)];
+    _repackButton.enabled = NO;
+    _repackButton.toolTip = @"Pack the same patches again with the texture size and mip levels set above (⌥⌘R)";
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel, open,
         label(@"Settings", 11, YES, YES), label(@"Quality", 12), _quality, _manual, patchRow,
         label(@"Texture size", 12), _textureSize, label(@"Mip levels", 12), _mip, _mipLabel,
         label(@"Atlas", 11, YES, YES), makeRow, _progress, _status,
-        label(@"Result", 11, YES, YES), _result, _presentGroup]];
+        label(@"Result", 11, YES, YES), _result, _repackButton, _presentGroup]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 8;
@@ -564,7 +596,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     for (NSView* v in @[(NSView*)_quality, (NSView*)_textureSize, (NSView*)_mip, (NSView*)_progress, (NSView*)_offset, (NSView*)_alpha,
                         (NSView*)_pass1, (NSView*)_pass2])
         [v.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-40].active = YES;
-    [stack setCustomSpacing:20 afterView:_result];
+    [stack setCustomSpacing:20 afterView:_repackButton];
     [self updateMipLabel];
     [self presentationChanged:nil];
     return fx;
@@ -594,7 +626,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 }
 
 - (void)mipChanged:(id)sender { [self updateMipLabel]; }
-- (void)textureChanged:(id)sender { [self updateMipLabel]; }
+- (void)textureChanged:(id)sender { _textureTouched = YES; [self updateMipLabel]; }
 - (void)manualChanged:(id)sender
 {
     const BOOL on = _manual.state == NSControlStateValueOn;
@@ -699,9 +731,9 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 - (BOOL)validateToolbarItem:(NSToolbarItem*)item
 {
     if ([item.itemIdentifier isEqual:@"open"]) return !_running;
-    if ([item.itemIdentifier isEqual:@"makeAtlas"]) return !_running && _session.hasMesh();
-    if ([item.itemIdentifier isEqual:@"save"]) return !_running && _session.hasResult();
-    if ([item.itemIdentifier isEqual:@"uv"]) return _session.hasResult();
+    if ([item.itemIdentifier isEqual:@"makeAtlas"]) return !_running && [self hasMeshToWork];
+    if ([item.itemIdentifier isEqual:@"save"]) return !_running && [self hasResult];
+    if ([item.itemIdentifier isEqual:@"uv"]) return [self hasResult];
     return YES;
 }
 
@@ -757,6 +789,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     NSMenu* atlas = top(@"Atlas");
     add(atlas, @"Make Atlas", @selector(makeAtlas:), @"r", NSEventModifierFlagCommand, self);
     add(atlas, @"Cancel", @selector(cancelAtlas:), @".", NSEventModifierFlagCommand, self);
+    [atlas addItem:[NSMenuItem separatorItem]];
+    add(atlas, @"Repack Atlas", @selector(repackAtlas:), @"r", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
 
     NSMenu* view = top(@"View");
     add(view, @"Show Patches", @selector(showPatches:), @"1", NSEventModifierFlagCommand, self);
@@ -792,17 +826,18 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 {
     const SEL a = item.action;
     if (a == @selector(openMesh:)) return !_running;
-    if (a == @selector(makeAtlas:)) return !_running && _session.hasMesh();
-    if (a == @selector(cancelAtlas:)) return _running;
-    if (a == @selector(saveAs:)) return !_running && _session.hasResult();
+    if (a == @selector(makeAtlas:)) return !_running && [self hasMeshToWork];
+    if (a == @selector(cancelAtlas:)) return _running && !_useHuge;   // the huge mode cannot be stopped in the middle
+    if (a == @selector(repackAtlas:)) return !_running && [self hasResult];
+    if (a == @selector(saveAs:)) return !_running && [self hasResult];
     if (a == @selector(showSettings:)) return NO;
-    if (a == @selector(showPatches:)) { item.state = _mode == 0 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasResult(); }
+    if (a == @selector(showPatches:)) { item.state = _mode == 0 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
     if (a == @selector(showPlain:)) item.state = _mode == 1 ? NSControlStateValueOn : NSControlStateValueOff;
-    if (a == @selector(showPresentation:)) { item.state = _mode == 2 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasResult(); }
-    if (a == @selector(showTexture:)) { item.state = _mode == 3 ? NSControlStateValueOn : NSControlStateValueOff; return _session.hasBakedTexture(); }
+    if (a == @selector(showPresentation:)) { item.state = _mode == 2 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
+    if (a == @selector(showTexture:)) { item.state = _mode == 3 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasBaked]; }
     if (a == @selector(toggleUVLayout:)) {
         item.title = _uvItem.collapsed ? @"Show UV Layout" : @"Hide UV Layout";
-        return _session.hasResult();
+        return [self hasResult];
     }
     if (a == @selector(toggleSidebar:)) {
         NSSplitViewItem* s = _split.splitViewItems.firstObject;
@@ -812,13 +847,46 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 }
 
 // ---- actions
+- (void)suggestTextureSize:(size_t)faces
+{
+    if (_textureTouched) return;   // the texture size that fits the mesh, until the user chooses one
+    [_textureSize selectItemWithTag:(faces < 1000000 ? 2048 : faces < 8000000 ? 4096 : 8192)];
+    [self updateMipLabel];
+}
+
+- (void)updateEnabled
+{
+    _repackButton.enabled = !_running && [self hasResult];
+    [_window.toolbar validateVisibleItems];
+}
+
 - (void)loadPath:(NSString*)path
 {
     std::string err;
+    const size_t estimate = HugeSession::estimateFaces(path.UTF8String);
+    if (estimate > 3000000) {   // a big scan is not loaded for viewing, the huge mode reads it straight from the file
+        _useHuge = YES;
+        _huge.setFile(path.UTF8String);
+        _session = AtlasSession();
+        _window.title = path.lastPathComponent;
+        _window.representedURL = [NSURL fileURLWithPath:path];
+        _meshLabel.stringValue = [NSString stringWithFormat:@"%@ — a big scan, about %.1f million faces", path.lastPathComponent, estimate / 1e6];
+        _result.stringValue = @"";
+        _status.stringValue = @"A big scan is read when the atlas is made";
+        [_scene clearMesh];
+        [_uv clear];
+        _uvItem.collapsed = YES;
+        [self suggestTextureSize:estimate];
+        [self setViewMode:1];
+        [self updateEnabled];
+        return;
+    }
     if (!_session.load(path.UTF8String, &err)) {
         _status.stringValue = [NSString stringWithFormat:@"Cannot open %@: %s", path.lastPathComponent, err.c_str()];
         return;
     }
+    _useHuge = NO;
+    _huge.clear();
     _window.title = path.lastPathComponent;
     _window.representedURL = [NSURL fileURLWithPath:path];
     _meshLabel.stringValue = [NSString stringWithFormat:@"%@ — %zu faces%s", path.lastPathComponent, _session.mesh().n_faces(),
@@ -830,7 +898,9 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [_scene setTexture:0 pixels:nullptr];
     [_uv clear];
     _uvItem.collapsed = YES;
+    [self suggestTextureSize:_session.mesh().n_faces()];
     [self setViewMode:1];
+    [self updateEnabled];
 }
 
 - (void)openMesh:(id)sender
@@ -845,60 +915,134 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _makeButton.enabled = !running;
     _cancelButton.hidden = !running;
     _progress.hidden = !running;
+    _cancelButton.hidden = !running || _useHuge;   // the huge mode cannot be stopped in the middle
     for (NSControl* c in @[(NSControl*)_quality, (NSControl*)_manual, (NSControl*)_textureSize, (NSControl*)_mip]) c.enabled = !running;
-    [_window.toolbar validateVisibleItems];
+    [self updateEnabled];
+}
+
+// the work of the huge mode has no fraction to show: the bar goes round, the line under it says what is happening
+- (void)beginWork:(NSString*)first
+{
+    [self setRunning:YES];
+    _cancel = false;
+    _progress.indeterminate = _useHuge;
+    if (_useHuge) [_progress startAnimation:nil]; else _progress.doubleValue = 0.02;
+    _status.stringValue = first;
+    if (_worker.joinable()) _worker.join();
 }
 
 - (void)makeAtlas:(id)sender
 {
-    if (_running || !_session.hasMesh()) return;
+    if (_running || ![self hasMeshToWork]) return;
     const SessionSettings s = [self settings];
-    [self setRunning:YES];
-    _cancel = false;
-    _progress.doubleValue = 0.02;
-    _status.stringValue = @"Starting…";
-    if (_worker.joinable()) _worker.join();
+    [self beginWork:@"Starting…"];
     __weak AppController* weakSelf = self;
     _worker = std::thread([self, weakSelf, s]() {
         std::string err;
-        const bool ok = _session.run(s, [weakSelf](double f, const std::string& what) {
-            NSString* text = [NSString stringWithUTF8String:what.c_str()];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                AppController* me = weakSelf;
-                if (!me) return;
-                me->_progress.doubleValue = f;
-                me->_status.stringValue = text;
-            });
-        }, _cancel, &err);
-        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf atlasFinished:ok error:[NSString stringWithUTF8String:err.c_str()]]; });
+        bool ok;
+        if (_useHuge) {
+            ok = _huge.run(s, [weakSelf](const std::string& what) {
+                NSString* text = [NSString stringWithUTF8String:what.c_str()];
+                dispatch_async(dispatch_get_main_queue(), ^{ AppController* me = weakSelf; if (me) me->_status.stringValue = text; });
+            }, &err);
+        } else {
+            ok = _session.run(s, [weakSelf](double f, const std::string& what) {
+                NSString* text = [NSString stringWithUTF8String:what.c_str()];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    AppController* me = weakSelf;
+                    if (!me) return;
+                    me->_progress.doubleValue = f;
+                    me->_status.stringValue = text;
+                });
+            }, _cancel, &err);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf atlasFinished:ok error:[NSString stringWithUTF8String:err.c_str()] keepView:NO]; });
     });
 }
 
-- (void)cancelAtlas:(id)sender { if (_running) { _cancel = true; _status.stringValue = @"Cancelling…"; } }
+// the same patches packed again with the texture size and the mip levels of the sidebar: nothing before the packing is run again
+- (void)repackAtlas:(id)sender
+{
+    if (_running || ![self hasResult]) return;
+    const SessionSettings s = [self settings];
+    [self beginWork:@"Packing the atlas…"];
+    __weak AppController* weakSelf = self;
+    _worker = std::thread([self, weakSelf, s]() {
+        std::string err;
+        bool ok;
+        if (_useHuge) {
+            ok = _huge.repack(s, [weakSelf](const std::string& what) {
+                NSString* text = [NSString stringWithUTF8String:what.c_str()];
+                dispatch_async(dispatch_get_main_queue(), ^{ AppController* me = weakSelf; if (me) me->_status.stringValue = text; });
+            }, &err);
+        } else {
+            ok = _session.repack(s, &err);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf atlasFinished:ok error:[NSString stringWithUTF8String:err.c_str()] keepView:YES]; });
+    });
+}
 
-- (void)atlasFinished:(BOOL)ok error:(NSString*)error
+- (void)cancelAtlas:(id)sender { if (_running && !_useHuge) { _cancel = true; _status.stringValue = @"Cancelling…"; } }
+
+- (void)atlasFinished:(BOOL)ok error:(NSString*)error keepView:(BOOL)keepView
 {
     if (_worker.joinable()) _worker.join();
+    if (_useHuge) [_progress stopAnimation:nil];
+    _progress.indeterminate = NO;
     [self setRunning:NO];
     if (!ok) {
         _status.stringValue = [error isEqual:@"cancelled"] ? @"Cancelled" : [@"Failed: " stringByAppendingString:error];
         return;
     }
-    _status.stringValue = @"Done";
-    NSString* text = [NSString stringWithFormat:@"%zu patches\nAtlas %d × %d, %.0f%% of the texture is used\n%.1f s",
-                                                _session.patchCount(), _session.resolution(), _session.resolution(),
-                                                100.0 * _session.efficiency(), _session.seconds()];
-    if (_session.unresolvedPatches() > 0)
-        text = [text stringByAppendingFormat:@"\n%d patches could not be unfolded cleanly", _session.unresolvedPatches()];
+    _status.stringValue = keepView ? @"Packed again" : @"Done";
+    [self showResultKeepingView:keepView];
+}
+
+// the result goes to the 3D view and the UV view, the numbers to the sidebar
+- (void)showResultKeepingView:(BOOL)keepView
+{
+    NSString* text;
+    if (_useHuge) {
+        text = [NSString stringWithFormat:@"%zu patches\nAtlas %d × %d, %.0f%% of the texture is used\n%.1f s", _huge.patchCount(), _huge.resolution(),
+                                          _huge.resolution(), 100.0 * _huge.efficiency(), _huge.seconds()];
+        if (_huge.facesWithoutUV() > 0)
+            text = [text stringByAppendingFormat:@"\n%zu faces could not be unfolded and have no texture coordinates", _huge.facesWithoutUV()];
+        [_scene showFlat:_huge.mesh() cornerUV:(_huge.hasBakedTexture() ? _huge.cornerUV() : std::vector<float>()) rgba:_huge.patchRgba()];
+        [_scene setTexture:(_huge.hasBakedTexture() ? _huge.bakedResolution() : 0) pixels:_huge.bakedPixels()];
+        [_scene setPatchNormals:_huge.patchNormalsPerFace()];
+        [_uv setCharts:_huge.uvCharts() texture:(_huge.hasBakedTexture() ? _huge.bakedPixels() : nullptr) side:_huge.bakedResolution()];
+    } else {
+        text = [NSString stringWithFormat:@"%zu patches\nAtlas %d × %d, %.0f%% of the texture is used\n%.1f s", _session.patchCount(), _session.resolution(),
+                                          _session.resolution(), 100.0 * _session.efficiency(), _session.seconds()];
+        if (_session.unresolvedPatches() > 0)
+            text = [text stringByAppendingFormat:@"\n%d patches could not be unfolded cleanly", _session.unresolvedPatches()];
+        [_scene showMesh:_session.mesh() colors:_session.patchColors() faceUV:(_session.hasBakedTexture() ? _session.atlasFaceUV() : std::vector<float>())];
+        [_scene setTexture:(_session.hasBakedTexture() ? _session.bakedResolution() : 0) pixels:_session.bakedPixels()];
+        [_scene setPatchNormals:_session.patchNormalsPerFace()];
+        [_uv setCharts:_session.uvCharts() texture:(_session.hasBakedTexture() ? _session.bakedPixels() : nullptr) side:_session.bakedResolution()];
+    }
     _result.stringValue = text;
-    [_scene showMesh:_session.mesh() colors:_session.patchColors() faceUV:(_session.hasBakedTexture() ? _session.atlasFaceUV() : std::vector<float>())];
-    [_scene setTexture:(_session.hasBakedTexture() ? _session.bakedResolution() : 0) pixels:_session.bakedPixels()];
-    [_scene setPatchNormals:_session.patchNormalsPerFace()];
-    [_uv setCharts:_session.uvCharts() texture:(_session.hasBakedTexture() ? _session.bakedPixels() : nullptr) side:_session.bakedResolution()];
     [_uvItem.animator setCollapsed:NO];
-    [self setViewMode:_session.hasBakedTexture() ? 3 : 0];
+    [self setViewMode:keepView ? _mode : ([self hasBaked] ? 3 : 0)];
+    [self updateEnabled];
     if (getenv("HUGE_NATIVE_AUTORUN")) {
-        printf("NATIVE: %s%s\n", text.UTF8String, _session.hasBakedTexture() ? " (texture baked)" : "");
+        printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
+        if (!keepView) {
+            if (const char* r = getenv("HUGE_NATIVE_REPACK")) {   // "resolution:mip": pack again as the button does, then look at the result
+                int res = 0, mip = 0;
+                if (sscanf(r, "%d:%d", &res, &mip) == 2) {
+                    [_textureSize selectItemWithTag:res];
+                    [self updateMipLabel];
+                    _mip.integerValue = mip;
+                    [self updateMipLabel];
+                    std::string err;
+                    const SessionSettings s = [self settings];
+                    const bool ok = _useHuge ? _huge.repack(s, nullptr, &err) : _session.repack(s, &err);
+                    printf("NATIVE REPACK: %s %s\n", ok ? "ok" : "failed", err.c_str());
+                    if (ok) { [self showResultKeepingView:YES]; return; }
+                }
+            }
+        }
         if (const char* v = getenv("HUGE_NATIVE_VIEW")) [self setViewMode:atoi(v)];
         if (const char* o = getenv("HUGE_NATIVE_OFFSET")) _offset.doubleValue = atof(o);
         if (const char* al = getenv("HUGE_NATIVE_ALPHA")) _alpha.doubleValue = atof(al);
@@ -907,7 +1051,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
         [self presentationChanged:nil];
         if (const char* out = getenv("HUGE_NATIVE_SAVE")) {   // the same as Save As, to a given path
             std::string err;
-            const bool ok = _session.save(out, &err);
+            const bool ok = _useHuge ? _huge.save(out, &err) : _session.save(out, &err);
             printf("NATIVE SAVE: %s %s\n", ok ? "ok" : "failed", err.c_str());
         }
         [self autoShotAndQuit];
@@ -916,29 +1060,31 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 
 - (void)saveAs:(id)sender
 {
-    if (!_session.hasResult()) return;
-    std::string stem = std::string(_session.path());
+    if (![self hasResult]) return;
+    std::string stem = _useHuge ? _huge.path() : _session.path();
     const size_t slash = stem.find_last_of('/');
     if (slash != std::string::npos) stem = stem.substr(slash + 1);
     const size_t dot = stem.find_last_of('.');
     if (dot != std::string::npos) stem.resize(dot);
-    const std::string p = native::saveFile("Save the mesh with the atlas (OBJ or PLY, the texture goes next to it)", stem + "_atlas.obj",
-                                           {"obj", "ply"}, "");
+    const std::string p = _useHuge
+        ? native::saveFile("Save the mesh with the atlas (PLY, the texture goes next to it)", stem + "_atlas.ply", {"ply"}, "")
+        : native::saveFile("Save the mesh with the atlas (OBJ or PLY, the texture goes next to it)", stem + "_atlas.obj", {"obj", "ply"}, "");
     if (p.empty()) return;
     std::string err;
-    _status.stringValue = _session.save(p, &err) ? [NSString stringWithFormat:@"Saved %@ and its texture", [NSString stringWithUTF8String:p.c_str()].lastPathComponent]
-                                                 : [NSString stringWithFormat:@"Cannot save: %s", err.c_str()];
+    const BOOL ok = _useHuge ? _huge.save(p, &err) : _session.save(p, &err);
+    _status.stringValue = ok ? [NSString stringWithFormat:@"Saved %@ and its texture", [NSString stringWithUTF8String:p.c_str()].lastPathComponent]
+                             : [NSString stringWithFormat:@"Cannot save: %s", err.c_str()];
 }
 
 // the views: 0 patches, 1 plain shading, 2 presentation, 3 texture (the segments of the toolbar are in the same order)
 - (void)setViewMode:(int)mode
 {
-    const BOOL result = _session.hasResult();
+    const BOOL result = [self hasResult];
     [_viewSwitch setEnabled:result forSegment:0];
     [_viewSwitch setEnabled:result forSegment:2];
-    [_viewSwitch setEnabled:_session.hasBakedTexture() forSegment:3];
+    [_viewSwitch setEnabled:[self hasBaked] forSegment:3];
     if ((mode == 0 || mode == 2) && !result) mode = 1;
-    if (mode == 3 && !_session.hasBakedTexture()) mode = result ? 0 : 1;
+    if (mode == 3 && ![self hasBaked]) mode = result ? 0 : 1;
     _mode = mode;
     _viewSwitch.selectedSegment = mode;
     _presentGroup.hidden = mode != 2;
