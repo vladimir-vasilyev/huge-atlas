@@ -28,6 +28,8 @@
     BOOL _ready;
     int _mode;              // 0 patches, 1 plain shading, 2 presentation, 3 texture
     BOOL _hasMesh;
+    BOOL _showGrid;         // the coordinate grid, under the mesh when there is one
+    float _floorY;          // where the floor of the grid is: the lowest point of the mesh
     BOOL _hasTexture;
     BOOL _wire;             // the developer mode: the wire of the triangles over the mesh
     BOOL _cull;             // big meshes: the back faces are not drawn
@@ -39,6 +41,8 @@
 - (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors faceUV:(const std::vector<float>&)uv;
 - (void)showFlat:(const FlatMesh&)mesh cornerUV:(const std::vector<float>&)uv rgba:(const std::vector<unsigned char>&)rgba;
 - (void)clearMesh;
+- (void)setShowGrid:(BOOL)on;
+- (BOOL)showGrid;
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels;
 - (void)setPatchNormals:(const std::vector<float>&)normals;
 - (void)setMode:(int)mode;
@@ -101,6 +105,10 @@
     [self ensureReady];
     _renderer.invalidateGeometry();
     _renderer.upload(mesh, colors, {}, uv);
+    float lo = 0.0f;
+    bool first = true;
+    for (auto v : mesh.vertices()) { const float y = float(mesh.point(v)[1]); if (first || y < lo) lo = y; first = false; }
+    _floorY = lo;
     if (!_hasMesh) _camera.reset();   // from the grid view to the model
     _hasMesh = YES;
     _cull = NO;
@@ -111,13 +119,19 @@
 {
     [self ensureReady];
     _renderer.uploadFlat(mesh, uv, rgba);
+    float lo = 0.0f;
+    for (size_t i = 1; i < mesh.pos.size(); i += 3) lo = (i == 1 || mesh.pos[i] < lo) ? mesh.pos[i] : lo;
+    _floorY = lo;
     if (!_hasMesh) _camera.reset();
     _hasMesh = YES;
     _cull = mesh.faceCount() > 500000;   // as in the other build: a scan is drawn without its back faces
     [self setNeedsDisplay:YES];
 }
 
-- (void)clearMesh { _hasMesh = NO; _hasTexture = NO; _camera.resetAbove(); [self setNeedsDisplay:YES]; }
+- (BOOL)showGrid { return _showGrid; }
+- (void)setShowGrid:(BOOL)on { _showGrid = on; [self setNeedsDisplay:YES]; }
+
+- (void)clearMesh { _floorY = 0; _hasMesh = NO; _hasTexture = NO; _camera.resetAbove(); [self setNeedsDisplay:YES]; }
 
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels
 {
@@ -150,9 +164,10 @@
     }];
     glClearColor(r, g, bl, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    if (_ready && !_hasMesh && b.size.height > 0) {
+    if (_ready && _showGrid && b.size.height > 0) {
         float vp[16];
         _camera.viewProj(float(b.size.width / b.size.height), vp);
+        for (int i = 0; i < 4; ++i) vp[12 + i] += _floorY * vp[4 + i];   // the floor moves to the bottom of the mesh
         _grid.draw(vp, 0.2126f * r + 0.7152f * g + 0.0722f * bl < 0.5f);
     }
     if (_ready && _hasMesh && b.size.height > 0) {
@@ -486,7 +501,6 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     fx.state = NSVisualEffectStateFollowsWindowActiveState;
 
     _meshLabel = label(@"No mesh", 13, YES);
-    NSButton* open = [NSButton buttonWithTitle:@"Open…" target:self action:@selector(openMesh:)];
 
     _quality = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [_quality addItemsWithTitles:@[@"Fast", @"Balanced", @"Detailed"]];
@@ -574,7 +588,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _repackButton.toolTip = @"Pack the same patches again with the texture size and mip levels set above (⌥⌘R)";
     _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:)];
     NSStackView* stack = [NSStackView stackViewWithViews:@[
-        label(@"Mesh", 11, YES, YES), _meshLabel, open,
+        label(@"Mesh", 11, YES, YES), _meshLabel,
         label(@"Settings", 11, YES, YES), label(@"Quality", 12), _quality, _manual, patchRow,
         label(@"Texture size", 12), _textureSize, label(@"Mip levels", 12), _mip, _mipLabel,
         label(@"Atlas", 11, YES, YES), makeRow, _progress, _status,
@@ -586,7 +600,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     // group spacing: 20 between the groups
     for (NSView* v in @[_meshLabel]) (void)v;
-    [stack setCustomSpacing:20 afterView:open];
+    [stack setCustomSpacing:20 afterView:_meshLabel];
     [stack setCustomSpacing:20 afterView:patchRow];
     [stack setCustomSpacing:20 afterView:_mipLabel];
     [stack setCustomSpacing:20 afterView:_status];
@@ -672,6 +686,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(prefsChanged:) name:prefs::Changed object:nil];
     [self buildMenus];
     _scene = [[SceneView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    [_scene setShowGrid:[NSUserDefaults.standardUserDefaults objectForKey:@"showGrid"] ? [NSUserDefaults.standardUserDefaults boolForKey:@"showGrid"] : YES];
     __weak AppController* weakSelf = self;
     _scene.onDropURL = ^(NSURL* url) { [weakSelf loadPath:url.path]; };
 
@@ -750,7 +765,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 // ---- toolbar
 - (NSArray<NSToolbarItemIdentifier>*)toolbarDefaultItemIdentifiers:(NSToolbar*)t
 {
-    return @[NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, @"open", @"makeAtlas",
+    return @[NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, @"makeAtlas",
              NSToolbarFlexibleSpaceItemIdentifier, @"views", @"save", @"uv"];
 }
 - (NSArray<NSToolbarItemIdentifier>*)toolbarAllowedItemIdentifiers:(NSToolbar*)t { return [self toolbarDefaultItemIdentifiers:t]; }
@@ -853,6 +868,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     add(view, @"Reset Camera", @selector(resetCamera:), @"0", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Show UV Layout", @selector(toggleUVLayout:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    add(view, @"Show Grid", @selector(toggleGrid:), @"g", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     _wireItem = add(view, @"Show Wireframe", @selector(toggleWireframe:), @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Sidebar", @selector(toggleSidebar:), @"s", NSEventModifierFlagCommand | NSEventModifierFlagControl);
     add(view, @"Enter Full Screen", @selector(toggleFullScreen:), @"f", NSEventModifierFlagCommand | NSEventModifierFlagControl);
@@ -883,6 +899,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (a == @selector(cancelAtlas:)) return _running && !_useHuge;   // the huge mode cannot be stopped in the middle
     if (a == @selector(repackAtlas:)) return !_running && [self hasResult];
     if (a == @selector(saveAs:)) return !_running && [self hasResult];
+    if (a == @selector(toggleGrid:)) { item.state = [_scene showGrid] ? NSControlStateValueOn : NSControlStateValueOff; return YES; }
     if (a == @selector(toggleWireframe:)) { item.state = _wire ? NSControlStateValueOn : NSControlStateValueOff; item.hidden = !_developer; return _developer; }
     if (a == @selector(compareLayouts:)) return !_running && [self hasResult];
     if (a == @selector(showPatches:)) { item.state = _mode == 0 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
@@ -1196,6 +1213,13 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 - (void)viewSwitched:(NSSegmentedControl*)s { [self setViewMode:int(s.selectedSegment)]; }
 - (void)resetCamera:(id)sender { [_scene resetCamera]; }
 - (void)showSettings:(id)sender { showSettingsWindow(0); }
+- (void)toggleGrid:(id)sender
+{
+    const BOOL on = ![_scene showGrid];
+    [_scene setShowGrid:on];
+    [NSUserDefaults.standardUserDefaults setBool:on forKey:@"showGrid"];
+}
+
 - (void)toggleWireframe:(id)sender { _wire = !_wire; [_scene setWireframe:_wire]; }
 
 // the preferences changed (the Settings window): the developer mode, the defaults of the sidebar

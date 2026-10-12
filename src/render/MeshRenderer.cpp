@@ -360,6 +360,8 @@ void MeshRenderer::uploadFlat(const FlatMesh& mesh, const std::vector<float>& co
 {
     const size_t nV = mesh.vertexCount(), nF = mesh.faceCount();
     const bool haveUV = cornerUV.size() == nF * 6;
+    lowestY_ = 0.0f;
+    for (size_t v = 0; v < nV; ++v) lowestY_ = (v == 0 || mesh.pos[3 * v + 1] < lowestY_) ? mesh.pos[3 * v + 1] : lowestY_;
     std::vector<float> verts;
     std::vector<uint32_t> welded;   // only with uv: the indices of the welded vertices
     if (!haveUV) {
@@ -412,6 +414,9 @@ void MeshRenderer::upload(const TriMesh& mesh, const std::vector<float>& faceCol
                          faceUV.empty() != (builtUvHash_ == 0) || faceOffsets.empty() != (builtOffsetHash_ == 0);
     if (rebuild) {
         buildGeometry(mesh, faceOffsets, faceUV);
+        lowestY_ = 0.0f;
+        bool first = true;
+        for (auto v : mesh.vertices()) { const float y = float(mesh.point(v)[1]); if (first || y < lowestY_) lowestY_ = y; first = false; }
         builtVersion_ = geometryVersion_;
         builtFaces_ = mesh.n_faces();
         builtVertices_ = mesh.n_vertices();

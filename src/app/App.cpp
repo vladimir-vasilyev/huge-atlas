@@ -255,6 +255,7 @@ void App::installNativeMenu()
                     break;
                 case native::CmdBinaryPly: binaryPly_ = !binaryPly_; break;
                 case native::CmdWireframe: wireframe_ = !wireframe_; break;
+                case native::CmdShowGrid: showGrid_ = !showGrid_; saveSettings(); break;
                 case native::CmdResetCamera: if (meshRenderer_.hasMesh()) camera_.reset(); else camera_.resetAbove(); break;
                 case native::CmdDeveloperMode: devMode_ = !devMode_; saveSettings(); break;
                 case native::CmdSaveBadPatch: saveBadPatches(); break;
@@ -269,7 +270,7 @@ void App::installNativeMenu()
             }
         };
         h.checked = [this](int cmd) -> bool {
-            return cmd == native::CmdBinaryPly ? binaryPly_ : cmd == native::CmdWireframe ? wireframe_ : cmd == native::CmdDeveloperMode ? devMode_ : false;
+            return cmd == native::CmdBinaryPly ? binaryPly_ : cmd == native::CmdWireframe ? wireframe_ : cmd == native::CmdDeveloperMode ? devMode_ : cmd == native::CmdShowGrid ? showGrid_ : false;
         };
         native::installMenu(h);
         native::setDebugMenuVisible(devMode_);
@@ -372,7 +373,7 @@ void App::run()
                 if (const char* ml = std::getenv("VSA_ATLAS_MIP")) horizonOptions_.maxMipLevel = std::atoi(ml);
                 if (const char* mk = std::getenv("VSA_MANUAL_K")) { manualPatches_ = true; manualK_ = std::atoi(mk); }
                 openMeshSmart(simple);
-                startSimpleAtlas();
+                if (!std::getenv("VSA_OPEN_ONLY")) startSimpleAtlas();   // testing hook: just show the opened mesh
                 simpleStarted = true;
             }
             const bool regularDone = simpleStarted && pendingHugePath_.empty() && !hugeShown_ && !hugeJob_ && atlasStage_ == AtlasStage::Idle && simpleFrame > 4;
@@ -3191,6 +3192,7 @@ void App::loadSettings()
     std::string line;
     while (std::getline(in, line)) {
         if (line == "developer_mode=1") devMode_ = true;
+        else if (line == "show_grid=0") showGrid_ = false;
         else if (line.rfind("quality=", 0) == 0) quality_ = std::max(0, std::min(2, std::atoi(line.c_str() + 8)));
         else if (line.rfind("texture_size=", 0) == 0) { horizonOptions_.resolution = std::max(256, std::min(8192, std::atoi(line.c_str() + 13))); textureSizeTouched_ = true; }
         else if (line.rfind("mip_levels=", 0) == 0) horizonOptions_.maxMipLevel = std::max(0, std::min(8, std::atoi(line.c_str() + 11)));
@@ -3201,6 +3203,7 @@ void App::saveSettings() const
 {
     std::ofstream out(paths::settingsDir() + "/settings.txt");
     out << "developer_mode=" << (devMode_ ? 1 : 0) << "\n";
+    out << "show_grid=" << (showGrid_ ? 1 : 0) << "\n";
     out << "quality=" << quality_ << "\n";
     if (textureSizeTouched_) out << "texture_size=" << horizonOptions_.resolution << "\n";
     out << "mip_levels=" << horizonOptions_.maxMipLevel << "\n";
@@ -3223,7 +3226,26 @@ void App::openMeshSmart(const std::string& path)
     if (!ec && bytes > 300ull * 1000 * 1000) {
         pendingHugePath_ = path;
         suggestTextureSize(size_t(bytes / 75));   // about 75 bytes of an OBJ per face
-        status_ = "a big scan: it will be processed in the huge mode, press Make atlas";
+        // the scan is shown at once: straight into flat arrays (no half-edge mesh), the huge mode reads the file again later
+        FlatMesh flat;
+        std::string err;
+        status_ = "reading the big scan...";
+        if (loadFlatMesh(path, flat, nullptr, &err)) {
+            normalizeFlatToUnitBox(flat);
+            hugeShown_ = false;
+            hugeJob_.reset();
+            meshRenderer_.invalidateGeometry();
+            meshRenderer_.uploadFlat(flat, {});
+            meshRenderer_.uploadLines({});
+            cullBackFaces_ = true;
+            wireframe_ = false;
+            msaaSamples_ = 0;
+            camera_.reset();
+            status_ = "a big scan: it will be processed in the huge mode, press Make atlas";
+        } else {
+            pendingHugePath_.clear();
+            status_ = "cannot open " + path + ": " + err;
+        }
         return;
     }
     pendingHugePath_.clear();
@@ -3301,13 +3323,10 @@ void App::drawAtlasWindow()
 
     // 1. the mesh
     ImGui::SeparatorText("1. Mesh");
-    ImGui::BeginDisabled(busy);
-    if (ui::Button("Open mesh...", ImVec2(-1, 30))) openMeshRequested_ = true;
-    ImGui::EndDisabled();
-    ImGui::TextDisabled("or drop an OBJ / PLY file on the window");
+    ImGui::TextDisabled("File > Open, or drop an OBJ / PLY file on the window");
     if (!pendingHugePath_.empty()) {
         const std::string name = std::filesystem::path(pendingHugePath_).filename().string();
-        ImGui::TextWrapped("%s: a big scan, it is read when the atlas is made", name.c_str());
+        ImGui::TextWrapped("%s: a big scan, %zu faces (the huge mode)", name.c_str(), meshRenderer_.faceCount());
     } else if (hugeResult) {
         ImGui::TextWrapped("%zu faces%s", hugeJob_->mesh.faceCount(), hugeJob_->baked.empty() ? "" : ", with a texture");
     } else if (meshRenderer_.hasMesh()) {
@@ -3617,9 +3636,11 @@ void App::renderScene(int fbWidth, int fbHeight)
     if (showTriangle_ && vh > 0)
         triangle_.draw(angle_, float(vw) / float(vh));
 
-    if (!meshRenderer_.hasMesh() && vh > 0) {
+    if (showGrid_ && vh > 0) {
         float vp[16];
         camera_.viewProj(float(vw) / float(vh), vp);
+        if (meshRenderer_.hasMesh())
+            for (int i = 0; i < 4; ++i) vp[12 + i] += meshRenderer_.lowestY() * vp[4 + i];   // the floor is at the bottom of the mesh
         grid_.draw(vp, 0.2126f * clearColor_[0] + 0.7152f * clearColor_[1] + 0.0722f * clearColor_[2] < 0.5f);
     }
     if (meshRenderer_.hasMesh() && vh > 0) {

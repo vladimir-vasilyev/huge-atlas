@@ -14,7 +14,7 @@ std::string saveFile(const std::string& title, const std::string& suggestedName,
 
 enum Command {
     CmdOpen = 1, CmdSave, CmdSaveAs, CmdBinaryPly,
-    CmdWireframe, CmdResetCamera, CmdDeveloperMode,
+    CmdWireframe, CmdResetCamera, CmdDeveloperMode, CmdShowGrid,
     CmdSaveBadPatch, CmdLoadBadPatch,
 };
 

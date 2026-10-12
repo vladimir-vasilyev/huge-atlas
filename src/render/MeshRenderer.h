@@ -65,6 +65,7 @@ public:
                     bool useTexture = false, bool plainShading = false) const;
 
     bool hasMesh() const { return faceCount_ > 0; }
+    float lowestY() const { return lowestY_; }   // the lowest point of the mesh (the floor of the coordinate grid)
     size_t faceCount() const { return faceCount_; }
     size_t vertexCount() const { return vertexCount_; }
 
@@ -82,6 +83,7 @@ public:
                    std::vector<int>& out);
 
 private:
+    float lowestY_ = 0.0f;
     void ensurePickTarget(int w, int h);
     void buildGeometry(const TriMesh& mesh, const std::vector<float>& offsets, const std::vector<float>& uv);
     void uploadColors(size_t faces, const std::vector<float>& colors);

@@ -161,6 +161,7 @@ private:
     std::string      lastDir_ = ".";
     std::string      status_;
     bool             wireframe_ = true;
+    bool             showGrid_ = true;             // the coordinate grid under the mesh (View > Show Grid)
     int              colorMode_ = 0;   // 0 - gray, 1 - face normal, 2 - VSA regions, 3 - weights, 4 - patches, 5 - patch kind, 6 - LinABF angle error, 10 - source texture,
                                        // 7 - stretch, 8 - UV checker, 9 - injectivity problems, 11 - baked atlas texture
     // Stage 3: VSA
