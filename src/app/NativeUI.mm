@@ -68,7 +68,7 @@ std::string saveFile(const std::string& title, const std::string& suggestedName,
 - (BOOL)validateMenuItem:(NSMenuItem*)item
 {
     const int cmd = int(item.tag);
-    if (native::gHandlers.checked && (cmd == native::CmdBinaryPly || cmd == native::CmdWireframe || cmd == native::CmdDeveloperMode || cmd == native::CmdShowGrid))
+    if (native::gHandlers.checked && (cmd == native::CmdBinaryPly || cmd == native::CmdWireframe || cmd == native::CmdDeveloperMode || cmd == native::CmdShowGrid || cmd == native::CmdShowAssistant))
         item.state = native::gHandlers.checked(cmd) ? NSControlStateValueOn : NSControlStateValueOff;
     return native::gHandlers.enabled ? native::gHandlers.enabled(cmd) : YES;
 }
@@ -121,6 +121,7 @@ void installMenu(const MenuHandlers& handlers)
     addMenu(bar, 2, @"View", &view);
     addItem(view, target, @"Reset Camera", CmdResetCamera, @"0");
     addItem(view, target, @"Show Grid", CmdShowGrid, @"g", NSEventModifierFlagCommand | NSEventModifierFlagOption);
+    addItem(view, target, @"Show Assistant", CmdShowAssistant, @"i", NSEventModifierFlagCommand | NSEventModifierFlagOption);
     addItem(view, target, @"Wireframe", CmdWireframe, @"");
     [view addItem:[NSMenuItem separatorItem]];
     addItem(view, target, @"Developer Mode", CmdDeveloperMode, @"");

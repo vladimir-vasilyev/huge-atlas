@@ -26,9 +26,17 @@
 #include "render/GridRenderer.h"
 #include "render/SceneFramebuffer.h"
 
+#include "chat/Json.h"
+#include "chat/Tools.h"
+
 #include <imgui.h>
 
 #include <atomic>
+#include <chrono>
+#include <deque>
+#include <functional>
+#include <future>
+#include <mutex>
 #include <memory>
 #include <thread>
 #include <string>
@@ -40,6 +48,7 @@ struct GLFWwindow;
 // App only owns their state and calls them from the UI.
 class App {
 public:
+    struct ChatState;   // the assistant's conversation (AppChat.cpp)
     bool init(int width, int height, const char* title);
     void run();
     void shutdown();
@@ -299,4 +308,45 @@ private:
 
     bool             dragging_ = false;
     bool             panning_ = false;
+
+    // ---- the assistant (AppChat.cpp): a model that drives the same actions as the buttons. The calls come from the thread of the
+    // agent; what touches the application is done on the main thread between two frames (onMain).
+    std::shared_ptr<ChatState> chat_;
+    bool showAssistant_ = false;
+    void drawAssistantWindow();
+    void shutdownAssistant();
+    bool assistantAutoReady();            // test hook VSA_AUTO_CHAT: false until the conversation has ended
+    std::mutex hostMutex_;
+    std::deque<std::function<void()>> hostTasks_;
+    std::thread::id mainThread_;
+    std::atomic<bool> quitting_{false};
+    double hugePercentOverride_ = 0.0;     // the assistant asked for a size of the simplified copy (0 = by quality)
+    void runHostTasks();
+    template <class F> auto onMain(F f) -> decltype(f());
+    bool hostBusy() const;
+    Json hostStateNow();
+    Json hostMetricsNow() const;
+    friend class AssistantHost;
+
+public:
+    Json hostState();
+    Json hostOpen(const std::string& path);
+    Json hostMakeAtlas(const Json& args);
+    Json hostRepack(int textureSize, int mipLevels);
+    Json hostLayout();
+    Json hostReport();
+    Json hostSave(const std::string& fileName);
+    void hostCancel();
 };
+
+template <class F> auto App::onMain(F f) -> decltype(f())
+{
+    using R = decltype(f());
+    if (std::this_thread::get_id() == mainThread_) return f();
+    auto task = std::make_shared<std::packaged_task<R()>>(std::move(f));
+    std::future<R> result = task->get_future();
+    { std::lock_guard<std::mutex> lock(hostMutex_); hostTasks_.push_back([task]() { (*task)(); }); }
+    while (result.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready)
+        if (quitting_) return R();   // the window is closing: nothing will run the task
+    return result.get();
+}

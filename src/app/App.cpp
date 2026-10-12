@@ -205,6 +205,7 @@ struct App::HugeJob {
     HorizonOptions horizon;
     std::thread worker;
     std::atomic<bool> done{false};
+    std::atomic<bool> cancel{false};     // the pipeline stops between its stages (the assistant's Stop)
     std::mutex mutex;
     std::string stage = "starting...";   // guarded by mutex
     std::string error;                   // guarded by mutex; set when the run failed
@@ -256,6 +257,7 @@ void App::installNativeMenu()
                 case native::CmdBinaryPly: binaryPly_ = !binaryPly_; break;
                 case native::CmdWireframe: wireframe_ = !wireframe_; break;
                 case native::CmdShowGrid: showGrid_ = !showGrid_; saveSettings(); break;
+                case native::CmdShowAssistant: showAssistant_ = !showAssistant_; break;
                 case native::CmdResetCamera: if (meshRenderer_.hasMesh()) camera_.reset(); else camera_.resetAbove(); break;
                 case native::CmdDeveloperMode: devMode_ = !devMode_; saveSettings(); break;
                 case native::CmdSaveBadPatch: saveBadPatches(); break;
@@ -270,7 +272,7 @@ void App::installNativeMenu()
             }
         };
         h.checked = [this](int cmd) -> bool {
-            return cmd == native::CmdBinaryPly ? binaryPly_ : cmd == native::CmdWireframe ? wireframe_ : cmd == native::CmdDeveloperMode ? devMode_ : cmd == native::CmdShowGrid ? showGrid_ : false;
+            return cmd == native::CmdBinaryPly ? binaryPly_ : cmd == native::CmdWireframe ? wireframe_ : cmd == native::CmdDeveloperMode ? devMode_ : cmd == native::CmdShowGrid ? showGrid_ : cmd == native::CmdShowAssistant ? showAssistant_ : false;
         };
         native::installMenu(h);
         native::setDebugMenuVisible(devMode_);
@@ -329,6 +331,7 @@ void drawLayoutTable(const UVLayoutStats& o, const UVLayoutStats& n, const MipSa
 
 void App::run()
 {
+    mainThread_ = std::this_thread::get_id();
     // VSA_AUTO_ATLAS=1: press "Make atlas" by itself, print the outcome and quit (end-to-end check without clicks)
     const bool autoAtlas = std::getenv("VSA_AUTO_ATLAS") != nullptr;
     int autoFrame = 0, autoDoneFrame = 0;
@@ -526,6 +529,7 @@ void App::run()
             continue;
         }
 
+        runHostTasks();
         runFileDialogs();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -542,7 +546,7 @@ void App::run()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         if (const char* shot = std::getenv("VSA_SCREENSHOT")) {   // testing hook: write the 8th frame to a PNG and quit
             static int frame = 0;
-            const bool hugeReady = (!autoHuge || (hugeJob_ && hugeJob_->done && hugeShown_)) && loadBadReady;
+            const bool hugeReady = (!autoHuge || (hugeJob_ && hugeJob_->done && hugeShown_)) && loadBadReady && assistantAutoReady();
             if ((!autoAtlas || autoDone) && hugeReady && ++frame == 8) {
                 std::vector<unsigned char> px(size_t(fbW) * fbH * 4), flipped(px.size());
                 glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -2068,6 +2072,8 @@ void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
     job->options.normals = normalSmoothing_;
     job->horizon = horizonOptions_;
     HugeJob* raw = job.get();
+    job->options.cancel = &raw->cancel;
+    job->options.refine.cancel = &raw->cancel;
     job->options.onStage = [raw](const std::string& s) { raw->say(s); };
     job->worker = std::thread([raw]() {
         using Clock = std::chrono::steady_clock;
@@ -2098,7 +2104,14 @@ void App::runHugeJob(const std::shared_ptr<HugeJob>& job)
         }
         raw->loadSeconds = since(t);
         t = Clock::now();
-        raw->result = runFlatPipeline(raw->mesh, raw->options);
+        try {
+            raw->result = runFlatPipeline(raw->mesh, raw->options);
+        } catch (const Cancelled&) {
+            std::lock_guard<std::mutex> lock(raw->mutex);
+            raw->error = "cancelled";
+            raw->done = true;
+            return;
+        }
         raw->pipelineSeconds = since(t);
         raw->say("packing the atlas...");
         t = Clock::now();
@@ -3329,7 +3342,7 @@ void App::applyQuality(size_t faces)
     const int k = manualPatches_ ? std::max(1, manualK_) : int(std::max(8.0, std::min(1000.0, std::round(base * kFactor[quality_]))));
     vsaK_ = std::min(k, std::max(1, int(faces)));
     hugeK_ = k;
-    hugeSimplifyPercent_ = kPercent[quality_];
+    hugeSimplifyPercent_ = hugePercentOverride_ > 0.0 ? hugePercentOverride_ : kPercent[quality_];
     seedMethod_ = 1;
     makeAtlasTeleport_ = false;
 }
@@ -3636,8 +3649,10 @@ void App::drawUI()
         drawParamPanel();
         drawRefinePanel();
         drawUvPanel();
+        drawAssistantWindow();
     } else if (!std::getenv("VSA_NO_PANELS")) {
         drawAtlasWindow();
+        drawAssistantWindow();
         if (atlasValid_ || (hugeShown_ && hugeJob_ && hugeJob_->done)) drawUvPanel();
         refineTick();
     } else {
@@ -3753,6 +3768,8 @@ void App::renderScene(int fbWidth, int fbHeight)
 
 void App::shutdown()
 {
+    if (hugeJob_ && !hugeJob_->done) hugeJob_->cancel = true;   // the pipeline stops at its next stage
+    shutdownAssistant();
     stopRefine(true);
     // Delete GL resources while the context is alive
     if (window_) {
@@ -3774,4 +3791,240 @@ void App::shutdown()
         window_ = nullptr;
     }
     glfwTerminate();
+}
+
+// ---------------------------------------------------------------------------------------------- the hands of the assistant
+// Called from the thread of the agent (see AppChat.cpp); everything that touches the application runs on the main thread (onMain).
+
+static Json hostError(const std::string& message)
+{
+    Json e = Json::object();
+    e["error"] = message;
+    return e;
+}
+
+bool App::hostBusy() const
+{
+    return atlasStage_ != AtlasStage::Idle || job_ || refiner_ ||
+           (hugeJob_ && (!hugeJob_->done || hugeJob_->repacking || hugeJob_->comparing));
+}
+
+Json App::hostMetricsNow() const
+{
+    Json m = Json::object();
+    if (hugeShown_ && hugeJob_ && hugeJob_->done && hugeJob_->error.empty()) {
+        const HugeJob& h = *hugeJob_;
+        m["mode"] = "huge";
+        m["patches"] = h.result.patches.size();
+        m["unresolved_patches"] = h.result.stats.patchesUnresolved;
+        m["faces_without_uv"] = h.result.stats.facesWithoutUV;
+        m["texture_size"] = h.atlas.resolution;
+        m["efficiency"] = h.atlas.efficiency;
+        m["gutter_texels"] = h.atlas.gutter;
+        m["seconds"] = h.loadSeconds + h.pipelineSeconds + h.packSeconds + h.bakeSeconds;
+        m["has_texture"] = !h.baked.empty();
+    } else if (atlasValid_) {
+        size_t withUV = 0;
+        for (size_t i = 0; i < params_.size(); ++i)
+            if (i < atlas_.uv.size() && !atlas_.uv[i].empty()) withUV += params_[i].patch.faceToGlobal.size();
+        m["mode"] = "regular";
+        m["patches"] = patches_.patches.size();
+        m["unresolved_patches"] = refineStats_.unresolved;
+        m["faces_without_uv"] = mesh_.n_faces() > withUV ? mesh_.n_faces() - withUV : size_t(0);
+        m["texture_size"] = atlas_.resolution;
+        m["efficiency"] = atlas_.efficiency;
+        m["gutter_texels"] = atlas_.gutter;
+        m["has_texture"] = hasSourceTexture_;
+    }
+    return m;
+}
+
+Json App::hostStateNow()
+{
+    Json s = Json::object();
+    const bool pending = !pendingHugePath_.empty();
+    const bool hugeResult = hugeShown_ && hugeJob_ && hugeJob_->done;
+    const bool open = pending || (meshRenderer_.hasMesh() && (mesh_.n_faces() > 0 || hugeResult));
+    s["mesh_open"] = open;
+    if (open) {
+        s["file"] = pending ? pendingHugePath_ : hugeResult ? hugeJob_->path : meshPath_;
+        s["faces"] = pending || hugeResult ? meshRenderer_.faceCount() : mesh_.n_faces();
+        s["has_source_texture"] = pending ? true : hasSourceTexture_;
+        s["mode"] = pending || hugeResult ? "huge" : "regular";
+    }
+    s["running"] = hostBusy();
+    Json set = Json::object();
+    set["quality"] = quality_;
+    set["patches"] = manualPatches_ ? Json(manualK_) : Json();
+    set["texture_size"] = horizonOptions_.resolution;
+    set["mip_levels"] = horizonOptions_.maxMipLevel;
+    s["settings"] = set;
+    const Json m = hostMetricsNow();
+    s["atlas"] = m.size() ? m : Json();
+    return s;
+}
+
+Json App::hostState() { return onMain([this] { return hostStateNow(); }); }
+
+Json App::hostOpen(const std::string& path)
+{
+    return onMain([this, path]() -> Json {
+        if (hostBusy()) return hostError("a run is going on; wait for it or stop it");
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(path, ec)) return hostError("no such file");
+        openMeshSmart(path);   // a big scan is read into flat arrays here, a small file into the mesh
+        if (pendingHugePath_.empty() && !(meshRenderer_.hasMesh() && mesh_.n_faces() > 0)) return hostError(status_.empty() ? "cannot open the file" : status_);
+        return hostStateNow();
+    });
+}
+
+Json App::hostMakeAtlas(const Json& a)
+{
+    const Json started = onMain([this, a]() -> Json {
+        if (hostBusy()) return hostError("a run is going on already");
+        const bool pending = !pendingHugePath_.empty();
+        if (!pending && !(meshRenderer_.hasMesh() && mesh_.n_faces() > 0 && !hugeShown_)) return hostError("no mesh is open: open_mesh first");
+        if (a.has("quality")) { quality_ = std::max(0, std::min(2, a.getInt("quality"))); manualPatches_ = false; }
+        if (a.has("patches")) { manualPatches_ = true; manualK_ = std::max(1, std::min(20000, a.getInt("patches"))); }
+        if (a.has("texture_size")) { horizonOptions_.resolution = std::max(256, std::min(8192, a.getInt("texture_size"))); textureSizeTouched_ = true; }
+        if (a.has("mip_levels")) horizonOptions_.maxMipLevel = std::max(0, std::min(5, a.getInt("mip_levels")));
+        if (a.has("smoothing")) smoothParams_.lambda = a.getNumber("smoothing");
+        if (a.has("normal_iterations")) normalSmoothing_.iterations = a.getInt("normal_iterations");
+        if (a.has("normal_sigma")) normalSmoothing_.sigmaDegrees = a.getNumber("normal_sigma");
+        if (a.has("normal_iterations") || a.has("normal_sigma")) { if (!pending) applyNormalSmoothing(); }
+        if (a.has("lloyd_iterations")) lloydParams_.maxIterations = std::max(1, a.getInt("lloyd_iterations"));
+        if (a.has("max_depth")) refineOptions_.maxDepth = std::max(1, a.getInt("max_depth"));
+        if (a.has("allow_lscm")) paramOptions_.allowLscm = a.getBool("allow_lscm");
+        if (a.has("repair_near_misses")) paramOptions_.repairNearMisses = a.getBool("repair_near_misses");
+        if (a.has("simplify_percent")) hugePercentOverride_ = std::max(0.0, std::min(100.0, a.getNumber("simplify_percent")));
+        startSimpleAtlas();
+        const bool huge = hugeJob_ && !hugeJob_->done;
+        if (!huge && atlasStage_ == AtlasStage::Idle) return hostError(makeAtlasStatus_.empty() ? "the run did not start" : makeAtlasStatus_);
+        Json ok = Json::object();
+        ok["huge"] = huge;
+        return ok;
+    });
+    if (started.has("error")) return started;
+    const bool huge = started.getBool("huge");
+
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        Json done = onMain([this, huge]() -> Json {
+            if (huge) {
+                if (!hugeJob_) return hostError("the run was dropped");
+                if (!hugeJob_->done || hugeJob_->worker.joinable()) return Json();   // the loop of the window collects the result
+                std::string err;
+                { std::lock_guard<std::mutex> lock(hugeJob_->mutex); err = hugeJob_->error; }
+                if (!err.empty()) return hostError(err);
+                return hostMetricsNow();
+            }
+            if (atlasStage_ != AtlasStage::Idle || job_ || refiner_) return Json();
+            if (!atlasValid_) return hostError(makeAtlasStatus_.empty() ? "the atlas could not be made" : makeAtlasStatus_);
+            return hostMetricsNow();
+        });
+        if (!done.isNull()) return done;
+        if (quitting_) return hostError("the application is closing");
+    }
+}
+
+Json App::hostRepack(int size, int mip)
+{
+    const Json started = onMain([this, size, mip]() -> Json {
+        if (hostBusy()) return hostError("a run is going on already");
+        const bool hugeResult = hugeShown_ && hugeJob_ && hugeJob_->done && hugeJob_->error.empty();
+        if (!hugeResult && !atlasValid_) return hostError("there is no atlas yet: make_atlas first");
+        horizonOptions_.resolution = std::max(256, std::min(8192, size));
+        textureSizeTouched_ = true;
+        if (mip >= 0) horizonOptions_.maxMipLevel = std::min(5, mip);
+        if (hugeResult) { repackHuge(); Json ok = Json::object(); ok["huge"] = true; return ok; }
+        repackAtlas();
+        return hostMetricsNow();
+    });
+    if (!started.getBool("huge")) return started;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const Json done = onMain([this]() -> Json {
+            if (!hugeJob_) return hostError("the result was dropped");
+            if (hugeJob_->repacking && !hugeJob_->repackFinished) return Json();
+            finishRepackHuge();
+            if (!hugeJob_->repackError.empty()) return hostError(hugeJob_->repackError);
+            return hostMetricsNow();
+        });
+        if (!done.isNull()) return done;
+        if (quitting_) return hostError("the application is closing");
+    }
+}
+
+Json App::hostLayout()
+{
+    const bool huge = onMain([this] { return hugeShown_ && hugeJob_ && hugeJob_->done && hugeJob_->error.empty(); });
+    if (huge) {
+        const Json started = onMain([this]() -> Json {
+            if (hostBusy()) return hostError("a run is going on");
+            compareHuge();
+            return Json();
+        });
+        if (started.has("error")) return started;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            const Json r = onMain([this]() -> Json {
+                if (!hugeJob_ || (!hugeJob_->compared && hugeJob_->comparing)) return Json();
+                LayoutComparison c{hugeJob_->layoutOriginal, hugeJob_->layoutOurs, hugeJob_->mipOriginal, hugeJob_->mipOurs, hugeJob_->hadOriginal};
+                return layoutToJson(c);
+            });
+            if (!r.isNull()) return r;
+            if (quitting_) return hostError("the application is closing");
+        }
+    }
+    return onMain([this]() -> Json {
+        if (!atlasValid_) return hostError("there is no atlas yet");
+        if (hostBusy()) return hostError("a run is going on");
+        measureLayouts();   // some seconds on a big mesh: the window waits
+        LayoutComparison c{layoutOriginal_, layoutOurs_, mipOriginal_, mipOurs_, objExtras_.hasUV()};
+        return layoutToJson(c);
+    });
+}
+
+Json App::hostReport()
+{
+    return onMain([this]() -> Json {
+        const bool hugeResult = hugeShown_ && hugeJob_ && hugeJob_->done;
+        std::string text = hugeResult ? hugeStatus_ : makeAtlasStatus_;
+        if (!hugeResult && atlasValid_) {
+            char buf[300];
+            const RefineStats& st = refineStats_;
+            std::snprintf(buf, sizeof(buf), "\nrefinement: %d rounds, %d bad at the start, %d splits, %d unresolved", st.rounds, st.initialBad, st.splits, st.unresolved);
+            text += buf;
+        }
+        if (text.empty()) return hostError("there is no atlas yet");
+        Json r = Json::object();
+        r["report"] = text;
+        return r;
+    });
+}
+
+Json App::hostSave(const std::string& fileName)
+{
+    return onMain([this, fileName]() -> Json {
+        if (hostBusy()) return hostError("a run is going on");
+        const bool hugeResult = hugeShown_ && hugeJob_ && hugeJob_->done && hugeJob_->error.empty();
+        if (!hugeResult && !atlasValid_) return hostError("there is no atlas yet");
+        std::string file = chatSafeFileName(fileName);
+        if (hugeResult && file.size() > 4 && file.compare(file.size() - 4, 4, ".obj") == 0) file.replace(file.size() - 4, 4, ".ply");   // the huge mode writes PLY
+        const std::string path = chatOutputDirectory() + "/" + file;
+        const bool ok = hugeResult ? saveHuge(path) : performSave(path);
+        if (!ok) return hostError(hugeResult ? hugeStatus_ : status_);
+        Json r = Json::object();
+        r["saved"] = path;
+        return r;
+    });
+}
+
+void App::hostCancel()
+{
+    onMain([this]() {
+        if (atlasStage_ != AtlasStage::Idle) cancelMakeAtlas("cancelled");
+        if (refiner_) { refineStop_ = true; stopRefine(false); }
+        if (hugeJob_ && !hugeJob_->done) hugeJob_->cancel = true;
+    });
 }

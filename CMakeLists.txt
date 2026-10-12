@@ -279,6 +279,8 @@ set(APP_SOURCES
     src/app/UiTips.cpp
     src/app/Paths.cpp
     src/app/NativeUI.mm
+    src/app/AppChat.cpp
+    src/chat/Provider.mm
     src/render/GL.h
     src/render/GL.cpp
     src/render/Shader.h
@@ -297,6 +299,7 @@ set(APP_SOURCES
     src/render/ImageFile.cpp
 )
 
+set_source_files_properties(src/chat/Provider.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 add_executable(vsa_app ${APP_SOURCES})
 target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
 target_link_libraries(vsa_app PRIVATE vsa_core imgui glfw OpenGL::GL "-framework Cocoa" "-framework UniformTypeIdentifiers" "-framework Security")
