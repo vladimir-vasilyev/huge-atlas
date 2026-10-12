@@ -483,10 +483,13 @@
     NSPoint _last;
     NSPoint _downPoint;
     BOOL _dragged;
+    NSTimer* _flyTimer;
 }
 @property (nonatomic) NSInteger selectedPatch;   // its chart is drawn heavier (-1: none)
 @property (nonatomic, copy) void (^onPickPatch)(NSInteger patch);   // a click on a chart; -1 for the empty space or Esc
 - (NSInteger)patchAtViewPoint:(NSPoint)p;
+// The atlas is zoomed and moved so that the chart of the patch is in the middle of the pane (about 70% of it); animated.
+- (void)showPatch:(NSInteger)patch animated:(BOOL)animated;
 - (void)setCharts:(std::vector<UvChart>)charts texture:(const unsigned char*)rgba side:(int)side;
 - (NSRect)square;
 - (void)clear;
@@ -649,8 +652,52 @@
 
 - (void)keyDown:(NSEvent*)e { if (e.keyCode == 53 && _onPickPatch) _onPickPatch(-1); else [super keyDown:e]; }
 
+- (void)stopFlight { [_flyTimer invalidate]; _flyTimer = nil; }
+
+- (void)showPatch:(NSInteger)patch animated:(BOOL)animated
+{
+    if (patch < 0 || self.bounds.size.width < 40) return;
+    double lo[2] = {1e300, 1e300}, hi[2] = {-1e300, -1e300};
+    for (const UvChart& c : _charts) {
+        if (c.patch != patch) continue;
+        for (size_t i = 0; i + 1 < c.uv.size(); i += 2)
+            for (int k = 0; k < 2; ++k) { lo[k] = std::min(lo[k], double(c.uv[i + size_t(k)])); hi[k] = std::max(hi[k], double(c.uv[i + size_t(k)])); }
+    }
+    if (lo[0] > hi[0]) return;   // the patch has no chart in the atlas
+    const double W = self.bounds.size.width, H = self.bounds.size.height;
+    const double s0 = std::max(32.0, std::min(W, H) - 32.0);   // the side of the square at zoom 1
+    const double extent = std::max(std::max(hi[0] - lo[0], hi[1] - lo[1]), 0.005);
+    const double zoom = std::max(1.0, std::min(60.0, 0.7 * std::min(W, H) / (extent * s0)));
+    const double s = s0 * zoom;
+    const double uc = 0.5 * (lo[0] + hi[0]), vc = 0.5 * (lo[1] + hi[1]);
+    // the point (uc, vc) of the square must be in the middle of the pane
+    const NSPoint targetPan = NSMakePoint(s * (0.5 - uc), s * (0.5 - vc));
+    [self stopFlight];
+    if (!animated) { _zoom = zoom; _pan = targetPan; [self setNeedsDisplay:YES]; return; }
+    const double zoom0 = _zoom;
+    const NSPoint pan0 = _pan;
+    const CFTimeInterval start = CACurrentMediaTime();
+    __weak UvView* weak = self;
+    _flyTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:YES block:^(NSTimer* timer) {
+        UvView* me = weak;
+        if (!me) { [timer invalidate]; return; }
+        double t = (CACurrentMediaTime() - start) / 0.3;
+        const BOOL last = t >= 1.0;
+        t = std::min(1.0, t);
+        t = t * t * (3.0 - 2.0 * t);
+        // the zoom goes by its logarithm so that it feels even; the pan is kept in the units of the square at the current zoom
+        const double z = std::exp((1 - t) * std::log(zoom0) + t * std::log(zoom));
+        const double k = z / zoom;   // the target pan scales with the zoom of the moment
+        me->_zoom = z;
+        me->_pan = NSMakePoint((1 - t) * pan0.x * (z / zoom0) + t * targetPan.x * k, (1 - t) * pan0.y * (z / zoom0) + t * targetPan.y * k);
+        [me setNeedsDisplay:YES];
+        if (last) { me->_zoom = zoom; me->_pan = targetPan; [me stopFlight]; }
+    }];
+}
+
 - (void)mouseDown:(NSEvent*)e
 {
+    [self stopFlight];
     [self.window makeFirstResponder:self];
     _dragged = NO;
     _downPoint = [self convertPoint:e.locationInWindow fromView:nil];
@@ -681,6 +728,7 @@
 }
 - (void)scrollWheel:(NSEvent*)e
 {
+    [self stopFlight];
     const double d = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY * 0.01 : e.scrollingDeltaY * 0.1;
     [self zoom:std::pow(1.0 + d, 1.0) at:[self convertPoint:e.locationInWindow fromView:nil]];
 }
@@ -773,7 +821,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     BOOL _running;
 }
 - (void)showVsaLab:(id)sender;
-- (void)selectPatch:(NSInteger)patch focus:(BOOL)focus;
+- (void)selectPatch:(NSInteger)patch from:(int)source;
 - (void)lookAtSelectedPatch:(id)sender;
 - (Json)hostOpen:(NSString*)path;
 - (Json)hostMakeAtlas:(const Json&)args;
@@ -904,8 +952,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _dev.onViewOptions = ^{ [weakDev applyViewOptions]; };
     _scene.onGpuTime = ^(double ms) { AppController* me = weakDev; if (me) [me->_dev setGpuMilliseconds:ms]; };
     _lookAtPatch = [NSUserDefaults.standardUserDefaults objectForKey:@"lookAtPatch"] ? [NSUserDefaults.standardUserDefaults boolForKey:@"lookAtPatch"] : YES;
-    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) [me selectPatch:patch focus:YES]; };
-    _scene.onPickFace = ^(int face) { AppController* me = weakDev; if (me) [me selectPatch:[me patchOfFace:face] focus:NO]; };
+    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) [me selectPatch:patch from:1]; };
+    _scene.onPickFace = ^(int face) { AppController* me = weakDev; if (me) [me selectPatch:[me patchOfFace:face] from:3]; };
     _dev.onColorMode = ^(NSInteger mode) { [weakDev recolorPatches]; };
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel,
@@ -1024,7 +1072,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     // the atlas on the trailing side: hidden until there is one, opened and closed by the toolbar and by View > Show UV Layout
     _uv = [[UvView alloc] initWithFrame:NSMakeRect(0, 0, 360, 600)];
     __weak AppController* weakUv = self;
-    _uv.onPickPatch = ^(NSInteger patch) { AppController* me = weakUv; if (me) [me selectPatch:patch focus:YES]; };
+    _uv.onPickPatch = ^(NSInteger patch) { AppController* me = weakUv; if (me) [me selectPatch:patch from:2]; };
     NSViewController* uvVC = [[NSViewController alloc] init];
     uvVC.view = _uv;
     _uvItem = [NSSplitViewItem splitViewItemWithViewController:uvVC];
@@ -1210,7 +1258,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Show UV Layout", @selector(toggleUVLayout:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Look at Selected Patch", @selector(lookAtSelectedPatch:), @"f", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
-    add(view, @"Look at a Patch When It Is Chosen in the Atlas or the Table", @selector(toggleLookAtPatch:), @"", 0, self);
+    add(view, @"Turn the Views to a Chosen Patch", @selector(toggleLookAtPatch:), @"", 0, self);
     add(view, @"Show Assistant", @selector(toggleAssistant:), @"i", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Grid", @selector(toggleGrid:), @"g", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     _wireItem = add(view, @"Show Wireframe", @selector(toggleWireframe:), @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
@@ -1577,6 +1625,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
             NSEvent* up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:wp modifierFlags:0 timestamp:0 windowNumber:_window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
             [_scene mouseDown:down];
             [_scene mouseUp:up];
+            if (getenv("HUGE_NATIVE_REFOCUS")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self selectPatch:self->_selectedPatch from:3]; });   // once the UV pane has its final size
             printf("NATIVE CLICK3D: bounds %.0fx%.0f, face %d, patch %ld\n", _scene.bounds.size.width, _scene.bounds.size.height, [_scene faceAtViewPoint:vp], long(_selectedPatch));
         }
         if (const char* cu = getenv("HUGE_NATIVE_CLICKUV")) {   // testing hook: a click in the UV pane at this (u, v) of the atlas
@@ -2051,9 +2100,11 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
 
 // One patch is chosen (-1: none): in the table, white in the 3D view and heavier in the UV pane, whoever chose it: a row, a click in the
 // 3D view or a click in the UV pane
-- (void)selectPatch:(NSInteger)patch { [self selectPatch:patch focus:NO]; }
+// source: who chose the patch: 0 the program, 1 the table, 2 a click in the atlas, 3 a click on the model. The view the choice did not come from
+// is turned to the patch (the camera on the model, the zoom of the atlas), when the option is on.
+- (void)selectPatch:(NSInteger)patch { [self selectPatch:patch from:0]; }
 
-- (void)selectPatch:(NSInteger)patch focus:(BOOL)focus
+- (void)selectPatch:(NSInteger)patch from:(int)source
 {
     if (![self hasResult] || _running) patch = -1;
     _selectedPatch = patch;
@@ -2069,7 +2120,8 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     BOOL found = NO;
     const PatchRow r = [_dev rowForPatch:patch found:&found];
     if (found) _status.stringValue = [NSString stringWithFormat:@"Patch %ld: %zu faces, %s, stretch %.2f, %s", long(patch), r.faces, r.method.c_str(), r.l2Mean, r.status.c_str()];
-    if (focus && _lookAtPatch) [self lookAtSelectedPatch:nil];
+    if (_lookAtPatch && (source == 1 || source == 2)) [self lookAtSelectedPatch:nil];
+    if (_lookAtPatch && (source == 1 || source == 3)) [_uv showPatch:patch animated:!getenv("HUGE_NATIVE_SHOT")];
 }
 
 // the camera on the ray out of the middle of the patch, looking back at it
