@@ -51,6 +51,8 @@
     float _offset, _alpha;  // presentation: how far the translucent copies of the patches move, how opaque they are
     int _pass1, _pass2;     // presentation: what a pass shows (0 patch colors, 1 texture, 2 shading); -1 = decided by the mesh
     NSPoint _last;
+    NSPoint _downPoint;     // where the left button went down: a click is a release that did not move
+    BOOL _dragged;
 }
 @property (nonatomic, copy) void (^onDropURL)(NSURL*);
 @property (nonatomic, copy) void (^onGpuTime)(double ms);
@@ -59,6 +61,9 @@
 @property (nonatomic) int brushRadius;
 @property (nonatomic, copy) void (^onBrush)(const std::vector<int>& faces);
 @property (nonatomic, copy) void (^onBrushEnd)(void);
+// A click (no drag) on the model gives the face under the cursor, -1 for the empty space or Esc (the patch of the face is chosen).
+@property (nonatomic, copy) void (^onPickFace)(int face);
+- (int)faceAtViewPoint:(NSPoint)p;   // p in the coordinates of the view (origin bottom left)
 - (void)setMsaa:(int)samples;
 - (void)setCull:(BOOL)on;
 - (BOOL)cull;
@@ -280,7 +285,31 @@
     if (!ids.empty() && _onBrush) _onBrush(ids);
 }
 
-- (void)mouseUp:(NSEvent*)e { if (_brushActive && _onBrushEnd) _onBrushEnd(); }
+- (int)faceAtViewPoint:(NSPoint)viewPoint
+{
+    if (!_hasMesh) return -1;
+    [self.openGLContext makeCurrentContext];
+    const NSPoint bp = [self convertPointToBacking:viewPoint];
+    const NSRect bb = [self convertRectToBacking:self.bounds];
+    if (bb.size.height <= 0) return -1;
+    float vp[16];
+    _camera.viewProj(float(bb.size.width / bb.size.height), vp);
+    std::vector<int> ids;
+    _renderer.pickFaces(vp, int(bb.size.width), int(bb.size.height), int(bp.x), int(bp.y), 1, ids);
+    return ids.empty() ? -1 : ids.front();
+}
+
+- (void)mouseUp:(NSEvent*)e
+{
+    if (_brushActive) { if (_onBrushEnd) _onBrushEnd(); return; }
+    if (!_dragged && e.clickCount < 2 && _onPickFace) _onPickFace([self faceAtViewPoint:[self convertPoint:e.locationInWindow fromView:nil]]);
+}
+
+- (void)keyDown:(NSEvent*)e
+{
+    if (e.keyCode == 53 && _onPickFace) { _onPickFace(-1); return; }   // Esc: no patch chosen
+    [super keyDown:e];
+}
 
 - (void)resetCursorRects { if (_brushActive) [self addCursorRect:self.bounds cursor:NSCursor.crosshairCursor]; }
 - (void)setBrushActive:(BOOL)on { _brushActive = on; [self.window invalidateCursorRectsForView:self]; }
@@ -289,6 +318,8 @@
 {
     [self.window makeFirstResponder:self];
     if (_brushActive && !(e.modifierFlags & NSEventModifierFlagOption)) { [self paintWith:e]; return; }
+    _dragged = NO;
+    _downPoint = [self convertPoint:e.locationInWindow fromView:nil];
     if (e.clickCount == 2) { [self resetCamera]; return; }
     const NSPoint p = [self local:e];
     _last = p;
@@ -298,6 +329,10 @@
 - (void)mouseDragged:(NSEvent*)e
 {
     if (_brushActive && !(e.modifierFlags & NSEventModifierFlagOption)) { [self paintWith:e]; return; }
+    {
+        const NSPoint q = [self convertPoint:e.locationInWindow fromView:nil];
+        if (std::hypot(q.x - _downPoint.x, q.y - _downPoint.y) > 3.0) _dragged = YES;
+    }
     const NSPoint p = [self local:e];
     _camera.rotateTo(p.x, p.y, int(self.bounds.size.width), int(self.bounds.size.height));
     [self setNeedsDisplay:YES];
@@ -361,9 +396,14 @@
     double _zoom;
     NSPoint _pan;
     NSPoint _last;
+    NSPoint _downPoint;
+    BOOL _dragged;
 }
 @property (nonatomic) NSInteger selectedPatch;   // its chart is drawn heavier (-1: none)
+@property (nonatomic, copy) void (^onPickPatch)(NSInteger patch);   // a click on a chart; -1 for the empty space or Esc
+- (NSInteger)patchAtViewPoint:(NSPoint)p;
 - (void)setCharts:(std::vector<UvChart>)charts texture:(const unsigned char*)rgba side:(int)side;
+- (NSRect)square;
 - (void)clear;
 @end
 
@@ -490,14 +530,56 @@
 }
 
 - (BOOL)acceptsFirstResponder { return YES; }
+// the chart under a point of the view: its triangles when the chart has them, else its border (the huge mode) by the even-odd rule
+- (NSInteger)patchAtViewPoint:(NSPoint)p
+{
+    const NSRect sq = [self square];
+    if (sq.size.width <= 0 || !NSPointInRect(p, sq)) return -1;
+    const double u = (p.x - sq.origin.x) / sq.size.width, v = (p.y - sq.origin.y) / sq.size.height;
+    for (size_t ci = _charts.size(); ci-- > 0;) {
+        const UvChart& c = _charts[ci];
+        auto at = [&](unsigned i, double* xy) { xy[0] = c.uv[2 * i]; xy[1] = c.uv[2 * i + 1]; };
+        if (!c.triangles.empty()) {
+            for (size_t t = 0; t + 2 < c.triangles.size(); t += 3) {
+                double a[2], b[2], d[2];
+                at(c.triangles[t], a); at(c.triangles[t + 1], b); at(c.triangles[t + 2], d);
+                const double d1 = (u - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (v - b[1]);
+                const double d2 = (u - d[0]) * (b[1] - d[1]) - (b[0] - d[0]) * (v - d[1]);
+                const double d3 = (u - a[0]) * (d[1] - a[1]) - (d[0] - a[0]) * (v - a[1]);
+                const bool neg = d1 < 0 || d2 < 0 || d3 < 0, pos = d1 > 0 || d2 > 0 || d3 > 0;
+                if (!(neg && pos)) return c.patch;
+            }
+        } else if (!c.segments.empty()) {
+            int crossings = 0;
+            for (size_t i = 0; i + 1 < c.segments.size(); i += 2) {
+                double a[2], b[2];
+                at(c.segments[i], a); at(c.segments[i + 1], b);
+                if ((a[1] > v) != (b[1] > v) && u < a[0] + (v - a[1]) * (b[0] - a[0]) / (b[1] - a[1])) ++crossings;
+            }
+            if (crossings & 1) return c.patch;
+        }
+    }
+    return -1;
+}
+
+- (void)keyDown:(NSEvent*)e { if (e.keyCode == 53 && _onPickPatch) _onPickPatch(-1); else [super keyDown:e]; }
+
 - (void)mouseDown:(NSEvent*)e
 {
+    [self.window makeFirstResponder:self];
+    _dragged = NO;
+    _downPoint = [self convertPoint:e.locationInWindow fromView:nil];
     if (e.clickCount == 2) { _zoom = 1.0; _pan = NSZeroPoint; [self setNeedsDisplay:YES]; return; }
-    _last = [self convertPoint:e.locationInWindow fromView:nil];
+    _last = _downPoint;
+}
+- (void)mouseUp:(NSEvent*)e
+{
+    if (!_dragged && e.clickCount < 2 && _onPickPatch) _onPickPatch([self patchAtViewPoint:[self convertPoint:e.locationInWindow fromView:nil]]);
 }
 - (void)mouseDragged:(NSEvent*)e
 {
     const NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    if (std::hypot(p.x - _downPoint.x, p.y - _downPoint.y) > 3.0) _dragged = YES;
     _pan.x += p.x - _last.x; _pan.y += p.y - _last.y;
     _last = p;
     [self setNeedsDisplay:YES];
@@ -733,7 +815,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     __weak AppController* weakDev = self;
     _dev.onViewOptions = ^{ [weakDev applyViewOptions]; };
     _scene.onGpuTime = ^(double ms) { AppController* me = weakDev; if (me) [me->_dev setGpuMilliseconds:ms]; };
-    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) { me->_selectedPatch = patch; me->_uv.selectedPatch = patch; [me recolorPatches]; } };
+    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) [me selectPatch:patch]; };
+    _scene.onPickFace = ^(int face) { AppController* me = weakDev; if (me) [me selectPatch:[me patchOfFace:face]]; };
     _dev.onColorMode = ^(NSInteger mode) { [weakDev recolorPatches]; };
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel,
@@ -851,6 +934,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     [_split addSplitViewItem:[NSSplitViewItem splitViewItemWithViewController:sceneVC]];
     // the atlas on the trailing side: hidden until there is one, opened and closed by the toolbar and by View > Show UV Layout
     _uv = [[UvView alloc] initWithFrame:NSMakeRect(0, 0, 360, 600)];
+    __weak AppController* weakUv = self;
+    _uv.onPickPatch = ^(NSInteger patch) { AppController* me = weakUv; if (me) [me selectPatch:patch]; };
     NSViewController* uvVC = [[NSViewController alloc] init];
     uvVC.view = _uv;
     _uvItem = [NSSplitViewItem splitViewItemWithViewController:uvVC];
@@ -1389,6 +1474,29 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
             });
             return;
         }
+        if (const char* c3 = getenv("HUGE_NATIVE_CLICK3D")) {   // testing hook: a click in the 3D view at this fraction of its width and height
+            double fx = 0.5, fy = 0.5;
+            sscanf(c3, "%lf,%lf", &fx, &fy);
+            const NSPoint vp = NSMakePoint(fx * _scene.bounds.size.width, fy * _scene.bounds.size.height);   // origin bottom left
+            const NSPoint wp = [_scene convertPoint:vp toView:nil];
+            NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:wp modifierFlags:0 timestamp:0 windowNumber:_window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+            NSEvent* up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:wp modifierFlags:0 timestamp:0 windowNumber:_window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
+            [_scene mouseDown:down];
+            [_scene mouseUp:up];
+            printf("NATIVE CLICK3D: bounds %.0fx%.0f, face %d, patch %ld\n", _scene.bounds.size.width, _scene.bounds.size.height, [_scene faceAtViewPoint:vp], long(_selectedPatch));
+        }
+        if (const char* cu = getenv("HUGE_NATIVE_CLICKUV")) {   // testing hook: a click in the UV pane at this (u, v) of the atlas
+            double u = 0.5, v = 0.5;
+            sscanf(cu, "%lf,%lf", &u, &v);
+            const NSRect sq = [_uv square];
+            const NSPoint vp = NSMakePoint(sq.origin.x + u * sq.size.width, sq.origin.y + v * sq.size.height);
+            const NSPoint wp = [_uv convertPoint:vp toView:nil];
+            NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:wp modifierFlags:0 timestamp:0 windowNumber:_window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+            NSEvent* up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:wp modifierFlags:0 timestamp:0 windowNumber:_window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
+            [_uv mouseDown:down];
+            [_uv mouseUp:up];
+            printf("NATIVE CLICKUV: direct hit %ld, selected %ld\n", long([_uv patchAtViewPoint:vp]), long(_selectedPatch));
+        }
         if (getenv("HUGE_NATIVE_INSPECT")) { _selectedPatch = 0; [self showPatchUnfolding:atoi(getenv("HUGE_NATIVE_INSPECT")) > 1]; }   // testing hook: 1 inspect, 2 unfold again
         if (getenv("HUGE_NATIVE_MATCH")) [self matchOriginalLayout:nil];   // testing hook
         if (getenv("HUGE_NATIVE_MASK")) [self exportMask:nil];
@@ -1835,6 +1943,30 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     float cells = 0.0f;
     if (_checkerOn && [self hasResult]) cells = atlasCheckerCells(_useHuge ? _huge.atlas() : _session.atlas(), _dev.checkerSquares);
     [_scene setCheckerCells:cells];
+}
+
+// the patch of a face of the result (-1: none, or no result)
+- (NSInteger)patchOfFace:(int)face
+{
+    if (face < 0 || ![self hasResult] || _running) return -1;
+    if (_useHuge) { const std::vector<int32_t>& of = _huge.patchOfFace(); return size_t(face) < of.size() ? of[size_t(face)] : -1; }
+    const std::vector<int>& of = _session.faceToPatch();
+    return size_t(face) < of.size() ? of[size_t(face)] : -1;
+}
+
+// One patch is chosen (-1: none): in the table, white in the 3D view and heavier in the UV pane, whoever chose it: a row, a click in the
+// 3D view or a click in the UV pane
+- (void)selectPatch:(NSInteger)patch
+{
+    if (![self hasResult] || _running) patch = -1;
+    _selectedPatch = patch;
+    _uv.selectedPatch = patch;
+    [_dev selectPatchIndex:patch];
+    [self recolorPatches];
+    if (patch < 0) return;
+    BOOL found = NO;
+    const PatchRow r = [_dev rowForPatch:patch found:&found];
+    if (found) _status.stringValue = [NSString stringWithFormat:@"Patch %ld: %zu faces, %s, stretch %.2f, %s", long(patch), r.faces, r.method.c_str(), r.l2Mean, r.status.c_str()];
 }
 
 // the patches painted by the mode of the table (patch colors, problems, stretch); the chosen patch is white

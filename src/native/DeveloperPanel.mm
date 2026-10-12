@@ -12,6 +12,7 @@
     NSScrollView* _tableScroll;
     NSPopUpButton* _colors;
     std::vector<PatchRow> _rows;
+    BOOL _quiet;   // the selection is being set by the program
     NSStackView* _view;
     NSButton* _compare;
     NSTextField* _report;
@@ -245,8 +246,29 @@ static NSTextField* heading(NSString* text)
     [t reloadData];
 }
 
+- (void)selectPatchIndex:(NSInteger)patch
+{
+    _quiet = YES;
+    NSInteger row = -1;
+    for (size_t i = 0; i < _rows.size(); ++i) if (_rows[i].index == patch) { row = NSInteger(i); break; }
+    if (row < 0) [_table deselectAll:nil];
+    else {
+        [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:size_t(row)] byExtendingSelection:NO];
+        [_table scrollRowToVisible:row];
+    }
+    _quiet = NO;
+}
+
+- (PatchRow)rowForPatch:(NSInteger)patch found:(BOOL*)found
+{
+    for (const PatchRow& r : _rows) if (r.index == patch) { if (found) *found = YES; return r; }
+    if (found) *found = NO;
+    return PatchRow();
+}
+
 - (void)tableViewSelectionDidChange:(NSNotification*)n
 {
+    if (_quiet) return;
     const NSInteger row = _table.selectedRow;
     if (self.onPatchSelected) self.onPatchSelected(row >= 0 && size_t(row) < _rows.size() ? _rows[size_t(row)].index : -1);
 }
