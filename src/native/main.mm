@@ -48,6 +48,7 @@
 - (void)setShowGrid:(BOOL)on;
 - (BOOL)showGrid;
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels;
+- (void)setTextureWidth:(int)w height:(int)h pixels:(const unsigned char*)pixels;
 - (void)setPatchNormals:(const std::vector<float>&)normals;
 - (void)setMode:(int)mode;
 - (void)setOffset:(float)offset alpha:(float)alpha;
@@ -137,10 +138,12 @@
 
 - (void)clearMesh { _floorY = 0; _hasMesh = NO; _hasTexture = NO; _camera.resetAbove(); [self setNeedsDisplay:YES]; }
 
-- (void)setTexture:(int)side pixels:(const unsigned char*)pixels
+- (void)setTexture:(int)side pixels:(const unsigned char*)pixels { [self setTextureWidth:side height:side pixels:pixels]; }
+
+- (void)setTextureWidth:(int)w height:(int)h pixels:(const unsigned char*)pixels
 {
     [self ensureReady];
-    _hasTexture = side > 0 && pixels && _renderer.setTexture(side, side, pixels);
+    _hasTexture = w > 0 && h > 0 && pixels && _renderer.setTexture(w, h, pixels);
     [self setNeedsDisplay:YES];
 }
 
@@ -447,6 +450,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     dispatch_semaphore_t _openSignal;    // released when a file the assistant opened is shown (or failed)
     dispatch_semaphore_t _atlasSignal;   // released when a run the assistant started has ended
     BOOL _lastOK;
+    BOOL _sourceTextureShown;   // the mesh is shown with the texture of its file (no atlas yet)
     NSString* _lastError;
     UvView* _uv;
     SceneView* _scene;
@@ -504,6 +508,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
 
 - (BOOL)hasMeshToWork { return _useHuge ? !_huge.path().empty() : _session.hasMesh(); }
 - (BOOL)hasResult { return _useHuge ? _huge.hasResult() : _session.hasResult(); }
+- (BOOL)hasTextureView { return [self hasBaked] || (_sourceTextureShown && ![self hasResult]); }
 - (BOOL)hasBaked { return _useHuge ? _huge.hasBakedTexture() : _session.hasBakedTexture(); }
 
 - (SessionSettings)settings
@@ -946,7 +951,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     if (a == @selector(showPatches:)) { item.state = _mode == 0 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
     if (a == @selector(showPlain:)) item.state = _mode == 1 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(showPresentation:)) { item.state = _mode == 2 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasResult]; }
-    if (a == @selector(showTexture:)) { item.state = _mode == 3 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasBaked]; }
+    if (a == @selector(showTexture:)) { item.state = _mode == 3 ? NSControlStateValueOn : NSControlStateValueOff; return [self hasTextureView]; }
     if (a == @selector(toggleUVLayout:)) {
         item.title = _uvItem.collapsed ? @"Show UV Layout" : @"Hide UV Layout";
         return [self hasResult];
@@ -990,6 +995,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         [_uv clear];
         _uvItem.collapsed = YES;
         [self suggestTextureSize:estimate];
+        _sourceTextureShown = NO;
         [self setViewMode:1];
         [self beginWork:@"Reading the mesh"];
         __weak AppController* weakSelf = self;
@@ -1013,8 +1019,12 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
                                                                        me->_huge.hasSourceTexture() ? ", with a texture" : ""];
                 me->_status.stringValue = @"Ready";
                 [me->_scene resetCamera];
-                [me->_scene showFlat:me->_huge.mesh() cornerUV:{} rgba:{}];
-                [me->_scene setTexture:0 pixels:nullptr];
+                // the texture of the file, as it is: the mesh is shown with it until there is an atlas
+                const BOOL tex = me->_huge.hasSourceTexture();
+                [me->_scene showFlat:me->_huge.mesh() cornerUV:(tex ? me->_huge.sourceCornerUV() : std::vector<float>()) rgba:{}];
+                [me->_scene setTextureWidth:(tex ? me->_huge.sourceWidth() : 0) height:me->_huge.sourceHeight() pixels:me->_huge.sourcePixels()];
+                me->_sourceTextureShown = tex;
+                [me setViewMode:tex ? 3 : 1];
                 [me suggestTextureSize:me->_huge.faceCount()];
                 [me updateEnabled];
                 [me openFinished];
@@ -1037,12 +1047,15 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _result.stringValue = @"";
     _status.stringValue = @"Ready";
     [_scene resetCamera];
-    [_scene showMesh:_session.mesh() colors:{} faceUV:{}];
-    [_scene setTexture:0 pixels:nullptr];
+    // a mesh with a texture is shown with it (the texture of the file, its own coordinates) until there is an atlas
+    const BOOL tex = _session.hasSourceTexture() && _session.sourceCornerUV().size() == _session.mesh().n_faces() * 6;
+    [_scene showMesh:_session.mesh() colors:{} faceUV:(tex ? _session.sourceCornerUV() : std::vector<float>())];
+    [_scene setTextureWidth:(tex ? _session.sourceWidth() : 0) height:_session.sourceHeight() pixels:_session.sourcePixels()];
+    _sourceTextureShown = tex;
     [_uv clear];
     _uvItem.collapsed = YES;
     [self suggestTextureSize:_session.mesh().n_faces()];
-    [self setViewMode:1];
+    [self setViewMode:tex ? 3 : 1];
     [self updateEnabled];
     [self openFinished];
 }
@@ -1171,6 +1184,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
 // the result goes to the 3D view and the UV view, the numbers to the sidebar
 - (void)showResultKeepingView:(BOOL)keepView
 {
+    _sourceTextureShown = NO;
     NSString* text;
     if (_useHuge) {
         text = [NSString stringWithFormat:@"%zu patches\nAtlas %d × %d, %.0f%% of the texture is used\n%.1f s", _huge.patchCount(), _huge.resolution(),
@@ -1258,9 +1272,9 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     const BOOL result = [self hasResult];
     [_viewSwitch setEnabled:result forSegment:0];
     [_viewSwitch setEnabled:result forSegment:2];
-    [_viewSwitch setEnabled:[self hasBaked] forSegment:3];
+    [_viewSwitch setEnabled:[self hasTextureView] forSegment:3];
     if ((mode == 0 || mode == 2) && !result) mode = 1;
-    if (mode == 3 && ![self hasBaked]) mode = result ? 0 : 1;
+    if (mode == 3 && ![self hasTextureView]) mode = result ? 0 : 1;
     _mode = mode;
     _viewSwitch.selectedSegment = mode;
     _presentGroup.hidden = mode != 2;

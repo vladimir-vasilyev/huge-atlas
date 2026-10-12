@@ -31,7 +31,11 @@ public:
     bool setTexture(const std::vector<float>& cornerUV, int width, int height, const unsigned char* rgba, std::string* error);
     const std::vector<int32_t>& patchOfFace() const { return result_.patchOfFace; }
     bool loaded() const { return loaded_; }
-    bool hasSourceTexture() const { return sourceW_ > 0; }
+    bool hasSourceTexture() const { return sourceW_ > 0 && !sourcePixels_.empty() && surface_.hasUV(); }
+    const std::vector<float>& sourceCornerUV() const { return surface_.cornerUV; }
+    const unsigned char* sourcePixels() const { return sourcePixels_.data(); }
+    int sourceWidth() const { return sourceW_; }
+    int sourceHeight() const { return sourceH_; }
 
     // `cancel` (optional) stops the run between its stages (and between the rounds of the refinement): false and the error "cancelled"
     bool run(const SessionSettings& settings, const Progress& progress, std::string* error, const std::atomic<bool>* cancel = nullptr);

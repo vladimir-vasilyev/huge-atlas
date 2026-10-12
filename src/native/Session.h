@@ -79,6 +79,11 @@ public:
 
     // The texture of the file (an OBJ with vt and a material with a diffuse map) and its bake into the new atlas.
     bool hasSourceTexture() const { return sourceW_ > 0; }
+    // the texture of the file and its coordinates as they are (6 floats per face), to show the mesh before there is an atlas
+    const std::vector<float>& sourceCornerUV() const { return extras_.cornerUV; }
+    const unsigned char* sourcePixels() const { return sourcePixels_.data(); }
+    int sourceWidth() const { return sourceW_; }
+    int sourceHeight() const { return sourceH_; }
     bool hasBakedTexture() const { return resultValid_ && !baked_.empty(); }
     int bakedResolution() const { return atlas_.resolution; }
     const unsigned char* bakedPixels() const { return baked_.data(); }
