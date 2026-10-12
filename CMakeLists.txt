@@ -344,6 +344,10 @@ add_executable(huge_atlas_native
 target_include_directories(huge_atlas_native PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
 target_compile_definitions(huge_atlas_native PRIVATE GL_SILENCE_DEPRECATION)
 target_compile_options(huge_atlas_native PRIVATE -fobjc-arc)
+set_target_properties(huge_atlas_native PROPERTIES
+    XCODE_GENERATE_SCHEME TRUE
+    XCODE_SCHEME_WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
 target_link_libraries(huge_atlas_native PRIVATE vsa_core "-framework Cocoa" "-framework OpenGL" "-framework QuartzCore" "-framework UniformTypeIdentifiers" "-framework Security")
 
 # ---------------------------------------------------------------- the Python module `huge_atlas` (pybind11 + numpy), off by default
