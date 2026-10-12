@@ -6,6 +6,8 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include "render/GL.h"
+#include "render/SceneFramebuffer.h"
+#include "param/AtlasChecker.h"
 #include "render/Camera.h"
 #include "render/MeshRenderer.h"
 #include "render/GridRenderer.h"
@@ -38,6 +40,11 @@
     BOOL _showGrid;         // the coordinate grid, under the mesh when there is one
     float _floorY;          // where the floor of the grid is: the lowest point of the mesh
     BOOL _hasTexture;
+    SceneFramebuffer _fbo;     // the multisample target (the developer mode)
+    int _msaa;
+    float _checkerCells;       // > 0: the UV checker with this many squares along the atlas
+    GLuint _gpuQuery[2];
+    int _gpuFrame;
     BOOL _wire;             // the developer mode: the wire of the triangles over the mesh
     BOOL _cull;             // big meshes: the back faces are not drawn
     float _offset, _alpha;  // presentation: how far the translucent copies of the patches move, how opaque they are
@@ -45,6 +52,11 @@
     NSPoint _last;
 }
 @property (nonatomic, copy) void (^onDropURL)(NSURL*);
+@property (nonatomic, copy) void (^onGpuTime)(double ms);
+- (void)setMsaa:(int)samples;
+- (void)setCull:(BOOL)on;
+- (BOOL)cull;
+- (void)setCheckerCells:(float)cells;
 - (void)showMesh:(const TriMesh&)mesh colors:(const std::vector<float>&)colors faceUV:(const std::vector<float>&)uv;
 - (void)showFlat:(const FlatMesh&)mesh cornerUV:(const std::vector<float>&)uv rgba:(const std::vector<unsigned char>&)rgba;
 - (void)clearMesh;
@@ -152,6 +164,11 @@
     [self setNeedsDisplay:YES];
 }
 
+- (void)setMsaa:(int)samples { _msaa = samples; [self setNeedsDisplay:YES]; }
+- (void)setCull:(BOOL)on { _cull = on; [self setNeedsDisplay:YES]; }
+- (BOOL)cull { return _cull; }
+- (void)setCheckerCells:(float)cells { _checkerCells = cells; [self setNeedsDisplay:YES]; }
+
 - (BOOL)showGrid { return _showGrid; }
 - (void)setShowGrid:(BOOL)on { _showGrid = on; [self setNeedsDisplay:YES]; }
 
@@ -182,7 +199,9 @@
 {
     [self ensureReady];
     const NSRect b = [self convertRectToBacking:self.bounds];
+    _fbo.begin(int(b.size.width), int(b.size.height), _msaa);   // the default framebuffer when there is no multisampling
     glViewport(0, 0, GLsizei(b.size.width), GLsizei(b.size.height));
+    glEnable(GL_DEPTH_TEST);
     __block float r = 0.12f, g = 0.12f, bl = 0.13f;
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{   // the color of the window follows light / dark
         NSColor* c = [[NSColor underPageBackgroundColor] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
@@ -201,6 +220,21 @@
         _camera.viewProj(float(b.size.width / b.size.height), vp);
         _camera.view(v);
         const BOOL tex = _hasTexture;
+        // the GPU time of the mesh, read one frame late so that nothing stalls
+        if (!_gpuQuery[0]) glGenQueries(2, _gpuQuery);
+        const int cur = _gpuFrame & 1, prev = cur ^ 1;
+        if (_gpuFrame > 1 && _onGpuTime) {
+            GLint available = 0;
+            glGetQueryObjectiv(_gpuQuery[prev], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available) {
+                GLuint64 ns = 0;
+                glGetQueryObjectui64v(_gpuQuery[prev], GL_QUERY_RESULT, &ns);
+                const double ms = double(ns) * 1e-6;
+                dispatch_async(dispatch_get_main_queue(), ^{ if (self->_onGpuTime) self->_onGpuTime(ms); });
+            }
+        }
+        glBeginQuery(GL_TIME_ELAPSED, _gpuQuery[cur]);
+        ++_gpuFrame;
         if (_mode == 2 && _renderer.hasPatchNormals()) {
             // presentation: the patches as they are, then the same patches translucent and moved along their normals. The defaults:
             // a textured mesh is colors + texture, a mesh without a texture is shading + colors
@@ -212,9 +246,11 @@
             _renderer.drawGhosts(vp, v, _offset, _alpha, _cull, p2 == 1, p2 == 2);
             if (!skipFirst && secondFirst) first();
         } else {
-            _renderer.draw(vp, v, _wire && !_cull, 0.0f, _mode == 3 && tex, _cull, _mode == 1);
+            _renderer.draw(vp, v, _wire && !_cull, _checkerCells, _mode == 3 && tex && _checkerCells <= 0.0f, _cull, _mode == 1);
         }
+        glEndQuery(GL_TIME_ELAPSED);
     }
+    _fbo.end();
     [self.openGLContext flushBuffer];
 }
 
@@ -494,6 +530,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     dispatch_semaphore_t _openSignal;    // released when a file the assistant opened is shown (or failed)
     dispatch_semaphore_t _atlasSignal;   // released when a run the assistant started has ended
     BOOL _lastOK;
+    BOOL _checkerOn;            // the UV checker is drawn (the renderer holds the atlas coordinates)
     NSInteger _selectedPatch;   // the row chosen in the patch table (-1: none)
     BOOL _sourceTextureShown;   // the mesh is shown with the texture of its file (no atlas yet)
     NSString* _lastError;
@@ -666,6 +703,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:)];
     _selectedPatch = -1;
     __weak AppController* weakDev = self;
+    _dev.onViewOptions = ^{ [weakDev applyViewOptions]; };
+    _scene.onGpuTime = ^(double ms) { AppController* me = weakDev; if (me) [me->_dev setGpuMilliseconds:ms]; };
     _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) { me->_selectedPatch = patch; me->_uv.selectedPatch = patch; [me recolorPatches]; } };
     _dev.onColorMode = ^(NSInteger mode) { [weakDev recolorPatches]; };
     NSStackView* stack = [NSStackView stackViewWithViews:@[
@@ -1036,6 +1075,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
 
 - (void)updateEnabled
 {
+    if ([_dev cullBackFaces] != [_scene cull]) [_dev setCullBackFaces:[_scene cull]];
     _repackButton.enabled = !_running && [self hasResult];
     [_window.toolbar validateVisibleItems];
 }
@@ -1088,6 +1128,9 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
                 [me->_scene showFlat:me->_huge.mesh() cornerUV:(tex ? me->_huge.sourceCornerUV() : std::vector<float>()) rgba:{}];
                 [me->_scene setTextureWidth:(tex ? me->_huge.sourceWidth() : 0) height:me->_huge.sourceHeight() pixels:me->_huge.sourcePixels()];
                 me->_sourceTextureShown = tex;
+                me->_checkerOn = NO;
+                [me->_scene setCheckerCells:0.0f];
+                [me->_dev setResultViewsEnabled:NO];
                 [me->_dev setInfo:[NSString stringWithFormat:@"Vertices          %zu\nFaces             %zu\n(a big scan: no further diagnostics)", me->_huge.mesh().vertexCount(), me->_huge.faceCount()]];
                 [me->_dev setPatchRows:{}];
                 [me setViewMode:tex ? 3 : 1];
@@ -1118,6 +1161,9 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     [_scene showMesh:_session.mesh() colors:{} faceUV:(tex ? _session.sourceCornerUV() : std::vector<float>())];
     [_scene setTextureWidth:(tex ? _session.sourceWidth() : 0) height:_session.sourceHeight() pixels:_session.sourcePixels()];
     _sourceTextureShown = tex;
+    _checkerOn = NO;
+    [_scene setCheckerCells:0.0f];
+    [_dev setResultViewsEnabled:NO];
     [_dev setInfo:[NSString stringWithUTF8String:_session.meshInfo().c_str()]];
     [_dev setPatchRows:{}];
     [_uv clear];
@@ -1259,7 +1305,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
                                           _huge.resolution(), 100.0 * _huge.efficiency(), _huge.seconds()];
         if (_huge.facesWithoutUV() > 0)
             text = [text stringByAppendingFormat:@"\n%zu faces could not be unfolded and have no texture coordinates", _huge.facesWithoutUV()];
-        [_scene showFlat:_huge.mesh() cornerUV:(_huge.hasBakedTexture() ? _huge.cornerUV() : std::vector<float>()) rgba:_huge.patchRgba()];
+        [_scene showFlat:_huge.mesh() cornerUV:(_huge.hasBakedTexture() || _checkerOn ? _huge.cornerUV() : std::vector<float>()) rgba:_huge.patchRgba()];
         [_scene setTexture:(_huge.hasBakedTexture() ? _huge.bakedResolution() : 0) pixels:_huge.bakedPixels()];
         [_scene setPatchNormals:_huge.patchNormalsPerFace()];
         [_uv setCharts:_huge.uvCharts() texture:(_huge.hasBakedTexture() ? _huge.bakedPixels() : nullptr) side:_huge.bakedResolution()];
@@ -1268,7 +1314,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
                                           _session.resolution(), 100.0 * _session.efficiency(), _session.seconds()];
         if (_session.unresolvedPatches() > 0)
             text = [text stringByAppendingFormat:@"\n%d patches could not be unfolded cleanly", _session.unresolvedPatches()];
-        [_scene showMesh:_session.mesh() colors:_session.patchColors() faceUV:(_session.hasBakedTexture() ? _session.atlasFaceUV() : std::vector<float>())];
+        [_scene showMesh:_session.mesh() colors:_session.patchColors() faceUV:(_session.hasBakedTexture() || _checkerOn ? _session.atlasFaceUV() : std::vector<float>())];
         [_scene setTexture:(_session.hasBakedTexture() ? _session.bakedResolution() : 0) pixels:_session.bakedPixels()];
         [_scene setPatchNormals:_session.patchNormalsPerFace()];
         [_uv setCharts:_session.uvCharts() texture:(_session.hasBakedTexture() ? _session.bakedPixels() : nullptr) side:_session.bakedResolution()];
@@ -1278,6 +1324,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         const std::string rep = _useHuge ? _huge.report() : _session.report();
         [_dev setReport:[NSString stringWithUTF8String:rep.c_str()]];
         [_dev setPatchRows:_useHuge ? _huge.patchRows() : _session.patchRows()];
+        [_dev setResultViewsEnabled:YES];
+        [self updateCheckerCells];
         _selectedPatch = -1;
         _uv.selectedPatch = -1;
         if (getenv("HUGE_NATIVE_AUTORUN") && !keepView) printf("NATIVE REPORT:\n%s", rep.c_str());
@@ -1287,6 +1335,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     [self updateEnabled];
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
+        if (getenv("HUGE_NATIVE_CHECKER")) [_dev setUvChecker:YES msaa:atoi(getenv("HUGE_NATIVE_CHECKER"))];   // testing hook: the UV checker, anti-aliasing with this many samples
         if (getenv("HUGE_NATIVE_SAVEBAD")) [self saveBadPatches:nil];   // testing hook
         if (getenv("HUGE_NATIVE_PATCHES")) {   // testing hook: the patch table, the paint modes and a selection
             const std::vector<PatchRow> rows = _useHuge ? _huge.patchRows() : _session.patchRows();
@@ -1650,6 +1699,26 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     Json r = Json::object();
     r["saved"] = path;
     return r;
+}
+
+// the view options of the developer panel: anti-aliasing, back faces, the UV checker
+- (void)applyViewOptions
+{
+    [_scene setMsaa:_dev.msaa];
+    [_scene setCull:_dev.cullBackFaces];
+    const BOOL checker = _dev.uvChecker && [self hasResult] && !_running;
+    if (checker != _checkerOn) {
+        _checkerOn = checker;
+        [self showResultKeepingView:YES];   // the renderer gets the atlas coordinates (or the texture ones again)
+    }
+    [self updateCheckerCells];
+}
+
+- (void)updateCheckerCells
+{
+    float cells = 0.0f;
+    if (_checkerOn && [self hasResult]) cells = atlasCheckerCells(_useHuge ? _huge.atlas() : _session.atlas(), _dev.checkerSquares);
+    [_scene setCheckerCells:cells];
 }
 
 // the patches painted by the mode of the table (patch colors, problems, stretch); the chosen patch is white

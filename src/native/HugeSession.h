@@ -52,6 +52,7 @@ public:
     size_t unresolvedPatches() const { return result_.stats.patchesUnresolved; }
     size_t facesWithoutUV() const { return result_.stats.facesWithoutUV; }
     double efficiency() const { return atlas_.efficiency; }
+    const AtlasResult& atlas() const { return atlas_; }
     int resolution() const { return atlas_.resolution; }
     int gutter() const { return atlas_.gutter; }
     double seconds() const { return seconds_; }

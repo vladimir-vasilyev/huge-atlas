@@ -86,6 +86,7 @@ public:
     size_t patchCount() const { return result_.params.size(); }
     int unresolvedPatches() const { return result_.stats.unresolved; }
     double efficiency() const { return atlas_.efficiency; }
+    const AtlasResult& atlas() const { return atlas_; }
     int resolution() const { return atlas_.resolution; }
     int gutter() const { return atlas_.gutter; }
     double seconds() const { return seconds_; }

@@ -351,6 +351,7 @@ add_executable(huge_atlas_native
     src/render/Camera.cpp
     src/render/MeshRenderer.cpp
     src/render/GridRenderer.cpp
+    src/render/SceneFramebuffer.cpp
     src/render/ImageFile.cpp)
 target_include_directories(huge_atlas_native PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
 target_compile_definitions(huge_atlas_native PRIVATE GL_SILENCE_DEPRECATION)

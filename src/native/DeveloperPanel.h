@@ -14,7 +14,16 @@
 - (instancetype)initWithTarget:(id)target compareAction:(SEL)action;
 - (DeveloperOptions)options;
 - (void)setReport:(NSString*)text;
-- (void)setInfo:(NSString*)text;   // the diagnostics of the open mesh
+- (void)setInfo:(NSString*)text;
+// How the 3D view is drawn: anti-aliasing (0 off, 2, 4, 8 samples), back faces, the UV checker (squares along the model) and the GPU time.
+@property (nonatomic, copy) void (^onViewOptions)(void);
+@property (nonatomic, readonly) int msaa;
+@property (nonatomic) BOOL cullBackFaces;
+@property (nonatomic, readonly) BOOL uvChecker;
+@property (nonatomic, readonly) int checkerSquares;
+- (void)setGpuMilliseconds:(double)ms;
+- (void)setUvChecker:(BOOL)on msaa:(int)samples;   // for the checks without a mouse
+- (void)setResultViewsEnabled:(BOOL)on;   // the UV checker needs an atlas   // the diagnostics of the open mesh
 // The patch table: a click selects a patch (-1: none), the color mode says how the patches are painted (0 colors, 1 problems, 2 stretch).
 - (void)setPatchRows:(std::vector<PatchRow>)rows;
 @property (nonatomic, copy) void (^onPatchSelected)(NSInteger patch);

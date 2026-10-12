@@ -10,6 +10,7 @@
 }
 - (instancetype)initWithTitle:(NSString*)title min:(double)lo max:(double)hi step:(double)step value:(double)value decimals:(int)decimals;
 @property (nonatomic) double value;
+@property (nonatomic, copy) void (^onChange)(void);
 @end
 
 @implementation NumberRow
@@ -48,8 +49,8 @@
     _field.stringValue = [NSString stringWithFormat:@"%.*f", _decimals, v];
 }
 
-- (void)fieldChanged:(id)sender { self.value = _field.doubleValue; }
-- (void)stepperChanged:(id)sender { self.value = _stepper.doubleValue; }
+- (void)fieldChanged:(id)sender { self.value = _field.doubleValue; if (self.onChange) self.onChange(); }
+- (void)stepperChanged:(id)sender { self.value = _stepper.doubleValue; if (self.onChange) self.onChange(); }
 
 - (void)setEnabled:(BOOL)on { _field.enabled = on; _stepper.enabled = on; }
 
@@ -67,12 +68,16 @@
     NSButton* _compare;
     NSTextField* _report;
     NSTextField* _info;
+    NSPopUpButton* _msaa;
+    NSButton *_cull, *_checker;
+    NumberRow* _squares;
+    NSTextField* _gpu;
     NumberRow *_smoothing, *_normalIter, *_normalSigma, *_lloyd, *_depth, *_atOnce, *_percent;
     NSButton *_lscm, *_repair;
 }
 
 @synthesize view = _view, compareButton = _compare;
-@synthesize onPatchSelected, onColorMode;
+@synthesize onPatchSelected, onColorMode, onViewOptions;
 
 static NSTextField* heading(NSString* text)
 {
@@ -144,8 +149,28 @@ static NSTextField* heading(NSString* text)
     _info.selectable = YES;
     _info.preferredMaxLayoutWidth = 250;
 
+    // the view: how the scene is drawn
+    _msaa = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_msaa addItemsWithTitles:@[@"Off", @"2x", @"4x", @"8x"]];
+    _msaa.target = self;
+    _msaa.action = @selector(viewChanged:);
+    _msaa.accessibilityLabel = @"Anti-aliasing";
+    NSStackView* aa = [NSStackView stackViewWithViews:@[[NSTextField labelWithString:@"Anti-aliasing:"], _msaa]];
+    aa.spacing = 6;
+    _cull = [NSButton checkboxWithTitle:@"Cull back faces" target:self action:@selector(viewChanged:)];
+    _cull.toolTip = @"Faster on scans; a model seen from inside shows holes";
+    _checker = [NSButton checkboxWithTitle:@"UV checker" target:self action:@selector(viewChanged:)];
+    _checker.toolTip = @"A checker through the UV of the atlas: squares of one size on the surface show where the texture is stretched";
+    _checker.enabled = NO;
+    _squares = [[NumberRow alloc] initWithTitle:@"Checker squares" min:4 max:200 step:4 value:40 decimals:0];
+    __weak DeveloperPanel* weakSelf = self;
+    _squares.onChange = ^{ if (weakSelf.onViewOptions) weakSelf.onViewOptions(); };
+    _gpu = [NSTextField labelWithString:@"GPU: —"];
+    _gpu.font = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
+    _gpu.textColor = NSColor.secondaryLabelColor;
+
     _view = [NSStackView stackViewWithViews:@[
-        heading(@"Mesh"), _info, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare,
+        heading(@"Mesh"), _info, _gpu, heading(@"View"), aa, _cull, _checker, _squares, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare,
         heading(@"Patches"), paint, _tableScroll, _report]];
     _view.orientation = NSUserInterfaceLayoutOrientationVertical;
     _view.alignment = NSLayoutAttributeLeading;
@@ -174,6 +199,26 @@ static NSTextField* heading(NSString* text)
 
 - (void)setReport:(NSString*)text { _report.stringValue = text; }
 - (void)setInfo:(NSString*)text { _info.stringValue = text; }
+
+- (int)msaa { static const int s[4] = {0, 2, 4, 8}; return s[std::max<NSInteger>(0, std::min<NSInteger>(3, _msaa.indexOfSelectedItem))]; }
+- (BOOL)cullBackFaces { return _cull.state == NSControlStateValueOn; }
+- (void)setCullBackFaces:(BOOL)on { _cull.state = on ? NSControlStateValueOn : NSControlStateValueOff; }
+- (BOOL)uvChecker { return _checker.enabled && _checker.state == NSControlStateValueOn; }
+- (int)checkerSquares { return int(_squares.value); }
+- (void)setUvChecker:(BOOL)on msaa:(int)samples
+{
+    _checker.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+    [_msaa selectItemAtIndex:samples >= 8 ? 3 : samples >= 4 ? 2 : samples >= 2 ? 1 : 0];
+    [self viewChanged:nil];
+}
+
+- (void)viewChanged:(id)sender { if (self.onViewOptions) self.onViewOptions(); }
+- (void)setGpuMilliseconds:(double)ms { _gpu.stringValue = [NSString stringWithFormat:@"GPU: %.1f ms", ms]; }
+- (void)setResultViewsEnabled:(BOOL)on
+{
+    _checker.enabled = on;
+    if (!on) _checker.state = NSControlStateValueOff;
+}
 
 - (NSInteger)colorMode { return _colors.indexOfSelectedItem; }
 - (void)colorModeChanged:(id)sender { if (self.onColorMode) self.onColorMode(_colors.indexOfSelectedItem); }
