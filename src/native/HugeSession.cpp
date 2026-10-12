@@ -40,6 +40,33 @@ void HugeSession::clear()
     loaded_ = false;
 }
 
+bool HugeSession::setMesh(const float* pos, size_t nV, const uint32_t* idx, size_t nF, std::string* error)
+{
+    if (nF == 0) { if (error) *error = "the mesh has no faces"; return false; }
+    for (size_t i = 0; i < nF * 3; ++i)
+        if (idx[i] >= nV) { if (error) *error = "a face refers to a vertex that does not exist"; return false; }
+    const std::string path = path_;
+    clear();
+    path_ = path.empty() ? std::string("<arrays>") : path;
+    mesh_.pos.assign(pos, pos + nV * 3);
+    mesh_.idx.assign(idx, idx + nF * 3);
+    transform_ = normalizeFlatToUnitBox(mesh_);
+    loaded_ = true;
+    return true;
+}
+
+bool HugeSession::setTexture(const std::vector<float>& cornerUV, int w, int h, const unsigned char* rgba, std::string* error)
+{
+    if (cornerUV.size() != mesh_.faceCount() * 6 || w <= 0 || h <= 0 || !rgba) { if (error) *error = "the texture needs 6 uv values per face and pixels"; return false; }
+    surface_.cornerUV = cornerUV;
+    surface_.faceMaterial.clear();
+    sourcePixels_.assign(rgba, rgba + size_t(w) * h * 4);
+    sourceW_ = w;
+    sourceH_ = h;
+    textureMaterial_ = -1;
+    return true;
+}
+
 bool HugeSession::load(std::string* error)
 {
     const std::string path = path_;
@@ -58,7 +85,18 @@ bool HugeSession::load(std::string* error)
     return true;
 }
 
-bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::string* error)
+bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::string* error, const std::atomic<bool>* cancel)
+{
+    try {
+        return runImpl(s, progress, error, cancel);
+    } catch (const Cancelled&) {
+        resultValid_ = false;
+        if (error) *error = "cancelled";
+        return false;
+    }
+}
+
+bool HugeSession::runImpl(const SessionSettings& s, const Progress& progress, std::string* error, const std::atomic<bool>* cancel)
 {
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
@@ -91,7 +129,11 @@ bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::s
     co.refine.param.repairNearMisses = s.dev.repairNearMisses;
     k_ = size_t(co.k);
     co.onStage = [&](const std::string& what) { say(what); };
+    co.cancel = cancel;
+    co.refine.cancel = cancel;
+    throwIfCancelled(cancel);
     result_ = runFlatPipeline(mesh_, co);
+    throwIfCancelled(cancel);
 
     if (!packAndBake(s, progress, error)) return false;
     seconds_ = std::chrono::duration<double>(Clock::now() - t0).count();
@@ -206,7 +248,14 @@ std::string HugeSession::report() const
 
 std::string HugeSession::compare(std::string* error) const
 {
-    if (!resultValid_) { if (error) *error = "make the atlas first"; return ""; }
+    LayoutComparison c;
+    if (!compareData(&c, error)) return "";
+    return formatLayoutComparison(c.original, c.ours, c.mipOriginal, c.mipOurs, c.hadOriginal);
+}
+
+bool HugeSession::compareData(LayoutComparison* out, std::string* error) const
+{
+    if (!resultValid_) { if (error) *error = "make the atlas first"; return false; }
     const int R = std::max(256, atlas_.resolution);
     const std::vector<int32_t> nbr = buildFaceNeighbors(mesh_);
     std::vector<float> ours = result_.cornerUV, original = surface_.cornerUV;
@@ -224,5 +273,6 @@ std::string HugeSession::compare(std::string* error) const
         lo = analyzeUVLayout(mesh_, nbr, original, R);
         mo = measureMipSafety(mesh_, nbr, original, R, true, 7, false);
     }
-    return formatLayoutComparison(lo, ln, mo, mn, hadOriginal);
+    *out = LayoutComparison{lo, ln, mo, mn, hadOriginal};
+    return true;
 }

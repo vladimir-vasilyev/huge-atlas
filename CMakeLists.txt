@@ -329,3 +329,21 @@ target_include_directories(huge_atlas_native PRIVATE ${CMAKE_SOURCE_DIR}/src ${E
 target_compile_definitions(huge_atlas_native PRIVATE GL_SILENCE_DEPRECATION)
 target_compile_options(huge_atlas_native PRIVATE -fobjc-arc)
 target_link_libraries(huge_atlas_native PRIVATE vsa_core "-framework Cocoa" "-framework OpenGL" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
+
+# ---------------------------------------------------------------- the Python module `huge_atlas` (pybind11 + numpy), off by default
+# cmake -DBUILD_PYTHON=ON -Dpybind11_DIR=$(python -m pybind11 --cmakedir) -DPython_EXECUTABLE=$(which python) ...
+option(BUILD_PYTHON "Build the Python module huge_atlas" OFF)
+if(BUILD_PYTHON)
+    find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+    find_package(pybind11 CONFIG REQUIRED)
+    pybind11_add_module(huge_atlas
+        src/python/module.cpp
+        src/native/Session.cpp
+        src/native/HugeSession.cpp
+        src/render/ImageFile.cpp)
+    target_include_directories(huge_atlas PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)
+    target_compile_definitions(huge_atlas PRIVATE GL_SILENCE_DEPRECATION)
+    target_link_libraries(huge_atlas PRIVATE vsa_core)
+    set_target_properties(huge_atlas PROPERTIES CXX_VISIBILITY_PRESET hidden)
+    install(TARGETS huge_atlas LIBRARY DESTINATION . COMPONENT python)
+endif()

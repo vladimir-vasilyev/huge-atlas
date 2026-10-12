@@ -896,7 +896,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     const SEL a = item.action;
     if (a == @selector(openMesh:)) return !_running;
     if (a == @selector(makeAtlas:)) return !_running && [self hasMeshToWork];
-    if (a == @selector(cancelAtlas:)) return _running && !_useHuge;   // the huge mode cannot be stopped in the middle
+    if (a == @selector(cancelAtlas:)) return _running;
     if (a == @selector(repackAtlas:)) return !_running && [self hasResult];
     if (a == @selector(saveAs:)) return !_running && [self hasResult];
     if (a == @selector(toggleGrid:)) { item.state = [_scene showGrid] ? NSControlStateValueOn : NSControlStateValueOff; return YES; }
@@ -1023,7 +1023,6 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _makeButton.enabled = !running;
     _cancelButton.hidden = !running;
     _progress.hidden = !running;
-    _cancelButton.hidden = !running || _useHuge;   // the huge mode cannot be stopped in the middle
     for (NSControl* c in @[(NSControl*)_quality, (NSControl*)_manual, (NSControl*)_textureSize, (NSControl*)_mip]) c.enabled = !running;
     [_dev setEnabled:!running];
     [self updateEnabled];
@@ -1053,7 +1052,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
             ok = _huge.run(s, [weakSelf](const std::string& what) {
                 NSString* text = [NSString stringWithUTF8String:what.c_str()];
                 dispatch_async(dispatch_get_main_queue(), ^{ AppController* me = weakSelf; if (me) me->_status.stringValue = text; });
-            }, &err);
+            }, &err, &_cancel);
         } else {
             ok = _session.run(s, [weakSelf](double f, const std::string& what) {
                 NSString* text = [NSString stringWithUTF8String:what.c_str()];
@@ -1091,7 +1090,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     });
 }
 
-- (void)cancelAtlas:(id)sender { if (_running && !_useHuge) { _cancel = true; _status.stringValue = @"Cancelling…"; } }
+- (void)cancelAtlas:(id)sender { if (_running) { _cancel = true; _status.stringValue = @"Cancelling…"; } }
 
 - (void)atlasFinished:(BOOL)ok error:(NSString*)error keepView:(BOOL)keepView
 {

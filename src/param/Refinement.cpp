@@ -412,6 +412,7 @@ bool Refiner::splitPatch(int pi)
 bool Refiner::step()
 {
     if (finished_) return false;
+    if (isCancelled(opt_.cancel)) return false;
     const auto t0 = std::chrono::steady_clock::now();
     evaluate();
 

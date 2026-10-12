@@ -53,7 +53,7 @@ void splitComponents(const TriMesh& m, std::vector<int>& label)
 CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, CoarseStats& st)
 {
     CoarseStage cs;
-    auto say = [&](const char* m) { if (opt.onStage) opt.onStage(m); };
+    auto say = [&](const char* m) { throwIfCancelled(opt.cancel); if (opt.onStage) opt.onStage(m); };
     say("simplifying the mesh...");
     auto t = Clock::now();
     SimplifyOptions so = opt.simplify;
@@ -85,7 +85,10 @@ CoarseStage runCoarseStage(const FlatMesh& fineFlat, const CoarseOptions& opt, C
 
     say("parameterizing the patches of the simplified mesh...");
     t = Clock::now();
-    cs.result = refinePatches(cs.mesh, vs.label, opt.refine);
+    RefineOptions ro = opt.refine;
+    ro.cancel = opt.cancel;
+    cs.result = refinePatches(cs.mesh, vs.label, ro);
+    throwIfCancelled(opt.cancel);
     st.coarseRefineSeconds = since(t);
     st.coarsePatches = int(cs.result.params.size());
     st.coarseInitialBad = cs.result.stats.initialBad;
@@ -178,9 +181,12 @@ CoarseResult runCoarsePipeline(const TriMesh& fine, const CoarseOptions& opt)
 
     // ---- what did not survive goes through the ordinary refinement on the fine mesh
     t = Clock::now();
-    Refiner refiner(fine, ex.faceToPatch, opt.refine);
+    RefineOptions fineOptions = opt.refine;
+    fineOptions.cancel = opt.cancel;
+    Refiner refiner(fine, ex.faceToPatch, fineOptions);
     refiner.seed(std::move(ex), std::move(params));
     while (refiner.step()) {}
+    throwIfCancelled(opt.cancel);
     res.fine = refiner.takeResult();
     st.fineRefineSeconds = since(t);
     return res;

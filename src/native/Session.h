@@ -2,6 +2,7 @@
 
 #include "core/MeshTypes.h"
 #include "core/ObjLoader.h"
+#include "param/LayoutReport.h"
 #include "param/AtlasBake.h"
 #include "param/AtlasPacker.h"
 #include "param/Refinement.h"
@@ -49,6 +50,15 @@ public:
     using Progress = std::function<void(double fraction, const std::string& what)>;
 
     bool load(const std::string& path, std::string* error);
+    // The mesh from arrays (positions x y z per vertex, three vertex indices per face). Faces keep their numbers: a mesh the half-edge
+    // structure cannot take as it is (non-manifold edges, repeated vertices in a face) is refused. `cornerUV` (6 floats per face,
+    // optional) and `rgba` (width x height, optional, row 0 = v = 0) are the old texture that is baked into the atlas.
+    bool setMesh(const float* positions, size_t vertexCount, const uint32_t* indices, size_t faceCount, std::string* error);
+    bool setTexture(const std::vector<float>& cornerUV, int width, int height, const unsigned char* rgba, std::string* error);
+    // atlas.faceUV: 6 floats per face, NaN for a face without a chart
+    std::vector<float> cornerUVOut() const;
+    // the number of the patch of every face (-1: none)
+    const std::vector<int>& patchOfFace() const { return result_.labels; }
     bool hasMesh() const { return mesh_.n_faces() > 0; }
     const TriMesh& mesh() const { return mesh_; }
     const std::string& path() const { return path_; }
@@ -93,6 +103,7 @@ public:
     std::string report() const;
     // The original layout and the new atlas side by side (needs the atlas; without UV in the file only the atlas is measured).
     std::string compare(std::string* error) const;
+    bool compareData(LayoutComparison* out, std::string* error) const;   // the same, as numbers
 
     // how many patches the quality asks for on a mesh of this size
     static int patchesFor(size_t faces, int quality);

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "huge-atlas"
+version = "0.4.0"
+description = "UV atlases for triangle meshes: VSA segmentation, LinABF unfolding, packing with room for mip levels, texture baking; scans up to 100M faces"
+readme = "python/README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+mcp = ["mcp"]
+test = ["pytest"]
+
+[project.scripts]
+huge-atlas-mcp = "huge_atlas_mcp.server:main"
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+cmake.define = { BUILD_PYTHON = "ON" }
+build.targets = ["huge_atlas"]
+install.components = ["python"]
+wheel.packages = ["python/huge_atlas_mcp"]
+wheel.exclude = ["**/*.cpp", "**/*.h"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Cancel.h"
 #include "core/Partition.h"
 #include "param/ParamPipeline.h"
 #include "param/PatchExtractor.h"
@@ -51,6 +52,7 @@ struct RefineOptions {
     int carefulSplitFromDepth = 2;
     // Replaces parameterizePatch (the coarse-to-fine pipeline lifts a chart instead). Called from several threads.
     std::function<PatchParam(const TriMesh& source, const Patch& patch, const ParamOptions& options)> parameterize;
+    const std::atomic<bool>* cancel = nullptr;   // when set, a round is not started (step() returns false); the caller checks the flag
     ThreadPool* pool = nullptr;      // for the parallel loops inside (null = the shared pool); a worker of the shared pool must pass its own
 
     RefineOptions() { lloyd.maxIterations = 30; }

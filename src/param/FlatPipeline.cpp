@@ -329,7 +329,7 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
     const size_t nF = fine.faceCount();
     ThreadPool& pool = ThreadPool::shared();
 
-    auto say = [&](const char* m) { if (opt.onStage) opt.onStage(m); };
+    auto say = [&](const char* m) { throwIfCancelled(opt.cancel); if (opt.onStage) opt.onStage(m); };
     CoarseStage stage = runCoarseStage(fine, opt, st.coarse);
     const RefineResult& coarse = stage.result;
     say("transferring the segmentation to the full mesh...");
@@ -443,6 +443,7 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
         const size_t held = fallbackGate.acquire(n * 2);
         ThreadPool inlinePool(1);
         RefineOptions ro = opt.refine;
+        ro.cancel = opt.cancel;
         ro.pool = &inlinePool;
         // Split what does not lift: every part is lifted from the same coarse chart again (cheap), the ordinary ladder
         // is the last resort for tiny parts and pieces without a chart.
@@ -507,6 +508,7 @@ FlatResult runFlatPipeline(const FlatMesh& fine, const CoarseOptions& opt, size_
         fallbackGate.release(held);
     });
     st.fallbackSeconds = since(t);
+    throwIfCancelled(opt.cancel);
 
     // ---- assemble in piece order: deterministic
     res.patchOfFace.assign(nF, -1);

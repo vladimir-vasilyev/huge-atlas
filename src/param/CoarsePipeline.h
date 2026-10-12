@@ -28,6 +28,7 @@ struct CoarseOptions {
     double       fineSmoothing = 0.1;    // border smoothing of the transferred labels on the fine mesh (0 = off)
     RefineOptions refine;                // coarse refinement, extraction and the fine fallback
     LiftOptions  lift;
+    const std::atomic<bool>* cancel = nullptr;   // checked between the stages; the pipeline throws `Cancelled`
     std::function<void(const std::string&)> onStage;   // progress messages (called from the working thread)
 };
 

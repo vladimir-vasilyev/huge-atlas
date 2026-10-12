@@ -40,6 +40,55 @@ int AtlasSession::patchesFor(size_t faces, int quality)
     return int(std::max(8.0, std::min(1000.0, std::round(base * kFactor[std::max(0, std::min(2, quality))]))));
 }
 
+bool AtlasSession::setMesh(const float* pos, size_t nV, const uint32_t* idx, size_t nF, std::string* error)
+{
+    if (nF == 0) { if (error) *error = "the mesh has no faces"; return false; }
+    TriMesh m;
+    std::vector<TriMesh::VertexHandle> vh(nV);
+    for (size_t i = 0; i < nV; ++i) vh[i] = m.add_vertex(Vec3(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]));
+    for (size_t f = 0; f < nF; ++f) {
+        for (int k = 0; k < 3; ++k)
+            if (idx[3 * f + k] >= nV) { if (error) *error = "a face refers to a vertex that does not exist"; return false; }
+        if (!m.add_face(vh[idx[3 * f]], vh[idx[3 * f + 1]], vh[idx[3 * f + 2]]).is_valid()) {
+            if (error) *error = "face " + std::to_string(f) + " cannot be added (a non-manifold edge, or a repeated vertex); fix the mesh or use the huge mode";
+            return false;
+        }
+    }
+    normalizeToUnitBox(m);
+    mesh_ = std::move(m);
+    path_.clear();
+    result_ = RefineResult();
+    atlas_ = AtlasResult();
+    resultValid_ = false;
+    baked_.clear();
+    bakedUV_.clear();
+    extras_ = ObjExtras();
+    sourcePixels_.clear();
+    sourceW_ = sourceH_ = 0;
+    textureMaterial_ = -1;
+    return true;
+}
+
+bool AtlasSession::setTexture(const std::vector<float>& cornerUV, int w, int h, const unsigned char* rgba, std::string* error)
+{
+    if (cornerUV.size() != mesh_.n_faces() * 6 || w <= 0 || h <= 0 || !rgba) { if (error) *error = "the texture needs 6 uv values per face and pixels"; return false; }
+    extras_.cornerUV = cornerUV;
+    extras_.faceMaterial.clear();
+    sourcePixels_.assign(rgba, rgba + size_t(w) * h * 4);
+    sourceW_ = w;
+    sourceH_ = h;
+    textureMaterial_ = -1;
+    return true;
+}
+
+std::vector<float> AtlasSession::cornerUVOut() const
+{
+    if (!resultValid_) return {};
+    std::vector<float> uv = bakedUV_;
+    for (float& x : uv) if (x < 0.0f) x = std::nanf("");
+    return uv;
+}
+
 bool AtlasSession::load(const std::string& path, std::string* error)
 {
     TriMesh m;
@@ -308,7 +357,14 @@ std::string AtlasSession::report() const
 
 std::string AtlasSession::compare(std::string* error) const
 {
-    if (!resultValid_) { if (error) *error = "make the atlas first"; return ""; }
+    LayoutComparison c;
+    if (!compareData(&c, error)) return "";
+    return formatLayoutComparison(c.original, c.ours, c.mipOriginal, c.mipOurs, c.hadOriginal);
+}
+
+bool AtlasSession::compareData(LayoutComparison* out, std::string* error) const
+{
+    if (!resultValid_) { if (error) *error = "make the atlas first"; return false; }
     const int R = std::max(256, atlas_.resolution);
     const bool masked = extras_.faceMaterial.size() == mesh_.n_faces();   // only the faces of the texture's material
     const bool hadOriginal = extras_.cornerUV.size() == mesh_.n_faces() * 6;
@@ -326,5 +382,6 @@ std::string AtlasSession::compare(std::string* error) const
         lo = analyzeUVLayout(mesh_, original, R);
         mo = measureMipSafety(mesh_, original, R, true, 7, false);
     }
-    return formatLayoutComparison(lo, ln, mo, mn, hadOriginal);
+    *out = LayoutComparison{lo, ln, mo, mn, hadOriginal};
+    return true;
 }
