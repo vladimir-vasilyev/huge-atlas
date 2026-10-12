@@ -66,6 +66,12 @@ target_include_directories(meshopt SYSTEM PUBLIC ${MO_DIR})
 
 # ---------------------------------------------------------------- Core (no GL/ImGui)
 add_library(vsa_core STATIC
+    src/chat/Json.h
+    src/chat/Json.cpp
+    src/chat/Tools.h
+    src/chat/Tools.cpp
+    src/chat/Agent.h
+    src/chat/Agent.cpp
     src/core/MeshTypes.h
     src/core/MeshPrep.h
     src/core/MeshPrep.cpp
@@ -197,6 +203,11 @@ add_executable(test_flatload tests/test_flatload.cpp)
 target_link_libraries(test_flatload PRIVATE vsa_core)
 add_test(NAME flatload COMMAND test_flatload ${CMAKE_SOURCE_DIR}/data/bunny.ply)
 
+add_executable(test_chat tests/test_chat.cpp)
+target_include_directories(test_chat PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_chat PRIVATE vsa_core)
+add_test(NAME chat COMMAND test_chat)
+
 add_executable(test_preset tests/test_preset.cpp src/app/Preset.cpp)
 target_link_libraries(test_preset PRIVATE vsa_core)
 add_test(NAME preset COMMAND test_preset)
@@ -288,7 +299,7 @@ set(APP_SOURCES
 
 add_executable(vsa_app ${APP_SOURCES})
 target_include_directories(vsa_app PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
-target_link_libraries(vsa_app PRIVATE vsa_core imgui glfw OpenGL::GL "-framework Cocoa" "-framework UniformTypeIdentifiers")
+target_link_libraries(vsa_app PRIVATE vsa_core imgui glfw OpenGL::GL "-framework Cocoa" "-framework UniformTypeIdentifiers" "-framework Security")
 target_compile_options(vsa_app PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # Xcode conveniences: file groups mirror the tree, scheme working directory = project root
@@ -318,6 +329,8 @@ add_executable(huge_atlas_native
     src/native/HugeSession.cpp
     src/native/Settings.mm
     src/native/DeveloperPanel.mm
+    src/native/ChatPanel.mm
+    src/chat/Provider.mm
     src/app/NativeUI.mm
     src/render/GL.cpp
     src/render/Shader.cpp
@@ -328,7 +341,7 @@ add_executable(huge_atlas_native
 target_include_directories(huge_atlas_native PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)   # stb_image.h lives there
 target_compile_definitions(huge_atlas_native PRIVATE GL_SILENCE_DEPRECATION)
 target_compile_options(huge_atlas_native PRIVATE -fobjc-arc)
-target_link_libraries(huge_atlas_native PRIVATE vsa_core "-framework Cocoa" "-framework OpenGL" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
+target_link_libraries(huge_atlas_native PRIVATE vsa_core "-framework Cocoa" "-framework OpenGL" "-framework QuartzCore" "-framework UniformTypeIdentifiers" "-framework Security")
 
 # ---------------------------------------------------------------- the Python module `huge_atlas` (pybind11 + numpy), off by default
 # cmake -DBUILD_PYTHON=ON -Dpybind11_DIR=$(python -m pybind11 --cmakedir) -DPython_EXECUTABLE=$(which python) ...

@@ -11,9 +11,13 @@
 #include "render/GridRenderer.h"
 #include "app/NativeUI.h"
 #include "native/HugeSession.h"
+#import "native/ChatPanel.h"
 #import "native/DeveloperPanel.h"
 #import "native/Settings.h"
 #include "native/Session.h"
+#include "chat/Agent.h"
+#include "chat/Provider.h"
+#include "chat/Tools.h"
 
 #include <atomic>
 #include <memory>
@@ -426,10 +430,24 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     return t;
 }
 
+@class AppController;
+// the hands of the assistant: it works on the thread of the agent and moves what must be done to the main thread
+std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
+
 @interface AppController : NSObject <NSApplicationDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuItemValidation, NSWindowDelegate> {
     NSWindow* _window;
     NSSplitViewController* _split;
     NSSplitViewItem* _uvItem;
+    ChatPanel* _chat;
+    NSSplitViewItem* _chatItem;
+    ChatSession _chatSession;
+    std::thread _chatThread;
+    std::atomic<bool> _chatStop;
+    BOOL _chatBusy;
+    dispatch_semaphore_t _openSignal;    // released when a file the assistant opened is shown (or failed)
+    dispatch_semaphore_t _atlasSignal;   // released when a run the assistant started has ended
+    BOOL _lastOK;
+    NSString* _lastError;
     UvView* _uv;
     SceneView* _scene;
     NSSegmentedControl* _viewSwitch;
@@ -472,6 +490,14 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     std::thread _worker;
     BOOL _running;
 }
+- (Json)hostOpen:(NSString*)path;
+- (Json)hostMakeAtlas:(const Json&)args;
+- (Json)hostRepack:(int)size mip:(int)mip;
+- (Json)hostState;
+- (Json)hostLayout;
+- (Json)hostReport;
+- (Json)hostSave:(NSString*)name;
+- (void)hostCancel;
 @end
 
 @implementation AppController
@@ -710,6 +736,19 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     _uvItem.canCollapse = YES;
     _uvItem.collapsed = YES;
     [_split addSplitViewItem:_uvItem];
+    // the assistant on the far trailing side: closed until it is asked for
+    _chat = [[ChatPanel alloc] initWithFrame:NSMakeRect(0, 0, 340, 600)];
+    __weak AppController* weak = self;
+    _chat.onSend = ^(NSString* t) { [weak chatSend:t]; };
+    _chat.onStop = ^{ [weak chatStop]; };
+    _chat.onSetup = ^{ [weak chatSetup]; };
+    NSViewController* chatVC = [[NSViewController alloc] init];
+    chatVC.view = _chat;
+    _chatItem = [NSSplitViewItem splitViewItemWithViewController:chatVC];
+    _chatItem.minimumThickness = 300;
+    _chatItem.canCollapse = YES;
+    _chatItem.collapsed = YES;
+    [_split addSplitViewItem:_chatItem];
 
     _window = [NSWindow windowWithContentViewController:_split];
     _window.styleMask |= NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView;
@@ -766,7 +805,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 - (NSArray<NSToolbarItemIdentifier>*)toolbarDefaultItemIdentifiers:(NSToolbar*)t
 {
     return @[NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, @"makeAtlas",
-             NSToolbarFlexibleSpaceItemIdentifier, @"views", @"save", @"uv"];
+             NSToolbarFlexibleSpaceItemIdentifier, @"views", @"save", @"uv", @"assistant"];
 }
 - (NSArray<NSToolbarItemIdentifier>*)toolbarAllowedItemIdentifiers:(NSToolbar*)t { return [self toolbarDefaultItemIdentifiers:t]; }
 
@@ -781,6 +820,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if ([ident isEqual:@"open"]) set(@"Open", @"folder", @selector(openMesh:), @"Open a mesh (⌘O)");
     else if ([ident isEqual:@"makeAtlas"]) set(@"Make Atlas", @"wand.and.stars", @selector(makeAtlas:), @"Make the atlas (⌘R)");
     else if ([ident isEqual:@"uv"]) set(@"UV Layout", @"square.grid.2x2", @selector(toggleUVLayout:), @"Show or hide the atlas (⌥⌘U)");
+    else if ([ident isEqual:@"assistant"]) set(@"Assistant", @"bubble.left.and.bubble.right", @selector(toggleAssistant:), @"Ask the assistant to make or tune the atlas (⌥⌘I)");
     else if ([ident isEqual:@"save"]) set(@"Save", @"square.and.arrow.down", @selector(saveAs:), @"Save the mesh with the atlas (⇧⌘S)");
     else if ([ident isEqual:@"views"]) {
         _viewSwitch = [NSSegmentedControl segmentedControlWithLabels:@[@"Patches", @"Plain", @"Presentation", @"Texture"]
@@ -868,6 +908,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     add(view, @"Reset Camera", @selector(resetCamera:), @"0", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Show UV Layout", @selector(toggleUVLayout:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    add(view, @"Show Assistant", @selector(toggleAssistant:), @"i", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Grid", @selector(toggleGrid:), @"g", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     _wireItem = add(view, @"Show Wireframe", @selector(toggleWireframe:), @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Sidebar", @selector(toggleSidebar:), @"s", NSEventModifierFlagCommand | NSEventModifierFlagControl);
@@ -910,6 +951,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
         item.title = _uvItem.collapsed ? @"Show UV Layout" : @"Hide UV Layout";
         return [self hasResult];
     }
+    if (a == @selector(toggleAssistant:)) item.title = _chatItem.collapsed ? @"Show Assistant" : @"Hide Assistant";
     if (a == @selector(toggleSidebar:)) {
         NSSplitViewItem* s = _split.splitViewItems.firstObject;
         item.title = s.collapsed ? @"Show Sidebar" : @"Hide Sidebar";
@@ -961,9 +1003,10 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
                 me->_progress.indeterminate = NO;
                 if (!ok) {
                     me->_status.stringValue = [NSString stringWithFormat:@"Cannot open %@: %s", path.lastPathComponent, e.c_str()];
+                    me->_lastError = [NSString stringWithFormat:@"cannot open: %s", e.c_str()];
                     me->_huge.setFile("");
                     [me updateEnabled];
-                    [me runOpenHook];
+                    [me openFinished];
                     return;
                 }
                 me->_meshLabel.stringValue = [NSString stringWithFormat:@"%@ — %zu faces%s", path.lastPathComponent, me->_huge.faceCount(),
@@ -974,13 +1017,15 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
                 [me->_scene setTexture:0 pixels:nullptr];
                 [me suggestTextureSize:me->_huge.faceCount()];
                 [me updateEnabled];
-                [me runOpenHook];
+                [me openFinished];
             });
         });
         return;
     }
     if (!_session.load(path.UTF8String, &err)) {
         _status.stringValue = [NSString stringWithFormat:@"Cannot open %@: %s", path.lastPathComponent, err.c_str()];
+        _lastError = [NSString stringWithFormat:@"cannot open: %s", err.c_str()];
+        [self openFinished];
         return;
     }
     _useHuge = NO;
@@ -999,6 +1044,13 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [self suggestTextureSize:_session.mesh().n_faces()];
     [self setViewMode:1];
     [self updateEnabled];
+    [self openFinished];
+}
+
+// a file is shown (or could not be opened): the assistant that waits for it goes on, and the test hook runs
+- (void)openFinished
+{
+    if (_openSignal) { dispatch_semaphore_signal(_openSignal); _openSignal = nil; }
     [self runOpenHook];
 }
 
@@ -1007,6 +1059,11 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 {
     if (!_hookPending) return;
     _hookPending = NO;
+    if (const char* chat = getenv("HUGE_NATIVE_CHAT")) {   // testing hook: open the assistant and send this message, shot of the window at the end
+        _chatItem.collapsed = NO;
+        [self chatSend:[NSString stringWithUTF8String:chat]];
+        return;
+    }
     if (getenv("HUGE_NATIVE_AUTORUN")) [self makeAtlas:nil];
     else [self autoShotAndQuit];
 }
@@ -1039,10 +1096,11 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (_worker.joinable()) _worker.join();
 }
 
-- (void)makeAtlas:(id)sender
+- (void)makeAtlas:(id)sender { [self makeAtlasWithSettings:[self settings]]; }
+
+- (void)makeAtlasWithSettings:(SessionSettings)s
 {
     if (_running || ![self hasMeshToWork]) return;
-    const SessionSettings s = [self settings];
     [self beginWork:@"Starting…"];
     __weak AppController* weakSelf = self;
     _worker = std::thread([self, weakSelf, s]() {
@@ -1069,10 +1127,11 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 }
 
 // the same patches packed again with the texture size and the mip levels of the sidebar: nothing before the packing is run again
-- (void)repackAtlas:(id)sender
+- (void)repackAtlas:(id)sender { [self repackWithSettings:[self settings]]; }
+
+- (void)repackWithSettings:(SessionSettings)s
 {
     if (_running || ![self hasResult]) return;
-    const SessionSettings s = [self settings];
     [self beginWork:@"Packing the atlas…"];
     __weak AppController* weakSelf = self;
     _worker = std::thread([self, weakSelf, s]() {
@@ -1098,6 +1157,9 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (_useHuge) [_progress stopAnimation:nil];
     _progress.indeterminate = NO;
     [self setRunning:NO];
+    _lastOK = ok;
+    _lastError = ok ? nil : error;
+    if (_atlasSignal) { dispatch_semaphore_signal(_atlasSignal); _atlasSignal = nil; }   // the assistant that waits for the run goes on
     if (!ok) {
         _status.stringValue = [error isEqual:@"cancelled"] ? @"Cancelled" : [@"Failed: " stringByAppendingString:error];
         return;
@@ -1262,6 +1324,237 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     }).detach();
 }
 
+// ---- the assistant: a model that drives the same actions as the buttons
+- (void)toggleAssistant:(id)sender { [_chatItem.animator setCollapsed:!_chatItem.collapsed]; }
+
+- (void)chatSetup { showAssistantSetup(_window, ^{ [self->_chat appendRole:@"note" text:@"The provider is saved."]; }); }
+
+- (void)chatStop
+{
+    _chatStop = true;
+    [self hostCancel];
+}
+
+- (void)chatSend:(NSString*)text
+{
+    if (_chatBusy) return;
+    ChatConfig config = loadChatConfig();
+    if (const char* u = getenv("HUGE_NATIVE_CHAT_URL")) { config.baseUrl = u; config.model = getenv("HUGE_NATIVE_CHAT_MODEL") ?: "test"; }   // testing hook
+    if (!config.ready()) {
+        [_chat appendRole:@"note" text:@"Set up the model provider first (Set Up…): the address, the model and the key."];
+        [self chatSetup];
+        return;
+    }
+    [_chat appendRole:@"user" text:text];
+    _chatBusy = YES;
+    [_chat setBusy:YES];
+    _chatStop = false;
+    if (_chatThread.joinable()) _chatThread.join();
+    __weak AppController* weakSelf = self;
+    const std::string message = text.UTF8String;
+    _chatThread = std::thread([self, weakSelf, config, message]() {
+        std::unique_ptr<AtlasHost> host = makeNativeHost(self);
+        auto onMain = [weakSelf](NSString* role, NSString* line) {
+            dispatch_async(dispatch_get_main_queue(), ^{ AppController* me = weakSelf; if (me) [me->_chat appendRole:role text:line]; });
+        };
+        ChatEvents ev;
+        ev.assistant = [&](const std::string& t) { onMain(@"assistant", [NSString stringWithUTF8String:t.c_str()]); };
+        ev.toolCall = [&](const std::string& name, const Json& args) {
+            const std::string a = args.dump();
+            onMain(@"tool", [NSString stringWithFormat:@"%s %s", name.c_str(), a == "{}" ? "" : a.c_str()]);
+        };
+        ev.toolResult = [&](const std::string& name, const Json& r) {
+            if (r.has("error")) onMain(@"tool", [NSString stringWithFormat:@"→ %s", r.getString("error").c_str()]);
+        };
+        std::string err;
+        const bool ok = _chatSession.converse(message, config.model, makeHttpTransport(config, &_chatStop), *host, ev, &_chatStop, &err);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AppController* me = weakSelf;
+            if (!me) return;
+            me->_chatBusy = NO;
+            [me->_chat setBusy:NO];
+            if (getenv("HUGE_NATIVE_CHAT")) { if (!ok) printf("CHAT FAILED: %s\n", err.c_str()); [me autoShotAndQuit]; return; }
+            if (!ok) [me->_chat appendRole:@"note" text:err == "cancelled" ? @"Stopped." : [NSString stringWithFormat:@"The assistant stopped: %s", err.c_str()]];
+        });
+    });
+}
+
+static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] = message.UTF8String; return e; }
+
+// the numbers of the last run (main thread)
+- (Json)atlasMetrics
+{
+    Json m = Json::object();
+    m["mode"] = _useHuge ? "huge" : "regular";
+    m["patches"] = _useHuge ? _huge.patchCount() : _session.patchCount();
+    m["unresolved_patches"] = _useHuge ? _huge.unresolvedPatches() : size_t(std::max(0, _session.unresolvedPatches()));
+    m["faces_without_uv"] = _useHuge ? _huge.facesWithoutUV() : size_t(0);
+    m["texture_size"] = _useHuge ? _huge.resolution() : _session.resolution();
+    m["efficiency"] = _useHuge ? _huge.efficiency() : _session.efficiency();
+    m["gutter_texels"] = _useHuge ? _huge.gutter() : _session.gutter();
+    m["seconds"] = _useHuge ? _huge.seconds() : _session.seconds();
+    m["has_texture"] = [self hasBaked] ? true : false;
+    return m;
+}
+
+- (Json)hostOpen:(NSString*)path
+{
+    __block Json result;
+    __block BOOL started = NO;
+    dispatch_semaphore_t signal = dispatch_semaphore_create(0);
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        if (self->_running) { result = errorJson(@"a run is going on; wait for it or stop it"); return; }
+        if (![NSFileManager.defaultManager fileExistsAtPath:path]) { result = errorJson(@"no such file"); return; }
+        self->_openSignal = signal;
+        self->_lastError = nil;
+        started = YES;
+        [self loadPath:path];
+    });
+    if (!started) return result;
+    dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+    dispatch_sync(dispatch_get_main_queue(), ^{ result = self->_lastError ? errorJson(self->_lastError) : [self hostState]; });
+    return result;
+}
+
+- (SessionSettings)settingsFromArgs:(const Json&)a
+{
+    SessionSettings s = [self settings];
+    if (a.has("quality")) { s.quality = std::max(0, std::min(2, a.getInt("quality"))); s.manualPatches = false; }
+    if (a.has("patches")) { s.manualPatches = true; s.patches = std::max(1, a.getInt("patches")); }
+    if (a.has("texture_size")) s.resolution = std::max(256, std::min(8192, a.getInt("texture_size")));
+    if (a.has("mip_levels")) s.maxMipLevel = std::max(0, std::min(5, a.getInt("mip_levels")));
+    if (a.has("smoothing")) s.dev.smoothing = a.getNumber("smoothing");
+    if (a.has("normal_iterations")) s.dev.normalIterations = a.getInt("normal_iterations");
+    if (a.has("normal_sigma")) s.dev.normalSigma = a.getNumber("normal_sigma");
+    if (a.has("lloyd_iterations")) s.dev.lloydIterations = a.getInt("lloyd_iterations");
+    if (a.has("max_depth")) s.dev.maxDepth = a.getInt("max_depth");
+    if (a.has("allow_lscm")) s.dev.allowLscm = a.getBool("allow_lscm");
+    if (a.has("repair_near_misses")) s.dev.repairNearMisses = a.getBool("repair_near_misses");
+    if (a.has("simplify_percent")) s.dev.simplifyPercent = a.getNumber("simplify_percent");
+    return s;
+}
+
+// what the assistant chose shows in the sidebar too
+- (void)reflectSettings:(const SessionSettings&)s
+{
+    [_quality selectItemAtIndex:s.quality];
+    _manual.state = s.manualPatches ? NSControlStateValueOn : NSControlStateValueOff;
+    if (s.manualPatches) { _patchField.intValue = s.patches; _patchStepper.intValue = s.patches; }
+    _patchField.enabled = s.manualPatches;
+    _patchStepper.enabled = s.manualPatches;
+    if (NSMenuItem* it = [_textureSize itemAtIndex:[_textureSize indexOfItemWithTag:s.resolution]]) [_textureSize selectItem:it];
+    _textureTouched = YES;
+    _mip.integerValue = s.maxMipLevel;
+    [self updateMipLabel];
+}
+
+- (Json)hostMakeAtlas:(const Json&)args
+{
+    __block Json result;
+    __block BOOL started = NO;
+    dispatch_semaphore_t signal = dispatch_semaphore_create(0);
+    const Json a = args;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        if (self->_running) { result = errorJson(@"a run is going on already"); return; }
+        if (![self hasMeshToWork]) { result = errorJson(@"no mesh is open: open_mesh first"); return; }
+        const SessionSettings s = [self settingsFromArgs:a];
+        [self reflectSettings:s];
+        self->_atlasSignal = signal;
+        started = YES;
+        [self makeAtlasWithSettings:s];
+    });
+    if (!started) return result;
+    dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+    dispatch_sync(dispatch_get_main_queue(), ^{ result = self->_lastOK ? [self atlasMetrics] : errorJson(self->_lastError ?: @"failed"); });
+    return result;
+}
+
+- (Json)hostRepack:(int)size mip:(int)mip
+{
+    __block Json result;
+    __block BOOL started = NO;
+    dispatch_semaphore_t signal = dispatch_semaphore_create(0);
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        if (self->_running) { result = errorJson(@"a run is going on already"); return; }
+        if (![self hasResult]) { result = errorJson(@"there is no atlas yet: make_atlas first"); return; }
+        SessionSettings s = [self settings];
+        s.resolution = std::max(256, std::min(8192, size));
+        if (mip >= 0) s.maxMipLevel = std::min(5, mip);
+        [self reflectSettings:s];
+        self->_atlasSignal = signal;
+        started = YES;
+        [self repackWithSettings:s];
+    });
+    if (!started) return result;
+    dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+    dispatch_sync(dispatch_get_main_queue(), ^{ result = self->_lastOK ? [self atlasMetrics] : errorJson(self->_lastError ?: @"failed"); });
+    return result;
+}
+
+- (Json)hostState
+{
+    __block Json s = Json::object();
+    void (^build)(void) = ^{
+        const BOOL has = [self hasMeshToWork];
+        s["mesh_open"] = has ? true : false;
+        if (has) {
+            s["file"] = (_useHuge ? _huge.path() : _session.path());
+            s["faces"] = _useHuge ? (_huge.loaded() ? _huge.faceCount() : size_t(0)) : _session.mesh().n_faces();
+            s["has_source_texture"] = _useHuge ? _huge.hasSourceTexture() : _session.hasSourceTexture();
+            s["mode"] = _useHuge ? "huge" : "regular";
+        }
+        s["running"] = _running ? true : false;
+        const SessionSettings cur = [self settings];
+        Json set = Json::object();
+        set["quality"] = cur.quality;
+        set["patches"] = cur.manualPatches ? Json(cur.patches) : Json();
+        set["texture_size"] = cur.resolution;
+        set["mip_levels"] = cur.maxMipLevel;
+        s["settings"] = set;
+        s["atlas"] = [self hasResult] ? [self atlasMetrics] : Json();
+    };
+    if ([NSThread isMainThread]) build(); else dispatch_sync(dispatch_get_main_queue(), build);
+    return s;
+}
+
+- (Json)hostLayout
+{
+    __block BOOL ok = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{ ok = [self hasResult] && !self->_running; });
+    if (!ok) return errorJson(@"there is no atlas (or a run is going on)");
+    std::string err;
+    LayoutComparison c;
+    if (!(_useHuge ? _huge.compareData(&c, &err) : _session.compareData(&c, &err))) return errorJson([NSString stringWithUTF8String:err.c_str()]);
+    return layoutToJson(c);
+}
+
+- (Json)hostReport
+{
+    __block std::string text;
+    dispatch_sync(dispatch_get_main_queue(), ^{ text = [self hasResult] ? (self->_useHuge ? self->_huge.report() : self->_session.report()) : std::string(); });
+    if (text.empty()) return errorJson(@"there is no atlas yet");
+    Json r = Json::object();
+    r["report"] = text;
+    return r;
+}
+
+- (Json)hostSave:(NSString*)name
+{
+    __block BOOL ok = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{ ok = [self hasResult] && !self->_running; });
+    if (!ok) return errorJson(@"there is no atlas (or a run is going on)");
+    std::string file = chatSafeFileName(name.UTF8String);
+    if (_useHuge && file.size() > 4 && file.compare(file.size() - 4, 4, ".obj") == 0) file.replace(file.size() - 4, 4, ".ply");   // the huge mode writes PLY
+    const std::string path = chatOutputDirectory() + "/" + file;
+    std::string err;
+    if (!(_useHuge ? _huge.save(path, &err) : _session.save(path, &err))) return errorJson([NSString stringWithUTF8String:err.c_str()]);
+    Json r = Json::object();
+    r["saved"] = path;
+    return r;
+}
+
+- (void)hostCancel { dispatch_async(dispatch_get_main_queue(), ^{ if (self->_running) [self cancelAtlas:nil]; }); }
+
 // ---- a picture of the own window for the checks without a person (own window: needs no screen recording permission)
 - (void)autoShotAndQuit
 {
@@ -1281,6 +1574,26 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 }
 
 @end
+
+namespace {
+
+class NativeHost : public AtlasHost {
+public:
+    explicit NativeHost(AppController* c) : c_(c) {}
+    Json openMesh(const std::string& path) override { return [c_ hostOpen:[NSString stringWithUTF8String:path.c_str()]]; }
+    Json makeAtlas(const Json& s) override { return [c_ hostMakeAtlas:s]; }
+    Json repack(int size, int mip) override { return [c_ hostRepack:size mip:mip]; }
+    Json state() override { return [c_ hostState]; }
+    Json layout() override { return [c_ hostLayout]; }
+    Json report() override { return [c_ hostReport]; }
+    Json save(const std::string& name) override { return [c_ hostSave:[NSString stringWithUTF8String:name.c_str()]]; }
+private:
+    AppController* c_;
+};
+
+} // namespace
+
+std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller) { return std::make_unique<NativeHost>(controller); }
 
 int main(int argc, const char* argv[])
 {
