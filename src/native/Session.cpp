@@ -360,7 +360,13 @@ std::string AtlasSession::compare(std::string* error) const
 {
     LayoutComparison c;
     if (!compareData(&c, error)) return "";
-    return formatLayoutComparison(c.original, c.ours, c.mipOriginal, c.mipOurs, c.hadOriginal);
+    std::string text = formatLayoutComparison(c.original, c.ours, c.mipOriginal, c.mipOurs, c.hadOriginal);
+    if (c.hasRetexture) {
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "\nRetexturing: PSNR %.1f dB (%.1f dB against the full resolution source), %zu samples\n", c.retexture.psnr, c.retexture.psnrFull, c.retexture.samples);
+        text += buf;
+    }
+    return text;
 }
 
 bool AtlasSession::compareData(LayoutComparison* out, std::string* error) const
@@ -384,6 +390,41 @@ bool AtlasSession::compareData(LayoutComparison* out, std::string* error) const
         mo = measureMipSafety(mesh_, original, R, true, 7, false);
     }
     *out = LayoutComparison{lo, ln, mo, mn, hadOriginal};
+    if (hasSourceTexture() && !baked_.empty() && hadOriginal) {
+        BakeSource src{sourceW_, sourceH_, sourcePixels_.data()};
+        out->retexture = measureRetexture(mesh_, extras_.cornerUV, src, extras_.faceMaterial, textureMaterial_, ours, baked_, atlas_.resolution,
+                                          std::max<size_t>(1, mesh_.n_faces() / 300000));
+        out->hasRetexture = out->retexture.samples > 0;
+    }
+    return true;
+}
+
+bool AtlasSession::writeMask(const std::string& path, std::string* error) const
+{
+    if (!resultValid_) { if (error) *error = "make the atlas first"; return false; }
+    std::vector<MaskChart> mc;
+    for (size_t i = 0; i < result_.params.size(); ++i)
+        if (i < atlas_.uv.size() && !atlas_.uv[i].empty()) mc.push_back({&result_.params[i].patch.mesh, &atlas_.uv[i]});
+    return writeAtlasPNG(path, mc, atlas_.resolution > 0 ? atlas_.resolution : 2048, true, error);
+}
+
+bool AtlasSession::matchOriginal(int* resolution, int* mip, std::string* text) const
+{
+    if (!hasMesh() || extras_.cornerUV.size() != mesh_.n_faces() * 6) { if (text) *text = "the mesh has no texture coordinates to match"; return false; }
+    int R = 256;
+    while (R < std::max(sourceW_, sourceH_) && R < 8192) R *= 2;
+    std::vector<float> original = extras_.cornerUV;
+    if (extras_.faceMaterial.size() == mesh_.n_faces())
+        for (size_t f = 0; f < mesh_.n_faces(); ++f)
+            if (extras_.faceMaterial[f] != textureMaterial_)
+                for (int k = 0; k < 6; ++k) original[f * 6 + k] = std::nanf("");
+    const MipSafetyResult m = measureMipSafety(mesh_, original, R, true, 7, false);
+    *resolution = R;
+    *mip = std::max(0, mipLevelForGap(std::max(0, m.gapP05)));
+    char buf[300];
+    std::snprintf(buf, sizeof buf, "Original layout: %d charts, gap between charts min %d / 5%% %d / median %d texels (at %d x %d). Atlas set to %d x %d, mip level %d.",
+                  m.charts, m.gapMin, m.gapP05, m.gapP50, R, R, R, R, *mip);
+    if (text) *text = buf;
     return true;
 }
 

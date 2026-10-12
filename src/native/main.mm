@@ -700,7 +700,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _repackButton = [NSButton buttonWithTitle:@"Repack Atlas" target:self action:@selector(repackAtlas:)];
     _repackButton.enabled = NO;
     _repackButton.toolTip = @"Pack the same patches again with the texture size and mip levels set above (⌥⌘R)";
-    _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:)];
+    _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:) matchAction:@selector(matchOriginalLayout:)];
     _selectedPatch = -1;
     __weak AppController* weakDev = self;
     _dev.onViewOptions = ^{ [weakDev applyViewOptions]; };
@@ -1017,6 +1017,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _debugMenuItem = bar.itemArray.lastObject;
     add(debug, @"Save Bad Patches", @selector(saveBadPatches:), @"b", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(debug, @"Load Bad Patch…", @selector(loadBadPatch:), @"l", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    [debug addItem:[NSMenuItem separatorItem]];
+    add(debug, @"Export Atlas Mask…", @selector(exportMask:), @"m", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
 
     NSMenu* window = top(@"Window");
     add(window, @"Minimize", @selector(performMiniaturize:), @"m");
@@ -1057,6 +1059,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     }
     if (a == @selector(saveBadPatches:)) return !_running && [self hasResult];
     if (a == @selector(loadBadPatch:)) return !_running;
+    if (a == @selector(exportMask:)) return !_running && [self hasResult] && !_useHuge;
     if (a == @selector(toggleAssistant:)) item.title = _chatItem.collapsed ? @"Show Assistant" : @"Hide Assistant";
     if (a == @selector(toggleSidebar:)) {
         NSSplitViewItem* s = _split.splitViewItems.firstObject;
@@ -1336,6 +1339,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
         if (getenv("HUGE_NATIVE_CHECKER")) [_dev setUvChecker:YES msaa:atoi(getenv("HUGE_NATIVE_CHECKER"))];   // testing hook: the UV checker, anti-aliasing with this many samples
+        if (getenv("HUGE_NATIVE_MATCH")) [self matchOriginalLayout:nil];   // testing hook
+        if (getenv("HUGE_NATIVE_MASK")) [self exportMask:nil];
         if (getenv("HUGE_NATIVE_SAVEBAD")) [self saveBadPatches:nil];   // testing hook
         if (getenv("HUGE_NATIVE_PATCHES")) {   // testing hook: the patch table, the paint modes and a selection
             const std::vector<PatchRow> rows = _useHuge ? _huge.patchRows() : _session.patchRows();
@@ -1448,6 +1453,43 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _dev.view.hidden = !_developer;
     _debugMenuItem.hidden = !_developer;
     if (!_developer && _wire) { _wire = NO; [_scene setWireframe:NO]; }
+}
+
+// the texture size and the mip level of the sidebar from the layout of the file
+- (void)matchOriginalLayout:(id)sender
+{
+    if (_running || ![self hasMeshToWork]) return;
+    int res = 0, mip = 0;
+    std::string text;
+    if (!(_useHuge ? _huge.matchOriginal(&res, &mip, &text) : _session.matchOriginal(&res, &mip, &text))) {
+        _status.stringValue = [NSString stringWithUTF8String:text.c_str()];
+        return;
+    }
+    [_textureSize selectItemWithTag:res];
+    _textureTouched = YES;
+    _mip.integerValue = mip;
+    [self updateMipLabel];
+    NSString* line = [NSString stringWithUTF8String:text.c_str()];
+    _status.stringValue = line;
+    [_dev setReport:line];
+    if (getenv("HUGE_NATIVE_MATCH")) printf("NATIVE MATCH: %s\n", text.c_str());
+}
+
+// the coverage of the atlas as a PNG (the alpha channel)
+- (void)exportMask:(id)sender
+{
+    if (_running || ![self hasResult]) return;
+    if (_useHuge) { showTextWindow(@"Export Atlas Mask", @"The mask is made for the regular mode only; a big scan keeps just the borders of its charts."); return; }
+    std::string stem = _session.path();
+    const size_t slash = stem.find_last_of('/');
+    if (slash != std::string::npos) stem = stem.substr(slash + 1);
+    const size_t dot = stem.find_last_of('.');
+    if (dot != std::string::npos) stem.resize(dot);
+    const std::string p = getenv("HUGE_NATIVE_MASK") ? std::string(getenv("HUGE_NATIVE_MASK")) : native::saveFile("Export the occupancy mask (alpha channel)", stem + "_mask.png", {"png"}, "");
+    if (p.empty()) return;
+    std::string err;
+    _status.stringValue = _session.writeMask(p, &err) ? [NSString stringWithFormat:@"Mask written: %@", [NSString stringWithUTF8String:p.c_str()].lastPathComponent]
+                                                      : [NSString stringWithFormat:@"Cannot write the mask: %s", err.c_str()];
 }
 
 // the measures of the original layout and of the new atlas, in a window of text (the measuring takes a while on a big scan)

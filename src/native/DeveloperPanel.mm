@@ -87,7 +87,7 @@ static NSTextField* heading(NSString* text)
     return t;
 }
 
-- (instancetype)initWithTarget:(id)target compareAction:(SEL)action
+- (instancetype)initWithTarget:(id)target compareAction:(SEL)action matchAction:(SEL)match
 {
     self = [super init];
     if (!self) return nil;
@@ -105,6 +105,8 @@ static NSTextField* heading(NSString* text)
     _repair.state = d.repairNearMisses ? NSControlStateValueOn : NSControlStateValueOff;
     _compare = [NSButton buttonWithTitle:@"Compare with Original Layout…" target:target action:action];
     _compare.toolTip = @"The measures of the layout in the file and of the new atlas side by side";
+    NSButton* matchButton = [NSButton buttonWithTitle:@"Match Original Layout" target:target action:match];
+    matchButton.toolTip = @"Set the texture size and the mip level from the layout of the file: the gap between its charts decides the level";
     _report = [NSTextField wrappingLabelWithString:@""];
     _report.font = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
     _report.textColor = NSColor.secondaryLabelColor;
@@ -170,7 +172,7 @@ static NSTextField* heading(NSString* text)
     _gpu.textColor = NSColor.secondaryLabelColor;
 
     _view = [NSStackView stackViewWithViews:@[
-        heading(@"Mesh"), _info, _gpu, heading(@"View"), aa, _cull, _checker, _squares, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare,
+        heading(@"Mesh"), _info, _gpu, heading(@"View"), aa, _cull, _checker, _squares, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, matchButton, _compare,
         heading(@"Patches"), paint, _tableScroll, _report]];
     _view.orientation = NSUserInterfaceLayoutOrientationVertical;
     _view.alignment = NSLayoutAttributeLeading;

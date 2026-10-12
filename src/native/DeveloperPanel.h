@@ -11,7 +11,7 @@
 @interface DeveloperPanel : NSObject
 @property (nonatomic, readonly) NSStackView* view;
 @property (nonatomic, readonly) NSButton* compareButton;
-- (instancetype)initWithTarget:(id)target compareAction:(SEL)action;
+- (instancetype)initWithTarget:(id)target compareAction:(SEL)action matchAction:(SEL)match;
 - (DeveloperOptions)options;
 - (void)setReport:(NSString*)text;
 - (void)setInfo:(NSString*)text;

@@ -128,6 +128,7 @@ Json layoutToJson(const LayoutComparison& c)
     Json out = Json::object();
     out["new"] = one(c.ours, c.mipOurs);
     out["original"] = c.hadOriginal ? one(c.original, c.mipOriginal) : Json();
+    if (c.hasRetexture) { out["retexture_psnr_db"] = c.retexture.psnr; out["retexture_psnr_full_db"] = c.retexture.psnrFull; }
     return out;
 }
 

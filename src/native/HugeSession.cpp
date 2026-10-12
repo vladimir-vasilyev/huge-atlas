@@ -253,6 +253,26 @@ std::string HugeSession::compare(std::string* error) const
     return formatLayoutComparison(c.original, c.ours, c.mipOriginal, c.mipOurs, c.hadOriginal);
 }
 
+bool HugeSession::matchOriginal(int* resolution, int* mip, std::string* text) const
+{
+    if (!loaded_ || surface_.cornerUV.size() != mesh_.faceCount() * 6) { if (text) *text = "the mesh has no texture coordinates to match"; return false; }
+    int R = 256;
+    while (R < std::max(sourceW_, sourceH_) && R < 8192) R *= 2;
+    std::vector<float> original = surface_.cornerUV;
+    if (surface_.faceMaterial.size() == mesh_.faceCount())
+        for (size_t f = 0; f < mesh_.faceCount(); ++f)
+            if (surface_.faceMaterial[f] != textureMaterial_)
+                for (int k = 0; k < 6; ++k) original[f * 6 + k] = std::nanf("");
+    const MipSafetyResult m = measureMipSafety(mesh_, buildFaceNeighbors(mesh_), original, R, true, 7, false);
+    *resolution = R;
+    *mip = std::max(0, mipLevelForGap(std::max(0, m.gapP05)));
+    char buf[300];
+    std::snprintf(buf, sizeof buf, "Original layout: %d charts, gap between charts min %d / 5%% %d / median %d texels (at %d x %d). Atlas set to %d x %d, mip level %d.",
+                  m.charts, m.gapMin, m.gapP05, m.gapP50, R, R, R, R, *mip);
+    if (text) *text = buf;
+    return true;
+}
+
 bool HugeSession::compareData(LayoutComparison* out, std::string* error) const
 {
     if (!resultValid_) { if (error) *error = "make the atlas first"; return false; }

@@ -139,6 +139,10 @@ public:
     // The original layout and the new atlas side by side (needs the atlas; without UV in the file only the atlas is measured).
     std::string compare(std::string* error) const;
     bool compareData(LayoutComparison* out, std::string* error) const;   // the same, as numbers
+    // The coverage of the atlas as an RGBA PNG (the alpha channel is the occupancy).
+    bool writeMask(const std::string& path, std::string* error) const;
+    // The texture size and the mip level that fit the layout of the file: the atlas can be made like the original.
+    bool matchOriginal(int* resolution, int* mip, std::string* text) const;
 
     // how many patches the quality asks for on a mesh of this size
     static int patchesFor(size_t faces, int quality);

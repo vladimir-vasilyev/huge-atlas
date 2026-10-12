@@ -67,6 +67,7 @@ public:
     std::string report() const;                        // what the last run did, as text for the developer mode
     std::string compare(std::string* error) const;     // the original layout and the new atlas side by side
     bool compareData(LayoutComparison* out, std::string* error) const;   // the same, as numbers
+    bool matchOriginal(int* resolution, int* mip, std::string* text) const;   // the texture size and mip level that fit the layout of the file
 
     // PLY with the atlas UV, and `<name>_atlas.png` next to it when there is a baked texture
     bool save(const std::string& path, std::string* error) const;
