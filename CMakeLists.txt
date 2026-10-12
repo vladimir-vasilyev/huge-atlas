@@ -340,6 +340,8 @@ add_executable(huge_atlas_native
     src/native/HugeSession.cpp
     src/native/Settings.mm
     src/native/DeveloperPanel.mm
+    src/native/NumberRow.mm
+    src/native/VsaLab.mm
     src/native/ChatPanel.mm
     src/app/Preset.cpp
     src/app/BadPatch.cpp

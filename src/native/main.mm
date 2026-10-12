@@ -17,6 +17,7 @@
 #include "native/HugeSession.h"
 #import "native/ChatPanel.h"
 #import "native/DeveloperPanel.h"
+#import "native/VsaLab.h"
 #import "native/Settings.h"
 #include "native/Session.h"
 #include "chat/Agent.h"
@@ -53,6 +54,11 @@
 }
 @property (nonatomic, copy) void (^onDropURL)(NSURL*);
 @property (nonatomic, copy) void (^onGpuTime)(double ms);
+// The brush of the Segmentation Lab: while it is on, the left button paints (the faces under the disc go to onBrush, the end of the stroke to onBrushEnd); ⌥ turns.
+@property (nonatomic) BOOL brushActive;
+@property (nonatomic) int brushRadius;
+@property (nonatomic, copy) void (^onBrush)(const std::vector<int>& faces);
+@property (nonatomic, copy) void (^onBrushEnd)(void);
 - (void)setMsaa:(int)samples;
 - (void)setCull:(BOOL)on;
 - (BOOL)cull;
@@ -261,9 +267,28 @@
     return NSMakePoint(p.x, self.bounds.size.height - p.y);   // y down, as the camera expects
 }
 
+- (void)paintWith:(NSEvent*)e
+{
+    [self.openGLContext makeCurrentContext];
+    const NSPoint bp = [self convertPointToBacking:[self convertPoint:e.locationInWindow fromView:nil]];   // origin bottom left
+    const NSRect bb = [self convertRectToBacking:self.bounds];
+    if (bb.size.height <= 0) return;
+    float vp[16];
+    _camera.viewProj(float(bb.size.width / bb.size.height), vp);
+    std::vector<int> ids;
+    _renderer.pickFaces(vp, int(bb.size.width), int(bb.size.height), int(bp.x), int(bp.y), std::max(2, _brushRadius), ids);
+    if (!ids.empty() && _onBrush) _onBrush(ids);
+}
+
+- (void)mouseUp:(NSEvent*)e { if (_brushActive && _onBrushEnd) _onBrushEnd(); }
+
+- (void)resetCursorRects { if (_brushActive) [self addCursorRect:self.bounds cursor:NSCursor.crosshairCursor]; }
+- (void)setBrushActive:(BOOL)on { _brushActive = on; [self.window invalidateCursorRectsForView:self]; }
+
 - (void)mouseDown:(NSEvent*)e
 {
     [self.window makeFirstResponder:self];
+    if (_brushActive && !(e.modifierFlags & NSEventModifierFlagOption)) { [self paintWith:e]; return; }
     if (e.clickCount == 2) { [self resetCamera]; return; }
     const NSPoint p = [self local:e];
     _last = p;
@@ -272,6 +297,7 @@
 
 - (void)mouseDragged:(NSEvent*)e
 {
+    if (_brushActive && !(e.modifierFlags & NSEventModifierFlagOption)) { [self paintWith:e]; return; }
     const NSPoint p = [self local:e];
     _camera.rotateTo(p.x, p.y, int(self.bounds.size.width), int(self.bounds.size.height));
     [self setNeedsDisplay:YES];
@@ -568,6 +594,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     NSButton* _repackButton;
     DeveloperPanel* _dev;
     NSMenuItem* _wireItem;
+    VsaLab* _lab;
     NSMenuItem* _debugMenuItem;   // the Debug menu: only in the developer mode
     BOOL _developer;
     BOOL _wire;
@@ -577,6 +604,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     std::thread _worker;
     BOOL _running;
 }
+- (void)showVsaLab:(id)sender;
 - (Json)hostOpen:(NSString*)path;
 - (Json)hostMakeAtlas:(const Json&)args;
 - (Json)hostRepack:(int)size mip:(int)mip;
@@ -1016,6 +1044,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     NSMenu* debug = top(@"Debug");
     _debugMenuItem = bar.itemArray.lastObject;
     add(debug, @"Save Bad Patches", @selector(saveBadPatches:), @"b", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    add(debug, @"Segmentation Lab…", @selector(showVsaLab:), @"v", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(debug, @"Load Bad Patch…", @selector(loadBadPatch:), @"l", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     [debug addItem:[NSMenuItem separatorItem]];
     add(debug, @"Export Atlas Mask…", @selector(exportMask:), @"m", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
@@ -1059,6 +1088,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     }
     if (a == @selector(saveBadPatches:)) return !_running && [self hasResult];
     if (a == @selector(loadBadPatch:)) return !_running;
+    if (a == @selector(showVsaLab:)) return YES;
     if (a == @selector(exportMask:)) return !_running && [self hasResult] && !_useHuge;
     if (a == @selector(toggleAssistant:)) item.title = _chatItem.collapsed ? @"Show Assistant" : @"Hide Assistant";
     if (a == @selector(toggleSidebar:)) {
@@ -1100,6 +1130,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         [_uv clear];
         _uvItem.collapsed = YES;
         [self suggestTextureSize:estimate];
+        if (_lab) [_lab attachMesh:nullptr];
         _sourceTextureShown = NO;
         [_dev setInfo:@"Reading the mesh…"];
         [_dev setPatchRows:{}];
@@ -1167,6 +1198,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _checkerOn = NO;
     [_scene setCheckerCells:0.0f];
     [_dev setResultViewsEnabled:NO];
+    if (_lab) [_lab attachMesh:&_session.mesh()];
     [_dev setInfo:[NSString stringWithUTF8String:_session.meshInfo().c_str()]];
     [_dev setPatchRows:{}];
     [_uv clear];
@@ -1339,6 +1371,24 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
         if (getenv("HUGE_NATIVE_CHECKER")) [_dev setUvChecker:YES msaa:atoi(getenv("HUGE_NATIVE_CHECKER"))];   // testing hook: the UV checker, anti-aliasing with this many samples
+        static BOOL labRan = NO;
+        if (getenv("HUGE_NATIVE_LAB") && !labRan) {   // testing hook: the Segmentation Lab by script; its regions start the atlas that is made next
+            labRan = YES;
+            [self showVsaLab:nil];
+            printf("NATIVE LAB: %s\n", [_lab selfTestWithK:atoi(getenv("HUGE_NATIVE_LAB"))].UTF8String);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 800 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                if (const char* shot = getenv("HUGE_NATIVE_LABSHOT")) {
+                    CGImageRef img = CGWindowListCreateImage(CGRectNull, kCGWindowListOptionIncludingWindow, CGWindowID(self->_lab.window.windowNumber), kCGWindowImageBoundsIgnoreFraming);
+                    if (img) {
+                        NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+                        [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[NSString stringWithUTF8String:shot] atomically:YES];
+                        CGImageRelease(img);
+                    }
+                }
+                [self makeAtlas:nil];
+            });
+            return;
+        }
         if (getenv("HUGE_NATIVE_INSPECT")) { _selectedPatch = 0; [self showPatchUnfolding:atoi(getenv("HUGE_NATIVE_INSPECT")) > 1]; }   // testing hook: 1 inspect, 2 unfold again
         if (getenv("HUGE_NATIVE_MATCH")) [self matchOriginalLayout:nil];   // testing hook
         if (getenv("HUGE_NATIVE_MASK")) [self exportMask:nil];
@@ -1835,6 +1885,27 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
 
 // ---- Debug: the bad patches. Save writes every patch that is not a disk, overlaps itself or is too stretched (an OBJ with the faulty uv and a
 // preset next to it) into DebugOut/BadPatch; Load takes such a file back: it is unfolded again with its preset and the problems are shown.
+// the segmentation by hand: its window, its colors in the 3D view, its brush; the regions can start the atlas
+- (void)showVsaLab:(id)sender
+{
+    if (!_lab) {
+        _lab = [[VsaLab alloc] init];
+        __weak AppController* weak = self;
+        _lab.onColors = ^(const std::vector<float>& rgb) { AppController* me = weak; if (me && !me->_useHuge) { [me->_scene setFaceColors:rgb]; [me->_scene setMode:0]; } };
+        _lab.onBrush = ^(BOOL on, int radius) { AppController* me = weak; if (me) { me->_scene.brushActive = on; me->_scene.brushRadius = radius; } };
+        _scene.onBrush = ^(const std::vector<int>& faces) { AppController* me = weak; if (me) [me->_lab brushFaces:faces]; };
+        _scene.onBrushEnd = ^{ AppController* me = weak; if (me) [me->_lab brushEnded]; };
+        _lab.onUseLabels = ^(const std::vector<int>& labels) {
+            AppController* me = weak;
+            if (!me) return;
+            me->_session.setStartLabels(labels);
+            me->_status.stringValue = @"The regions of the lab will start the atlas: press Make Atlas";
+        };
+    }
+    [_lab attachMesh:(!_useHuge && _session.hasMesh() && !_session.badPatchLoaded()) ? &_session.mesh() : nullptr];
+    [_lab showWindow];
+}
+
 - (void)saveBadPatches:(id)sender
 {
     if (_running || ![self hasResult]) return;
@@ -1866,6 +1937,7 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
         _status.stringValue = [NSString stringWithFormat:@"Cannot load: %s", err.c_str()];
         return;
     }
+    if (_lab) [_lab attachMesh:nullptr];
     _session = std::move(next);
     _useHuge = NO;
     _huge.clear();

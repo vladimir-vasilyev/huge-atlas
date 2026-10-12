@@ -135,6 +135,10 @@ public:
     // the charts as they lie in the atlas (for the UV view)
     std::vector<UvChart> uvCharts() const;
 
+    // Regions to start from instead of the segmentation of the run (the Segmentation Lab); dropped when another mesh is opened.
+    void setStartLabels(std::vector<int> labels) { startLabels_ = std::move(labels); }
+    bool hasStartLabels() const { return startLabels_.size() == mesh_.n_faces() && mesh_.n_faces() > 0; }
+
     // The unfolded patches of the last run, for the bad patches (Debug > Save Bad Patches).
     const std::vector<PatchParam>& params() const { return result_.params; }
     std::vector<PatchRow> patchRows() const;
@@ -174,6 +178,7 @@ private:
     bool packAndBake(const SessionSettings& settings, std::string* error);
     std::vector<BakeChart> bakeCharts() const;
     TriMesh mesh_;
+    std::vector<int> startLabels_;
     PatchParam bad_;
     bool badLoaded_ = false;
     std::string path_;

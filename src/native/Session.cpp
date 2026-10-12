@@ -57,6 +57,7 @@ bool AtlasSession::setMesh(const float* pos, size_t nV, const uint32_t* idx, siz
     }
     normalizeToUnitBox(m);
     mesh_ = std::move(m);
+    startLabels_.clear();
     path_.clear();
     result_ = RefineResult();
     atlas_ = AtlasResult();
@@ -101,6 +102,7 @@ bool AtlasSession::load(const std::string& path, std::string* error)
     if (m.n_faces() == 0) { if (error) *error = "the file has no faces"; return false; }
     normalizeToUnitBox(m);
     mesh_ = std::move(m);
+    startLabels_.clear();
     path_ = path;
     result_ = RefineResult();
     atlas_ = AtlasResult();
@@ -200,11 +202,16 @@ bool AtlasSession::run(const SessionSettings& s, const Progress& progress, const
     VSAState vs;
     vs.metric = Metric::L21;
     vs.smooth = SmoothParams{s.dev.smoothing, 0.0, 10};
-    k_ = size_t(k);
-    initFarthestSeeds(in, vs, k, 12345);
-    LloydParams lp;
-    lp.maxIterations = s.dev.lloydIterations;
-    runLloyd(in, vs, lp);
+    if (hasStartLabels()) {   // the regions of the Segmentation Lab: the segmentation is not made again
+        vs.label = startLabels_;
+        k_ = size_t(*std::max_element(vs.label.begin(), vs.label.end()) + 1);
+    } else {
+        k_ = size_t(k);
+        initFarthestSeeds(in, vs, k, 12345);
+        LloydParams lp;
+        lp.maxIterations = s.dev.lloydIterations;
+        runLloyd(in, vs, lp);
+    }
     if (stop()) return false;
 
     say(0.2, "Unfolding the patches");
@@ -453,6 +460,7 @@ bool AtlasSession::loadBadPatch(const std::string& path, std::string* text, std:
     if (m.n_faces() == 0) { if (error) *error = "the file has no faces"; return false; }
     normalizeToUnitBox(m);
     mesh_ = std::move(m);
+    startLabels_.clear();
     path_ = path;
     result_ = RefineResult();
     atlas_ = AtlasResult();
