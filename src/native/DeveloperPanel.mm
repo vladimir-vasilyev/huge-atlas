@@ -246,6 +246,20 @@ static NSTextField* heading(NSString* text)
     [t reloadData];
 }
 
+- (void)setPaintMode:(NSInteger)mode
+{
+    [_colors selectItemAtIndex:mode];
+    [self colorModeChanged:nil];
+}
+
+- (void)revealPatchTable
+{
+    NSRect r = [_tableScroll convertRect:_tableScroll.bounds toView:_view];
+    r.size.height += 160;   // the options above it
+    r.origin.y -= 60;
+    [_view scrollRectToVisible:r];
+}
+
 - (void)selectPatchIndex:(NSInteger)patch
 {
     _quiet = YES;

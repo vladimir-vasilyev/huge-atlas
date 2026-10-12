@@ -26,7 +26,9 @@
 - (void)setResultViewsEnabled:(BOOL)on;   // the UV checker needs an atlas   // the diagnostics of the open mesh
 // The patch table: a click selects a patch (-1: none), the color mode says how the patches are painted (0 colors, 1 problems, 2 stretch).
 - (void)setPatchRows:(std::vector<PatchRow>)rows;
-- (void)selectPatchIndex:(NSInteger)patch;   // the row of this patch (-1: none) without calling onPatchSelected
+- (void)selectPatchIndex:(NSInteger)patch;
+- (void)setPaintMode:(NSInteger)mode;   // 0 patch colors, 1 problems, 2 stretch (as the popup does)
+- (void)revealPatchTable;                // scrolls the sidebar so that the patch table is in view   // the row of this patch (-1: none) without calling onPatchSelected
 - (PatchRow)rowForPatch:(NSInteger)patch found:(BOOL*)found;
 @property (nonatomic, copy) void (^onPatchSelected)(NSInteger patch);
 @property (nonatomic, copy) void (^onColorMode)(NSInteger mode);

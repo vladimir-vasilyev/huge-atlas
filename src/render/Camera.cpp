@@ -172,3 +172,19 @@ Camera::State Camera::lookAtState(const double c[3], const double nIn[3], double
     s.dist = distance + rc[2];
     return s;
 }
+
+void Camera::orbitWorldY(double a) { const double y[3] = {0, 1, 0}; orbitWorld(y, a); }
+
+void Camera::orbitWorld(const double axis[3], double a)
+{
+    // R maps the world to the view; turning the world first about Y is R * Ry(a): q = q * qy
+    const double sn = std::sin(0.5 * a);
+    const double b[4] = {std::cos(0.5 * a), axis[0] * sn, axis[1] * sn, axis[2] * sn};
+    const double r[4] = {
+        q_[0]*b[0] - q_[1]*b[1] - q_[2]*b[2] - q_[3]*b[3],
+        q_[0]*b[1] + q_[1]*b[0] + q_[2]*b[3] - q_[3]*b[2],
+        q_[0]*b[2] - q_[1]*b[3] + q_[2]*b[0] + q_[3]*b[1],
+        q_[0]*b[3] + q_[1]*b[2] - q_[2]*b[1] + q_[3]*b[0]};
+    const double n = std::sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2] + r[3]*r[3]);
+    for (int i = 0; i < 4; ++i) q_[i] = r[i] / n;
+}

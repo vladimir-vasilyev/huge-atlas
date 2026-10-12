@@ -36,6 +36,9 @@ public:
 
     // tan of half the vertical field of view of an area of this aspect (what the projection uses): to fit things into the view
     static double halfFieldTan(double aspect);
+    // Turns the view about the vertical axis of the world through the origin (the model turns on a table): positive goes to the right.
+    void orbitWorldY(double radians);
+    void orbitWorld(const double axis[3], double radians);   // about any world axis (unit) through the origin
     void viewProj(float aspect, float out[16]) const;
     void view(float out[16]) const;
 

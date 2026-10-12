@@ -29,6 +29,11 @@
 #include <memory>
 #include <thread>
 
+// The clock of the animations. The demonstration film makes its own time (a frame is 1/30 s however long it takes to draw), so that
+// the flights of the camera and of the atlas pane are the same whatever the speed of the machine.
+static double gDemoTime = -1.0;   // >= 0: the virtual time of the film
+static double nativeNow() { return gDemoTime >= 0 ? gDemoTime : CACurrentMediaTime(); }
+
 // ------------------------------------------------------------------------------------------------------------------ the 3D view
 
 @interface SceneView : NSOpenGLView {
@@ -54,6 +59,7 @@
     NSPoint _downPoint;     // where the left button went down: a click is a release that did not move
     BOOL _dragged;
     NSTimer* _flyTimer;
+    double _up[3];
     Camera::State _flyFrom, _flyTo;
     CFTimeInterval _flyStart;
 }
@@ -67,6 +73,9 @@
 // A click (no drag) on the model gives the face under the cursor, -1 for the empty space or Esc (the patch of the face is chosen).
 @property (nonatomic, copy) void (^onPickFace)(int face);
 - (int)faceAtViewPoint:(NSPoint)p;
+- (void)orbitYaw:(double)radians;   // the demonstration film turns the model (about the up axis of the world)
+- (void)setWorldUp:(const double*)up;   // the axis that stays vertical when the camera is turned to a patch (default Y; a Z-up model: Z)
+- (void)viewFromDirection:(const double*)direction distance:(double)distance;   // the camera on the ray out of the origin, the world up up
 // The border of the chosen patch drawn over the model in every view (segments A, B: 6 floats each; empty: none).
 - (void)setPatchBorder:(const std::vector<float>&)segments;
 // The camera goes to the ray out of the surface at `centre` along `normal` and looks back at the centre, far enough for the points to fit
@@ -297,6 +306,18 @@
 }
 
 - (void)stopFlight { [_flyTimer invalidate]; _flyTimer = nil; }
+- (void)orbitYaw:(double)radians { _camera.orbitWorld([self worldUp], radians); [self setNeedsDisplay:YES]; }
+- (const double*)worldUp { if (_up[0] == 0 && _up[1] == 0 && _up[2] == 0) { _up[1] = 1; } return _up; }
+- (void)setWorldUp:(const double*)up { for (int k = 0; k < 3; ++k) _up[k] = up[k]; }
+- (void)viewFromDirection:(const double*)direction distance:(double)distance
+{
+    const double centre[3] = {0, 0, 0};
+    double cx[3], cy[3], cz[3];
+    _camera.axes(cx, cy, cz);
+    [self stopFlight];
+    _camera.lookAt(centre, direction, distance, [self worldUp], cy);
+    [self setNeedsDisplay:YES];
+}
 
 - (void)setPatchBorder:(const std::vector<float>&)segments
 {
@@ -315,7 +336,7 @@
 {
     const NSRect b = self.bounds;
     const double aspect = b.size.height > 0 ? b.size.width / b.size.height : 1.0;
-    const double up[3] = {0, 1, 0};
+    const double* up = [self worldUp];
     double cx[3], cy[3], cz[3];
     _camera.axes(cx, cy, cz);
     // the axes of the new view first (they do not depend on the distance), then the distance that fits the patch
@@ -354,12 +375,12 @@
     }
     _flyFrom = _camera.state();
     _flyTo = target;
-    _flyStart = CACurrentMediaTime();
+    _flyStart = nativeNow();
     __weak SceneView* weak = self;
     _flyTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:YES block:^(NSTimer* timer) {
         SceneView* me = weak;
         if (!me) { [timer invalidate]; return; }
-        double s = (CACurrentMediaTime() - me->_flyStart) / 0.35;
+        double s = (nativeNow() - me->_flyStart) / 0.35;
         const BOOL last = s >= 1.0;
         s = std::min(1.0, s);
         s = s * s * (3.0 - 2.0 * s);   // ease in and out
@@ -676,12 +697,12 @@
     if (!animated) { _zoom = zoom; _pan = targetPan; [self setNeedsDisplay:YES]; return; }
     const double zoom0 = _zoom;
     const NSPoint pan0 = _pan;
-    const CFTimeInterval start = CACurrentMediaTime();
+    const double start = nativeNow();
     __weak UvView* weak = self;
     _flyTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:YES block:^(NSTimer* timer) {
         UvView* me = weak;
         if (!me) { [timer invalidate]; return; }
-        double t = (CACurrentMediaTime() - start) / 0.3;
+        double t = (nativeNow() - start) / 0.3;
         const BOOL last = t >= 1.0;
         t = std::min(1.0, t);
         t = t * t * (3.0 - 2.0 * t);
@@ -820,6 +841,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     std::thread _worker;
     BOOL _running;
 }
+- (void)runDemo;
 - (void)showVsaLab:(id)sender;
 - (void)selectPatch:(NSInteger)patch from:(int)source;
 - (void)lookAtSelectedPatch:(id)sender;
@@ -1127,6 +1149,10 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     if (const char* bad = getenv("HUGE_NATIVE_LOADBAD")) {   // testing hook: Debug > Load Bad Patch on this file, then the shot
         [self loadBadPatchPath:[NSString stringWithUTF8String:bad]];
         [self autoShotAndQuit];
+        return;
+    }
+    if (getenv("HUGE_NATIVE_DEMO")) {   // the film: a director on a thread of its own
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ [self runDemo]; });
         return;
     }
     if (_pendingOpen) { [self loadPath:_pendingOpen]; _pendingOpen = nil; }
@@ -2181,6 +2207,182 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
         [_scene setFaceColors:rgb];
     }
     [_uv setNeedsDisplay:YES];
+}
+
+// ---- the demonstration film: a script that drives the application by itself and writes the frames of the window (30 per second) with
+// captions into a folder; ffmpeg makes the video of them. The time of the animations is the virtual time of the film, so the result
+// does not depend on how long a frame takes to draw.
+- (void)spinFor:(double)seconds { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]]; }
+
+// The director runs on a thread of its own (a block that waits on the main queue cannot let other blocks of that queue run) and does
+// everything that touches the interface through `M`, which runs a block on the main thread and waits for it.
+static void M(void (^block)(void))
+{
+    if ([NSThread isMainThread]) block(); else dispatch_sync(dispatch_get_main_queue(), block);
+}
+
+- (BOOL)waitUntil:(BOOL (^)(void))condition timeout:(double)seconds
+{
+    const double end = CACurrentMediaTime() + seconds;
+    __block BOOL ok = NO;
+    while (CACurrentMediaTime() < end) {
+        M(^{ ok = condition(); });
+        if (ok) return YES;
+        usleep(60 * 1000);
+    }
+    return NO;
+}
+
+- (void)runDemo
+{
+    NSString* dir = [NSString stringWithUTF8String:getenv("HUGE_NATIVE_DEMO")];
+    NSString* mesh = [NSString stringWithUTF8String:getenv("HUGE_NATIVE_DEMO_MESH") ?: "data/car/FIN_CAR_D.obj"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    gDemoTime = 0.0;
+    __block int frameNo = 0;
+    AppController* me = self;
+    __block CGWindowID windowId = 0;
+    M(^{ windowId = CGWindowID(me->_window.windowNumber); });
+
+    // one frame: let the view draw, take the window, put the caption (or a card) on it, write it
+    void (^emit)(NSString*, int, double) = ^(NSString* caption, int card, double alpha) {
+        usleep(55 * 1000);   // the drawing of the view reaches the window server
+        CGImageRef img = CGWindowListCreateImage(CGRectNull, kCGWindowListOptionIncludingWindow, windowId, kCGWindowImageBoundsIgnoreFraming);
+        if (!img) return;
+        const size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGContextRef g = CGBitmapContextCreate(nullptr, w, h, 8, 0, cs, kCGImageAlphaPremultipliedLast);
+        CGContextDrawImage(g, CGRectMake(0, 0, w, h), img);
+        [NSGraphicsContext saveGraphicsState];
+        NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithCGContext:g flipped:NO];
+        const double s = double(w) / 1200.0;   // the sizes below are in points of a 1200 wide window
+        NSMutableParagraphStyle* center = [[NSMutableParagraphStyle alloc] init];
+        center.alignment = NSTextAlignmentCenter;
+        if (card == 1 || card == 2) {   // the title card and the closing card: a veil and big text
+            [[NSColor colorWithCalibratedRed:0.04 green:0.05 blue:0.08 alpha:0.62 * alpha] setFill];
+            NSRectFillUsingOperation(NSMakeRect(0, 0, w, h), NSCompositingOperationSourceOver);
+            NSString* sub = card == 1 ? @"UV atlases for scans up to 100 million faces" : @"Native macOS · Python module · MCP server · AI assistant";
+            [@"huge-atlas" drawInRect:NSMakeRect(0, h * 0.50, w, 90 * s) withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:78 * s weight:NSFontWeightBold],
+                NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:alpha], NSParagraphStyleAttributeName: center}];
+            [sub drawInRect:NSMakeRect(0, h * 0.44, w, 40 * s) withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:26 * s weight:NSFontWeightRegular],
+                NSForegroundColorAttributeName: [NSColor colorWithWhite:0.86 alpha:alpha], NSParagraphStyleAttributeName: center}];
+            if (card == 2)
+                [@"VSA segmentation · LinABF unfolding · mip-safe Horizon packing · texture baking" drawInRect:NSMakeRect(0, h * 0.37, w, 34 * s)
+                    withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:19 * s weight:NSFontWeightRegular],
+                                     NSForegroundColorAttributeName: [NSColor colorWithWhite:0.7 alpha:alpha], NSParagraphStyleAttributeName: center}];
+        }
+        if (caption.length && card == 0) {   // the caption: a dark pill at the bottom
+            NSDictionary* attrs = @{NSFontAttributeName: [NSFont systemFontOfSize:21 * s weight:NSFontWeightMedium], NSForegroundColorAttributeName: [NSColor colorWithWhite:1 alpha:alpha]};
+            const NSSize ts = [caption sizeWithAttributes:attrs];
+            const NSRect pill = NSMakeRect((w - ts.width) / 2 - 26 * s, 34 * s, ts.width + 52 * s, ts.height + 22 * s);
+            [[NSColor colorWithCalibratedRed:0.05 green:0.06 blue:0.09 alpha:0.82 * alpha] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:pill.size.height / 2 yRadius:pill.size.height / 2] fill];
+            [caption drawAtPoint:NSMakePoint(pill.origin.x + 26 * s, pill.origin.y + 11 * s) withAttributes:attrs];
+        }
+        [NSGraphicsContext restoreGraphicsState];
+        CGImageRef out = CGBitmapContextCreateImage(g);
+        NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:out];
+        [[rep representationUsingType:NSBitmapImageFileTypeJPEG properties:@{NSImageCompressionFactor: @0.93}]
+            writeToFile:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"frame_%05d.jpg", frameNo]] atomically:NO];
+        CGImageRelease(out);
+        CGContextRelease(g);
+        CGColorSpaceRelease(cs);
+        CGImageRelease(img);
+        ++frameNo;
+        M(^{ gDemoTime += 1.0 / 30.0; });   // the virtual time moves on: the animations that are going on take their next step
+    };
+    double (^fade)(int, int) = ^(int i, int n) { return std::min(1.0, std::min((i + 1) / 8.0, (n - i) / 8.0)); };
+    // a stretch of the film: `frames` frames with a caption, the model turning by `yaw` radians per frame
+    void (^scene)(NSString*, int, double) = ^(NSString* caption, int frames, double yaw) {
+        for (int i = 0; i < frames; ++i) {
+            if (yaw != 0.0) M(^{ [me->_scene orbitYaw:yaw]; });
+            emit(caption, 0, fade(i, frames));
+        }
+    };
+
+    M(^{ me->_prefs.developer = NO; [me applyDeveloperMode]; });
+    const BOOL zUp = getenv("HUGE_NATIVE_DEMO_UP") && getenv("HUGE_NATIVE_DEMO_UP")[0] == 'z';   // the scan has its vertical axis along Z (a scanner's habit)
+    const double ux = 0.0, uy = zUp ? 0.0 : 1.0, uz = zUp ? 1.0 : 0.0;
+    const double dx = 0.78, dy = zUp ? -0.55 : 0.5, dz = zUp ? 0.5 : 0.55;
+    M(^{ const double up[3] = {ux, uy, uz}; [me->_scene setWorldUp:up]; });
+
+    // 1. the title over the empty scene with its coordinate grid
+    for (int i = 0; i < 66; ++i) {
+        M(^{ [me->_scene orbitYaw:0.004]; });
+        emit(nil, 1, i < 50 ? std::min(1.0, (i + 1) / 10.0) : std::max(0.0, (66 - i) / 16.0));
+    }
+
+    // 2. the scan is opened: 5.7M faces go straight into flat arrays, the texture of the file on the model
+    M(^{ [me loadPath:mesh]; });
+    for (int i = 0; i < 24; ++i) emit(@"Opening a 5.7M-face scan", 0, 1.0);
+    [self waitUntil:^BOOL { return !me->_running && me->_huge.loaded(); } timeout:300];
+    M(^{ [me->_scene setShowGrid:NO]; const double dir[3] = {dx, dy, dz}; [me->_scene viewFromDirection:dir distance:1.85]; });   // the model on its feet, seen from above and the front
+    usleep(2500 * 1000);   // the big texture settles on the GPU
+    scene(@"A big scan opens at once, with its texture: no mesh structure, straight from the file", 90, 0.034);
+
+    // 3. the atlas: the first seconds of the run, the stages in the status line
+    M(^{ [me makeAtlas:nil]; });
+    usleep(500 * 1000);
+    for (int i = 0; i < 66; ++i) emit(i < 3 ? nil : @"One button: segmentation, unfolding, packing, baking", 0, i < 3 ? 1.0 : std::min(1.0, std::min((i - 2) / 8.0, (66 - i) / 8.0)));
+    [self waitUntil:^BOOL { return !me->_running && [me hasResult]; } timeout:1500];
+    usleep(800 * 1000);
+
+    // 4. the result: the patches and the atlas, then the old texture baked into it
+    __block size_t patchCount = 0;
+    __block std::vector<PatchRow> rows;
+    M(^{ [me setViewMode:0]; patchCount = me->_huge.patchCount(); rows = me->_huge.patchRows(); });
+    scene([NSString stringWithFormat:@"%zu patches, unfolded and packed with room for mip levels", patchCount], 84, 0.024);
+    M(^{ [me setViewMode:3]; });
+    scene(@"The old texture re-baked into the new atlas", 48, 0.024);
+
+    // 5. a patch chosen in the atlas, then one chosen on the model: the other view follows each time
+    std::vector<int> bySize;
+    const std::vector<PatchRow> rowsCopy = rows;   // the sort below is a lambda: it cannot take a __block variable
+    for (const PatchRow& r : rowsCopy) bySize.push_back(r.index);
+    std::sort(bySize.begin(), bySize.end(), [&](int a, int b) { return rowsCopy[size_t(a)].faces > rowsCopy[size_t(b)].faces; });
+    const int first = bySize.size() > 2 ? bySize[2] : (bySize.empty() ? -1 : bySize[0]);
+    const int second = bySize.size() > 9 ? bySize[9] : first;
+    M(^{ [me setViewMode:0]; });
+    for (int i = 0; i < 12; ++i) emit(nil, 0, 1.0);
+    if (first >= 0) M(^{ [me selectPatch:first from:2]; });   // a click in the atlas: the camera turns to the patch and its border is drawn
+    scene(@"Click a patch in the atlas: the model turns to it", 66, 0);
+    M(^{ [me setViewMode:3]; });
+    scene(@"Its border is drawn over any view, the texture too", 30, 0);
+    if (second >= 0) M(^{ [me selectPatch:second from:3]; });   // a click on the model: the atlas zooms to the chart
+    scene(@"Click on the model: the atlas zooms to its chart", 66, 0);
+    M(^{ [me selectPatch:-1 from:0]; });
+
+    // 6. the developer's side: the UV checker with anti-aliasing, the patch table, the paint by stretch
+    M(^{ me->_prefs.developer = YES; [me applyDeveloperMode]; const double dir[3] = {dx, dy, dz}; [me->_scene viewFromDirection:dir distance:1.9]; [me->_dev setUvChecker:YES msaa:4]; });
+    usleep(800 * 1000);
+    scene(@"UV checker: squares of one size show an even density of texels", 66, 0.03);
+    M(^{ [me->_dev setUvChecker:NO msaa:4]; [me setViewMode:0]; [me->_dev revealPatchTable]; [me->_dev setPaintMode:2]; });
+    scene(@"Developer mode: the patch table, painting by stretch (all blue: low distortion)", 54, 0.02);
+    if (!bySize.empty()) M(^{ [me selectPatch:bySize[std::min<size_t>(bySize.size() - 1, 3)] from:1]; });
+    scene(@"Choose a row: both views follow, the layout can be measured against the original", 54, 0);
+    M(^{ [me->_dev setPaintMode:0]; [me selectPatch:-1 from:0]; });
+
+    // 7. the assistant: a model drives the same actions (here a scripted one)
+    M(^{ me->_chatItem.collapsed = NO; const double dir[3] = {dx, dy, dz}; [me->_scene viewFromDirection:dir distance:2.0]; });   // back to the whole car
+    usleep(900 * 1000);
+    M(^{ [me chatSend:@"Make the texture 4096 with 2 clean mip levels and tell me how it went."]; });
+    __block BOOL busy = YES;
+    for (int i = 0; i < 90 && busy; ++i) {
+        M(^{ [me->_scene orbitYaw:0.012]; });
+        emit(i < 3 ? nil : @"Assistant: any OpenAI-compatible model drives the same actions (scripted here)", 0, std::min(1.0, (i - 2) / 8.0));
+        M(^{ busy = me->_chatBusy; });
+    }
+    [self waitUntil:^BOOL { return !me->_chatBusy && !me->_running; } timeout:300];
+    usleep(800 * 1000);
+    scene(@"Assistant: any OpenAI-compatible model drives the same actions (scripted here)", 48, 0.02);
+
+    // 8. the closing card
+    for (int i = 0; i < 54; ++i) emit(nil, 2, std::min(1.0, std::min((i + 1) / 12.0, (54 - i) / 10.0)));
+
+    printf("DEMO: %d frames written to %s\n", frameNo, dir.UTF8String);
+    fflush(stdout);
+    gDemoTime = -1.0;
+    dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
 }
 
 - (void)hostCancel { dispatch_async(dispatch_get_main_queue(), ^{ if (self->_running) [self cancelAtlas:nil]; }); }
