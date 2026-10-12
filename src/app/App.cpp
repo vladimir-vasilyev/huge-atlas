@@ -558,6 +558,54 @@ void App::run()
     }
 }
 
+// A new model replaces the old one with everything that came from it.
+void App::clearPreviousModel()
+{
+    stopRefine(true);
+    job_.reset();
+    hugeJob_.reset();
+    hugeShown_ = false;
+    hugeStatus_.clear();
+    makeAtlasStatus_.clear();
+    pendingHugePath_.clear();
+    mesh_ = TriMesh();
+    faceData_ = FaceData();
+    faceWeights_.clear();
+    faceMoments_.clear();
+    vsa_ = VSAState();
+    vsaAdded_ = vsaSteps_ = 0;
+    lloydStatus_.clear();
+    patches_ = ExtractionResult();
+    patchesValid_ = false;
+    patchesRefined_ = false;
+    refineHasStats_ = false;
+    selectedPatch_ = -1;
+    linabf_.clear();
+    linabfSolved_.clear();
+    uv_.clear();
+    uvStats_.clear();
+    uvDone_.clear();
+    params_.clear();
+    paramDone_.clear();
+    paramStatus_.clear();
+    atlas_ = AtlasResult();
+    atlasValid_ = false;
+    ++atlasVersion_;
+    bakedRgba_ = {};
+    bakedVersion_ = ~0u;
+    sourcePixels_ = {};
+    sourceW_ = sourceH_ = 0;
+    hasSourceTexture_ = false;
+    textureMaterial_ = -1;
+    textureNote_.clear();
+    textureOwner_ = 0;
+    layoutMeasured_ = false;
+    objExtras_ = ObjExtras();
+    savePath_.clear();
+    presentation_ = false;
+    simpleView_ = 0;
+}
+
 void App::openMesh(const std::string& path)
 {
     hugeShown_ = false;
@@ -576,6 +624,7 @@ void App::openMesh(const std::string& path)
     }
     const double readSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     normalizeToUnitBox(m);
+    clearPreviousModel();
     mesh_ = std::move(m);
     faceData_ = computeFaceData(mesh_);
     smoothFaceNormals(mesh_, faceData_, normalSmoothing_);
@@ -3228,15 +3277,29 @@ void App::openMeshSmart(const std::string& path)
         suggestTextureSize(size_t(bytes / 75));   // about 75 bytes of an OBJ per face
         // the scan is shown at once: straight into flat arrays (no half-edge mesh), the huge mode reads the file again later
         FlatMesh flat;
+        FlatSurface surface;
         std::string err;
         status_ = "reading the big scan...";
-        if (loadFlatMesh(path, flat, nullptr, &err)) {
+        if (loadFlatMesh(path, flat, nullptr, &err, &surface)) {
             normalizeFlatToUnitBox(flat);
-            hugeShown_ = false;
-            hugeJob_.reset();
+            clearPreviousModel();
+            pendingHugePath_ = path;
             meshRenderer_.invalidateGeometry();
-            meshRenderer_.uploadFlat(flat, {});
+            meshRenderer_.uploadFlat(flat, surface.cornerUV);
             meshRenderer_.uploadLines({});
+            // the texture of the file, as the regular mesh shows it: the first material with a map_Kd (OBJ) or the TextureFile comment (PLY)
+            colorMode_ = 4;
+            textureOwner_ = 0;
+            if (surface.hasUV()) {
+                std::string name = surface.textureFile;
+                for (size_t i = 0; i < surface.materials.size() && name.empty(); ++i) name = surface.materials[i].diffuseMap;
+                int w = 0, h = 0;
+                std::vector<unsigned char> pixels;
+                if (!name.empty() && loadImageRGBA(surface.directory + "/" + name, w, h, pixels, nullptr) && meshRenderer_.setTexture(w, h, pixels.data())) {
+                    colorMode_ = 10;
+                    textureOwner_ = 1;
+                }
+            }
             cullBackFaces_ = true;
             wireframe_ = false;
             msaaSamples_ = 0;

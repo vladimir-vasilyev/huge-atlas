@@ -252,6 +252,7 @@ private:
     void             suggestTextureSize(size_t faces);
     void             drawAtlasWindow();
     void             openMeshSmart(const std::string& path);   // small files are loaded, big ones wait for the huge mode (the simple interface)
+    void             clearPreviousModel();   // everything that belongs to the model that was open: the atlas, the huge result, the texture
     void             startSimpleAtlas();                       // the one button: the regular or the huge pipeline by the size of the mesh
     void             applyQuality(size_t faces);
     void             applySimpleView();
