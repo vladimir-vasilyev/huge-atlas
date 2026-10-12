@@ -66,6 +66,7 @@
     NSStackView* _view;
     NSButton* _compare;
     NSTextField* _report;
+    NSTextField* _info;
     NumberRow *_smoothing, *_normalIter, *_normalSigma, *_lloyd, *_depth, *_atOnce, *_percent;
     NSButton *_lscm, *_repair;
 }
@@ -137,8 +138,14 @@ static NSTextField* heading(NSString* text)
     NSStackView* paint = [NSStackView stackViewWithViews:@[[NSTextField labelWithString:@"Paint by:"], _colors]];
     paint.spacing = 6;
 
+    _info = [NSTextField wrappingLabelWithString:@"No mesh"];
+    _info.font = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
+    _info.textColor = NSColor.secondaryLabelColor;
+    _info.selectable = YES;
+    _info.preferredMaxLayoutWidth = 250;
+
     _view = [NSStackView stackViewWithViews:@[
-        heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare,
+        heading(@"Mesh"), _info, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare,
         heading(@"Patches"), paint, _tableScroll, _report]];
     _view.orientation = NSUserInterfaceLayoutOrientationVertical;
     _view.alignment = NSLayoutAttributeLeading;
@@ -166,6 +173,7 @@ static NSTextField* heading(NSString* text)
 }
 
 - (void)setReport:(NSString*)text { _report.stringValue = text; }
+- (void)setInfo:(NSString*)text { _info.stringValue = text; }
 
 - (NSInteger)colorMode { return _colors.indexOfSelectedItem; }
 - (void)colorModeChanged:(id)sender { if (self.onColorMode) self.onColorMode(_colors.indexOfSelectedItem); }

@@ -1058,6 +1058,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         _uvItem.collapsed = YES;
         [self suggestTextureSize:estimate];
         _sourceTextureShown = NO;
+        [_dev setInfo:@"Reading the mesh…"];
+        [_dev setPatchRows:{}];
         [self setViewMode:1];
         [self beginWork:@"Reading the mesh"];
         __weak AppController* weakSelf = self;
@@ -1086,6 +1088,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
                 [me->_scene showFlat:me->_huge.mesh() cornerUV:(tex ? me->_huge.sourceCornerUV() : std::vector<float>()) rgba:{}];
                 [me->_scene setTextureWidth:(tex ? me->_huge.sourceWidth() : 0) height:me->_huge.sourceHeight() pixels:me->_huge.sourcePixels()];
                 me->_sourceTextureShown = tex;
+                [me->_dev setInfo:[NSString stringWithFormat:@"Vertices          %zu\nFaces             %zu\n(a big scan: no further diagnostics)", me->_huge.mesh().vertexCount(), me->_huge.faceCount()]];
+                [me->_dev setPatchRows:{}];
                 [me setViewMode:tex ? 3 : 1];
                 [me suggestTextureSize:me->_huge.faceCount()];
                 [me updateEnabled];
@@ -1114,6 +1118,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     [_scene showMesh:_session.mesh() colors:{} faceUV:(tex ? _session.sourceCornerUV() : std::vector<float>())];
     [_scene setTextureWidth:(tex ? _session.sourceWidth() : 0) height:_session.sourceHeight() pixels:_session.sourcePixels()];
     _sourceTextureShown = tex;
+    [_dev setInfo:[NSString stringWithUTF8String:_session.meshInfo().c_str()]];
+    [_dev setPatchRows:{}];
     [_uv clear];
     _uvItem.collapsed = YES;
     [self suggestTextureSize:_session.mesh().n_faces()];
@@ -1289,6 +1295,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
             printf("NATIVE PATCHES: %zu rows, %zu bad; first: #%d %zu faces %s L2 %.3f %s\n", rows.size(), bad, rows.empty() ? -1 : rows[0].index,
                    rows.empty() ? size_t(0) : rows[0].faces, rows.empty() ? "" : rows[0].method.c_str(), rows.empty() ? 0.0 : rows[0].l2Mean,
                    rows.empty() ? "" : rows[0].status.c_str());
+            if (!_useHuge) printf("NATIVE INFO:\n%s\n", _session.meshInfo().c_str());
             _selectedPatch = 0;
             _uv.selectedPatch = 0;
             [self recolorPatches];
@@ -1746,6 +1753,8 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     NSString* line = [NSString stringWithUTF8String:text.c_str()];
     _status.stringValue = line;
     [_dev setReport:line];
+    [_dev setInfo:[NSString stringWithUTF8String:_session.meshInfo().c_str()]];
+    [_dev setPatchRows:{}];
     [self updateEnabled];
     printf("%s\n", text.c_str());
 }

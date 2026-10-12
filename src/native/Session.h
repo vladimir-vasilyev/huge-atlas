@@ -76,6 +76,8 @@ public:
     bool hasMesh() const { return mesh_.n_faces() > 0; }
     const TriMesh& mesh() const { return mesh_; }
     const std::string& path() const { return path_; }
+    // the diagnostics of the open mesh as text lines (vertices, edges, components, boundary loops, degenerate faces ...)
+    std::string meshInfo() const;
 
     // Blocking; checks `cancel` between the steps. false + message when cancelled or failed.
     bool run(const SessionSettings& settings, const Progress& progress, const std::atomic<bool>& cancel, std::string* error);

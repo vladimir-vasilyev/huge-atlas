@@ -14,6 +14,7 @@
 - (instancetype)initWithTarget:(id)target compareAction:(SEL)action;
 - (DeveloperOptions)options;
 - (void)setReport:(NSString*)text;
+- (void)setInfo:(NSString*)text;   // the diagnostics of the open mesh
 // The patch table: a click selects a patch (-1: none), the color mode says how the patches are painted (0 colors, 1 problems, 2 stretch).
 - (void)setPatchRows:(std::vector<PatchRow>)rows;
 @property (nonatomic, copy) void (^onPatchSelected)(NSInteger patch);

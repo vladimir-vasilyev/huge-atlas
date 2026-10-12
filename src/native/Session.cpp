@@ -528,3 +528,16 @@ std::vector<PatchRow> AtlasSession::patchRows() const
     }
     return rows;
 }
+
+std::string AtlasSession::meshInfo() const
+{
+    if (mesh_.n_faces() == 0) return "No mesh";
+    const MeshDiagnostics d = diagnose(mesh_, computeFaceData(mesh_));
+    char buf[400];
+    std::snprintf(buf, sizeof buf,
+                  "Vertices          %d\nEdges             %d\nFaces             %d\nEuler characteristic %d\nComponents        %d\n"
+                  "Boundary loops    %d\nTotal area        %.4f\nDegenerate faces  %d\nNon-manifold verts %d\nIsolated verts    %d",
+                  d.vertices, d.edges, d.faces, d.eulerCharacteristic, d.components, d.boundaryLoops, d.totalArea, d.degenerateFaces,
+                  d.nonManifoldVertices, d.isolatedVertices);
+    return buf;
+}
