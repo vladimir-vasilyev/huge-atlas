@@ -2,6 +2,7 @@
 
 #include "core/MeshTypes.h"
 #include "core/ObjLoader.h"
+#include "app/Preset.h"
 #include "param/LayoutReport.h"
 #include "param/AtlasBake.h"
 #include "param/AtlasPacker.h"
@@ -43,6 +44,8 @@ struct UvChart {
     std::vector<unsigned> triangles;                // three vertex indices per face
     std::vector<std::vector<unsigned>> loops;       // the border of the chart, vertex indices
     std::vector<unsigned> segments;                 // border edges as pairs of vertex indices (the huge mode keeps only these)
+    std::vector<unsigned> flipped;                  // faces (index in `triangles` / 3) whose uv are flipped: drawn red
+    std::vector<unsigned> crossings;                // pairs of vertex indices: the border edges that cross another one: drawn magenta
 };
 
 class AtlasSession {
@@ -97,6 +100,17 @@ public:
 
     // the charts as they lie in the atlas (for the UV view)
     std::vector<UvChart> uvCharts() const;
+
+    // The unfolded patches of the last run, for the bad patches (Debug > Save Bad Patches).
+    const std::vector<PatchParam>& params() const { return result_.params; }
+    Preset preset(const SessionSettings& settings) const;   // the settings of the run as a preset
+
+    // Debug > Load Bad Patch: an OBJ saved by Save Bad Patches becomes the mesh and its only patch; the preset next to it (same name,
+    // .preset) says how to unfold it. `text` gets what came out; the chart and the colors are for the views.
+    bool loadBadPatch(const std::string& path, std::string* text, std::string* error);
+    bool badPatchLoaded() const { return badLoaded_; }
+    UvChart badPatchChart() const;                 // uv scaled into the square, with the flipped faces and the crossings
+    std::vector<float> badPatchColors() const;     // per face: blue where the stretch is 1, red where it is bad
     // the color of a patch (the same in the 3D view and in the UV view)
     static void patchColor(int patch, float* rgb);
 
@@ -117,6 +131,8 @@ private:
     bool packAndBake(const SessionSettings& settings, std::string* error);
     std::vector<BakeChart> bakeCharts() const;
     TriMesh mesh_;
+    PatchParam bad_;
+    bool badLoaded_ = false;
     std::string path_;
     RefineResult result_;
     AtlasResult atlas_;

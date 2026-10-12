@@ -208,6 +208,12 @@ target_include_directories(test_chat PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOU
 target_link_libraries(test_chat PRIVATE vsa_core)
 add_test(NAME chat COMMAND test_chat)
 
+add_executable(test_badpatch tests/test_badpatch.cpp src/app/BadPatch.cpp src/app/Preset.cpp)
+target_include_directories(test_badpatch PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_compile_definitions(test_badpatch PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
+target_link_libraries(test_badpatch PRIVATE vsa_core)
+add_test(NAME badpatch COMMAND test_badpatch)
+
 add_executable(test_preset tests/test_preset.cpp src/app/Preset.cpp)
 target_link_libraries(test_preset PRIVATE vsa_core)
 add_test(NAME preset COMMAND test_preset)
@@ -275,6 +281,8 @@ set(APP_SOURCES
     src/app/App.cpp
     src/app/Preset.h
     src/app/Preset.cpp
+    src/app/BadPatch.h
+    src/app/BadPatch.cpp
     src/app/UiTips.h
     src/app/UiTips.cpp
     src/app/Paths.cpp
@@ -333,6 +341,9 @@ add_executable(huge_atlas_native
     src/native/Settings.mm
     src/native/DeveloperPanel.mm
     src/native/ChatPanel.mm
+    src/app/Preset.cpp
+    src/app/BadPatch.cpp
+    src/app/Paths.cpp
     src/chat/Provider.mm
     src/app/NativeUI.mm
     src/render/GL.cpp
@@ -360,6 +371,7 @@ if(BUILD_PYTHON)
         src/python/module.cpp
         src/native/Session.cpp
         src/native/HugeSession.cpp
+        src/app/Preset.cpp
         src/render/ImageFile.cpp)
     target_include_directories(huge_atlas PRIVATE ${CMAKE_SOURCE_DIR}/src ${EXT_DIR}/ImGuiFileDialog)
     target_compile_definitions(huge_atlas PRIVATE GL_SILENCE_DEPRECATION)

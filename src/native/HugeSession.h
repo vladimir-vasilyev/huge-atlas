@@ -29,6 +29,8 @@ public:
     // (`cornerUV`: 6 floats per face, `rgba`: width x height, row 0 = v = 0).
     bool setMesh(const float* positions, size_t vertexCount, const uint32_t* indices, size_t faceCount, std::string* error);
     bool setTexture(const std::vector<float>& cornerUV, int width, int height, const unsigned char* rgba, std::string* error);
+    const FlatResult& result() const { return result_; }
+    Preset preset(const SessionSettings& settings) const;
     const std::vector<int32_t>& patchOfFace() const { return result_.patchOfFace; }
     bool loaded() const { return loaded_; }
     bool hasSourceTexture() const { return sourceW_ > 0 && !sourcePixels_.empty() && surface_.hasUV(); }

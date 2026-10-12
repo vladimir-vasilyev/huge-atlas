@@ -276,3 +276,19 @@ bool HugeSession::compareData(LayoutComparison* out, std::string* error) const
     *out = LayoutComparison{lo, ln, mo, mn, hadOriginal};
     return true;
 }
+
+Preset HugeSession::preset(const SessionSettings& s) const
+{
+    Preset p;
+    p.k = int(k_);
+    p.lloydMaxIterations = s.dev.lloydIterations;
+    p.smoothLambda = s.dev.smoothing;
+    p.normalSmoothIterations = s.dev.normalIterations;
+    p.normalSmoothSigma = s.dev.normalSigma;
+    p.param.allowLscm = s.dev.allowLscm;
+    p.param.repairNearMisses = s.dev.repairNearMisses;
+    p.refineMaxDepth = s.dev.maxDepth;
+    p.refineSplitAtOnceAboveFaces = s.dev.splitAtOnce;
+    p.refineSmoothLambda = s.dev.smoothing;
+    return p;
+}

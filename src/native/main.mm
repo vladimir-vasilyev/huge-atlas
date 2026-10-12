@@ -9,7 +9,9 @@
 #include "render/Camera.h"
 #include "render/MeshRenderer.h"
 #include "render/GridRenderer.h"
+#include "app/BadPatch.h"
 #include "app/NativeUI.h"
+#include "app/Paths.h"
 #include "native/HugeSession.h"
 #import "native/ChatPanel.h"
 #import "native/DeveloperPanel.h"
@@ -363,6 +365,20 @@
         CGContextAddPath(g, fill);
         CGContextFillPath(g);
         CGPathRelease(fill);
+        if (!c.flipped.empty()) {   // the faces whose uv are flipped
+            CGMutablePathRef bad = CGPathCreateMutable();
+            for (unsigned f : c.flipped) {
+                if (size_t(f) * 3 + 2 >= c.triangles.size()) continue;
+                CGPathMoveToPoint(bad, nullptr, pt(c.triangles[3 * f]).x, pt(c.triangles[3 * f]).y);
+                CGPathAddLineToPoint(bad, nullptr, pt(c.triangles[3 * f + 1]).x, pt(c.triangles[3 * f + 1]).y);
+                CGPathAddLineToPoint(bad, nullptr, pt(c.triangles[3 * f + 2]).x, pt(c.triangles[3 * f + 2]).y);
+                CGPathCloseSubpath(bad);
+            }
+            CGContextSetRGBFillColor(g, 1.0, 0.1, 0.1, 0.8);
+            CGContextAddPath(g, bad);
+            CGContextFillPath(g);
+            CGPathRelease(bad);
+        }
         CGContextSetRGBStrokeColor(g, rgb[0], rgb[1], rgb[2], 0.95);
         CGContextSetLineWidth(g, 1.5);
         for (size_t i = 0; i + 1 < c.segments.size(); i += 2) {   // the huge mode: only the border edges
@@ -375,6 +391,15 @@
             CGContextMoveToPoint(g, pt(loop[0]).x, pt(loop[0]).y);
             for (size_t i = 1; i < loop.size(); ++i) CGContextAddLineToPoint(g, pt(loop[i]).x, pt(loop[i]).y);
             CGContextClosePath(g);
+            CGContextStrokePath(g);
+        }
+        if (!c.crossings.empty()) {   // the border edges that cross another one
+            CGContextSetRGBStrokeColor(g, 0.95, 0.1, 0.9, 1.0);
+            CGContextSetLineWidth(g, 3.0);
+            for (size_t i = 0; i + 1 < c.crossings.size(); i += 2) {
+                CGContextMoveToPoint(g, pt(c.crossings[i]).x, pt(c.crossings[i]).y);
+                CGContextAddLineToPoint(g, pt(c.crossings[i + 1]).x, pt(c.crossings[i + 1]).y);
+            }
             CGContextStrokePath(g);
         }
     }
@@ -486,6 +511,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     NSButton* _repackButton;
     DeveloperPanel* _dev;
     NSMenuItem* _wireItem;
+    NSMenuItem* _debugMenuItem;   // the Debug menu: only in the developer mode
     BOOL _developer;
     BOOL _wire;
     prefs::Values _prefs;
@@ -785,6 +811,11 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         return;
     }
 
+    if (const char* bad = getenv("HUGE_NATIVE_LOADBAD")) {   // testing hook: Debug > Load Bad Patch on this file, then the shot
+        [self loadBadPatchPath:[NSString stringWithUTF8String:bad]];
+        [self autoShotAndQuit];
+        return;
+    }
     if (_pendingOpen) { [self loadPath:_pendingOpen]; _pendingOpen = nil; }
     const char* arg = getenv("HUGE_NATIVE_OPEN");
     if (arg) {
@@ -919,6 +950,11 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     add(view, @"Show Sidebar", @selector(toggleSidebar:), @"s", NSEventModifierFlagCommand | NSEventModifierFlagControl);
     add(view, @"Enter Full Screen", @selector(toggleFullScreen:), @"f", NSEventModifierFlagCommand | NSEventModifierFlagControl);
 
+    NSMenu* debug = top(@"Debug");
+    _debugMenuItem = bar.itemArray.lastObject;
+    add(debug, @"Save Bad Patches", @selector(saveBadPatches:), @"b", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    add(debug, @"Load Bad Patch…", @selector(loadBadPatch:), @"l", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+
     NSMenu* window = top(@"Window");
     add(window, @"Minimize", @selector(performMiniaturize:), @"m");
     add(window, @"Zoom", @selector(performZoom:), @"");
@@ -956,6 +992,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         item.title = _uvItem.collapsed ? @"Show UV Layout" : @"Hide UV Layout";
         return [self hasResult];
     }
+    if (a == @selector(saveBadPatches:)) return !_running && [self hasResult];
+    if (a == @selector(loadBadPatch:)) return !_running;
     if (a == @selector(toggleAssistant:)) item.title = _chatItem.collapsed ? @"Show Assistant" : @"Hide Assistant";
     if (a == @selector(toggleSidebar:)) {
         NSSplitViewItem* s = _split.splitViewItems.firstObject;
@@ -1216,6 +1254,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     [self updateEnabled];
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
+        if (getenv("HUGE_NATIVE_SAVEBAD")) [self saveBadPatches:nil];   // testing hook
         if (!keepView) {
             if (const char* r = getenv("HUGE_NATIVE_REPACK")) {   // "resolution:mip": pack again as the button does, then look at the result
                 int res = 0, mip = 0;
@@ -1313,6 +1352,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
 {
     _developer = _prefs.developer;
     _dev.view.hidden = !_developer;
+    _debugMenuItem.hidden = !_developer;
     if (!_developer && _wire) { _wire = NO; [_scene setWireframe:NO]; }
 }
 
@@ -1568,6 +1608,65 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
 }
 
 - (void)hostCancel { dispatch_async(dispatch_get_main_queue(), ^{ if (self->_running) [self cancelAtlas:nil]; }); }
+
+// ---- Debug: the bad patches. Save writes every patch that is not a disk, overlaps itself or is too stretched (an OBJ with the faulty uv and a
+// preset next to it) into DebugOut/BadPatch; Load takes such a file back: it is unfolded again with its preset and the problems are shown.
+- (void)saveBadPatches:(id)sender
+{
+    if (_running || ![self hasResult]) return;
+    const std::string folder = paths::debugOutDir() + "/BadPatch";
+    const SessionSettings s = [self settings];
+    const BadPatchReport r = _useHuge ? ::saveBadPatches(_huge.mesh(), _huge.result(), _huge.preset(s), folder, -1)
+                                      : ::saveBadPatches(_session.params(), nullptr, _session.preset(s), folder, -1);
+    NSString* text = [NSString stringWithUTF8String:describe(r).c_str()];
+    _status.stringValue = text;
+    if (getenv("HUGE_NATIVE_SAVEBAD")) printf("NATIVE BAD: %s\n", text.UTF8String);
+    else if (r.saved > 0) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:[NSString stringWithUTF8String:r.folder.c_str()]]]];
+    else if (!r.error.empty() || r.bad == 0) showTextWindow(@"Save Bad Patches", text);
+}
+
+- (void)loadBadPatch:(id)sender
+{
+    if (_running) return;
+    const std::string start = paths::debugOutDir() + "/BadPatch";
+    const std::string p = native::openFile("Load a bad patch (OBJ saved by Save Bad Patches)", {"obj"}, start);
+    if (p.empty()) return;
+    [self loadBadPatchPath:[NSString stringWithUTF8String:p.c_str()]];
+}
+
+- (void)loadBadPatchPath:(NSString*)path
+{
+    std::string text, err;
+    AtlasSession next;
+    if (!next.loadBadPatch(path.UTF8String, &text, &err)) {
+        _status.stringValue = [NSString stringWithFormat:@"Cannot load: %s", err.c_str()];
+        return;
+    }
+    _session = std::move(next);
+    _useHuge = NO;
+    _huge.clear();
+    _window.title = path.lastPathComponent;
+    _window.representedURL = [NSURL fileURLWithPath:path];
+    _meshLabel.stringValue = [NSString stringWithFormat:@"%@ — %zu faces (a bad patch)", path.lastPathComponent, _session.mesh().n_faces()];
+    _result.stringValue = @"";
+    _sourceTextureShown = NO;
+    [_scene resetCamera];
+    [_scene showMesh:_session.mesh() colors:_session.badPatchColors() faceUV:{}];
+    [_scene setTexture:0 pixels:nullptr];
+    [_scene setMode:0];   // the colors: blue where the stretch is 1, red where it is bad
+    _mode = 0;
+    if (_session.badPatchLoaded()) {
+        [_uv setCharts:{_session.badPatchChart()} texture:nullptr side:0];
+        [_uvItem.animator setCollapsed:NO];
+    } else {
+        [_uv clear];
+    }
+    NSString* line = [NSString stringWithUTF8String:text.c_str()];
+    _status.stringValue = line;
+    [_dev setReport:line];
+    [self updateEnabled];
+    printf("%s\n", text.c_str());
+}
 
 // ---- a picture of the own window for the checks without a person (own window: needs no screen recording permission)
 - (void)autoShotAndQuit

@@ -1,5 +1,6 @@
 #include "native/Session.h"
 
+#include "app/Preset.h"
 #include "core/MeshPrep.h"
 #include "core/Operations.h"
 #include "param/AtlasBake.h"
@@ -384,4 +385,123 @@ bool AtlasSession::compareData(LayoutComparison* out, std::string* error) const
     }
     *out = LayoutComparison{lo, ln, mo, mn, hadOriginal};
     return true;
+}
+
+Preset AtlasSession::preset(const SessionSettings& s) const
+{
+    Preset p;
+    p.k = int(k_);
+    p.lloydMaxIterations = s.dev.lloydIterations;
+    p.smoothLambda = s.dev.smoothing;
+    p.normalSmoothIterations = s.dev.normalIterations;
+    p.normalSmoothSigma = s.dev.normalSigma;
+    p.param.allowLscm = s.dev.allowLscm;
+    p.param.repairNearMisses = s.dev.repairNearMisses;
+    p.refineMaxDepth = s.dev.maxDepth;
+    p.refineSplitAtOnceAboveFaces = s.dev.splitAtOnce;
+    p.refineSmoothLambda = s.dev.smoothing;
+    return p;
+}
+
+bool AtlasSession::loadBadPatch(const std::string& path, std::string* text, std::string* error)
+{
+    TriMesh m;
+    if (!loadObj(path, m, nullptr, error)) return false;
+    if (m.n_faces() == 0) { if (error) *error = "the file has no faces"; return false; }
+    normalizeToUnitBox(m);
+    mesh_ = std::move(m);
+    path_ = path;
+    result_ = RefineResult();
+    atlas_ = AtlasResult();
+    resultValid_ = false;
+    baked_.clear();
+    bakedUV_.clear();
+    extras_ = ObjExtras();
+    sourcePixels_.clear();
+    sourceW_ = sourceH_ = 0;
+    badLoaded_ = false;
+    bad_ = PatchParam();
+
+    std::string note = "no preset next to the file: the default settings are used";
+    const size_t dot = path.find_last_of('.');
+    const std::string presetPath = (dot == std::string::npos ? path : path.substr(0, dot)) + ".preset";
+    Preset preset;
+    std::string perr;
+    if (readPreset(presetPath, preset, &perr)) note = "preset applied: " + presetPath;
+
+    PatchOptions po;
+    po.minFaces = preset.patchMinFaces;
+    po.cutMultiBoundary = preset.patchCutMultiBoundary;
+    po.cutHandles = preset.patchCutHandles;
+    ExtractionResult ex = extractPatches(mesh_, std::vector<int>(mesh_.n_faces(), 0), po);   // the whole mesh is one region
+    char buf[600];
+    if (ex.patches.empty() || !ex.patches[0].isDisk() || ex.patches[0].mesh.n_faces() == 0) {
+        std::snprintf(buf, sizeof buf, "bad patch loaded (%zu faces): %s. It is %s: nothing to unfold", mesh_.n_faces(), note.c_str(),
+                      ex.patches.empty() ? "empty" : patchKindName(ex.patches[0].topology.kind));
+        if (text) *text = buf;
+        badLoaded_ = false;
+        return true;
+    }
+    bad_ = parameterizePatch(mesh_, ex.patches[0], preset.param);
+    badLoaded_ = bad_.method != ParamMethod::None && bad_.uv.size() == bad_.patch.mesh.n_vertices();
+    if (badLoaded_)
+        std::snprintf(buf, sizeof buf, "bad patch loaded (%zu faces): %s. Unfolded with %s: %s, %d flipped, %zu crossings, %zu folds, L2 mean %.3f, bad area %.4f%s",
+                      mesh_.n_faces(), note.c_str(), paramMethodName(bad_.method), bad_.injective ? "injective" : "NOT injective", bad_.distortion.flipped,
+                      bad_.report.uv.crossings.size(), bad_.report.angles.foldVertices.size(), bad_.distortion.l2Mean, bad_.badAreaFraction,
+                      bad_.needsSplit ? ", needs a split" : "");
+    else
+        std::snprintf(buf, sizeof buf, "bad patch loaded (%zu faces): %s. Nothing came out of the ladder: %s", mesh_.n_faces(), note.c_str(), bad_.log.c_str());
+    if (text) *text = buf;
+    return true;
+}
+
+UvChart AtlasSession::badPatchChart() const
+{
+    UvChart c;
+    if (!badLoaded_) return c;
+    const TriMesh& pm = bad_.patch.mesh;
+    double lo[2] = {1e300, 1e300}, hi[2] = {-1e300, -1e300};
+    for (const auto& q : bad_.uv)
+        for (int k = 0; k < 2; ++k) { lo[k] = std::min(lo[k], q[k]); hi[k] = std::max(hi[k], q[k]); }
+    const double extent = std::max(hi[0] - lo[0], hi[1] - lo[1]), s = extent > 0 ? 0.9 / extent : 1.0;
+    for (const auto& q : bad_.uv) {
+        c.uv.push_back(float(0.05 + (q.x() - lo[0]) * s));
+        c.uv.push_back(float(0.05 + (q.y() - lo[1]) * s));
+    }
+    for (auto f : pm.faces())
+        for (auto v : pm.fv_range(f)) c.triangles.push_back(unsigned(v.idx()));
+    for (int f : bad_.report.uv.flippedFaces) if (f >= 0) c.flipped.push_back(unsigned(f));
+    for (const auto& pr : bad_.report.uv.crossings)
+        for (int h : {pr.first, pr.second}) {
+            const auto he = pm.halfedge_handle(h);
+            c.crossings.push_back(unsigned(pm.from_vertex_handle(he).idx()));
+            c.crossings.push_back(unsigned(pm.to_vertex_handle(he).idx()));
+        }
+    for (const auto& loop : bad_.patch.topology.loops) {
+        std::vector<unsigned> l;
+        for (int v : loop) l.push_back(unsigned(v));
+        c.loops.push_back(std::move(l));
+    }
+    return c;
+}
+
+std::vector<float> AtlasSession::badPatchColors() const
+{
+    std::vector<float> colors(mesh_.n_faces() * 3, 0.72f);
+    if (!badLoaded_) return colors;
+    const double maxStretch = 4.0;
+    for (size_t f = 0; f < bad_.patch.faceToGlobal.size() && f < bad_.perTriangleL2.size(); ++f) {
+        const int g = bad_.patch.faceToGlobal[f];
+        if (g < 0 || size_t(g) >= mesh_.n_faces()) continue;
+        const float t = float(std::max(0.0, std::min(1.0, (double(bad_.perTriangleL2[f]) - 1.0) / (maxStretch - 1.0))));
+        colors[3 * size_t(g)] = 0.25f + 0.7f * t;
+        colors[3 * size_t(g) + 1] = 0.55f * (1.0f - t) + 0.2f * t;
+        colors[3 * size_t(g) + 2] = 0.9f * (1.0f - t) + 0.2f * t;
+    }
+    for (int f : bad_.report.uv.flippedFaces)
+        if (f >= 0 && size_t(f) < bad_.patch.faceToGlobal.size()) {
+            const int g = bad_.patch.faceToGlobal[f];
+            if (g >= 0 && size_t(g) < mesh_.n_faces()) { colors[3 * size_t(g)] = 1.0f; colors[3 * size_t(g) + 1] = 0.1f; colors[3 * size_t(g) + 2] = 0.1f; }
+        }
+    return colors;
 }
