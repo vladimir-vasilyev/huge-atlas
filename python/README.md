@@ -35,3 +35,15 @@ pip install "huge-atlas[mcp]"
 
 Tools: `open_mesh`, `start_atlas`, `job_status`, `cancel_job`, `get_metrics`, `get_layout`, `get_report`, `repack`, `save_atlas`.
 The server writes only into `HUGE_ATLAS_OUTPUT` (default `~/Documents/huge-atlas/output`).
+
+## Without an MCP client: the built-in agent
+
+Any model behind an OpenAI-compatible API (DeepSeek, OpenAI, a local Ollama or LM Studio) can drive the same tools:
+
+```
+export HUGE_ATLAS_API_KEY=...                          # or DEEPSEEK_API_KEY / OPENAI_API_KEY
+export HUGE_ATLAS_BASE_URL=https://api.deepseek.com    # the default; HUGE_ATLAS_MODEL=deepseek-chat is the default model
+huge-atlas-agent "make an atlas for scan.obj with a 4096 texture, check the distortion and tune it if it is above 1.3"
+```
+
+Without a task it starts a dialog. Only the text of the tool results (numbers, reports) goes to the provider, never the mesh.

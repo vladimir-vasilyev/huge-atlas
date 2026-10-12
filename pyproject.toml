@@ -16,6 +16,7 @@ test = ["pytest"]
 
 [project.scripts]
 huge-atlas-mcp = "huge_atlas_mcp.server:main"
+huge-atlas-agent = "huge_atlas_mcp.agent:main"
 
 [tool.scikit-build]
 cmake.build-type = "Release"
