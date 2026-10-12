@@ -211,8 +211,10 @@ bool AtlasSession::run(const SessionSettings& s, const Progress& progress, const
     RefineOptions ro;
     ro.maxDepth = s.dev.maxDepth;
     ro.splitAtOnceAboveFaces = s.dev.splitAtOnce;
-    ro.param.allowLscm = s.dev.allowLscm;
-    ro.param.repairNearMisses = s.dev.repairNearMisses;
+    ro.param = s.dev.paramOptions();
+    ro.minFaces = s.dev.minFaces;
+    ro.maxRounds = s.dev.maxRounds;
+    ro.policy = s.dev.splitImmediately ? RefinePolicy::SplitImmediately : RefinePolicy::FixFirst;
     Refiner refiner(mesh_, vs.label, ro);
     int rounds = 0;
     while (refiner.step()) {
@@ -496,34 +498,66 @@ bool AtlasSession::loadBadPatch(const std::string& path, std::string* text, std:
     return true;
 }
 
-UvChart AtlasSession::badPatchChart() const
+// the uv of an unfolded patch scaled into the square, with its flipped faces and the crossings of its border
+static UvChart chartOfPatch(const PatchParam& pp)
 {
     UvChart c;
-    if (!badLoaded_) return c;
-    const TriMesh& pm = bad_.patch.mesh;
+    const TriMesh& pm = pp.patch.mesh;
     double lo[2] = {1e300, 1e300}, hi[2] = {-1e300, -1e300};
-    for (const auto& q : bad_.uv)
+    for (const auto& q : pp.uv)
         for (int k = 0; k < 2; ++k) { lo[k] = std::min(lo[k], q[k]); hi[k] = std::max(hi[k], q[k]); }
     const double extent = std::max(hi[0] - lo[0], hi[1] - lo[1]), s = extent > 0 ? 0.9 / extent : 1.0;
-    for (const auto& q : bad_.uv) {
+    for (const auto& q : pp.uv) {
         c.uv.push_back(float(0.05 + (q.x() - lo[0]) * s));
         c.uv.push_back(float(0.05 + (q.y() - lo[1]) * s));
     }
     for (auto f : pm.faces())
         for (auto v : pm.fv_range(f)) c.triangles.push_back(unsigned(v.idx()));
-    for (int f : bad_.report.uv.flippedFaces) if (f >= 0) c.flipped.push_back(unsigned(f));
-    for (const auto& pr : bad_.report.uv.crossings)
+    for (int f : pp.report.uv.flippedFaces) if (f >= 0) c.flipped.push_back(unsigned(f));
+    for (const auto& pr : pp.report.uv.crossings)
         for (int h : {pr.first, pr.second}) {
             const auto he = pm.halfedge_handle(h);
             c.crossings.push_back(unsigned(pm.from_vertex_handle(he).idx()));
             c.crossings.push_back(unsigned(pm.to_vertex_handle(he).idx()));
         }
-    for (const auto& loop : bad_.patch.topology.loops) {
+    for (const auto& loop : pp.patch.topology.loops) {
         std::vector<unsigned> l;
         for (int v : loop) l.push_back(unsigned(v));
         c.loops.push_back(std::move(l));
     }
     return c;
+}
+
+UvChart AtlasSession::badPatchChart() const { return badLoaded_ ? chartOfPatch(bad_) : UvChart(); }
+
+static std::string describeUnfolding(int index, const PatchParam& pp)
+{
+    char buf[700];
+    std::snprintf(buf, sizeof buf, "Patch %d: %zu faces, unfolded by %s: %s, %d flipped, %zu crossings, %zu folds, L2 mean %.3f max %.3f, bad area %.4f%s%s%s",
+                  index, pp.patch.faceToGlobal.size(), paramMethodName(pp.method), pp.injective ? "injective" : "NOT injective", pp.distortion.flipped,
+                  pp.report.uv.crossings.size(), pp.report.angles.foldVertices.size(), pp.distortion.l2Mean, pp.distortion.l2Max, pp.badAreaFraction,
+                  pp.needsSplit ? ", needs a split" : "", pp.log.empty() ? "" : "\n", pp.log.c_str());
+    return buf;
+}
+
+bool AtlasSession::inspectPatch(int index, const DeveloperOptions* again, UvChart* chart, std::string* text) const
+{
+    if (!resultValid_ || index < 0 || size_t(index) >= result_.params.size()) return false;
+    const PatchParam& stored = result_.params[size_t(index)];
+    if (stored.method == ParamMethod::None || stored.uv.empty()) {
+        if (text) *text = "Patch " + std::to_string(index) + ": no uv (" + (stored.patch.isDisk() ? "the ladder found no map" : "it is not a disk") + ")\n" + stored.log;
+        return false;
+    }
+    if (!again) {
+        if (chart) *chart = chartOfPatch(stored);
+        if (text) *text = describeUnfolding(index, stored);
+        return true;
+    }
+    // again: the patch as it was unfolded (with its slits), with the ladder options of the panel; the atlas stays as it is
+    const PatchParam fresh = parameterizePatch(mesh_, stored.patch, again->paramOptions());
+    if (chart) *chart = chartOfPatch(fresh);
+    if (text) *text = "Unfolded again with the options of the panel.\n" + describeUnfolding(index, fresh);
+    return fresh.method != ParamMethod::None;
 }
 
 std::vector<float> AtlasSession::badPatchColors() const

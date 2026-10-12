@@ -26,6 +26,26 @@ struct DeveloperOptions {
     bool   allowLscm = true;         // LSCM before Tutte
     bool   repairNearMisses = true;  // a map with a few flips is repaired locally
     double simplifyPercent = 0.0;    // huge mode: size of the simplified copy in percent (0 = by quality)
+    // refinement (the splitting of the bad patches) and the unfolding ladder
+    int    minFaces = 8;             // both parts of a split need at least this many faces
+    int    maxRounds = 12;
+    bool   splitImmediately = false; // only plain LinABF, split at once when it fails (faster, a bit more patches)
+    bool   useActiveSet = true;
+    bool   allowCut = true;          // slits
+    bool   allowTutte = true;
+    double maxStretch = 4.0;         // a triangle stretched more than this counts as bad
+
+    ParamOptions paramOptions() const
+    {
+        ParamOptions p;
+        p.allowLscm = allowLscm;
+        p.repairNearMisses = repairNearMisses;
+        p.useActiveSet = useActiveSet;
+        p.allowCut = allowCut;
+        p.allowTutte = allowTutte;
+        p.maxStretch = maxStretch;
+        return p;
+    }
 };
 
 struct SessionSettings {
@@ -125,6 +145,9 @@ public:
     // .preset) says how to unfold it. `text` gets what came out; the chart and the colors are for the views.
     bool loadBadPatch(const std::string& path, std::string* text, std::string* error);
     bool badPatchLoaded() const { return badLoaded_; }
+    // The unfolding of a patch of the result: its uv chart (with the flipped faces and crossings) and a text. `again`: unfold it again with
+    // the ladder options of these settings (the atlas is not changed).
+    bool inspectPatch(int index, const DeveloperOptions* again, UvChart* chart, std::string* text) const;
     UvChart badPatchChart() const;                 // uv scaled into the square, with the flipped faces and the crossings
     std::vector<float> badPatchColors() const;     // per face: blue where the stretch is 1, red where it is bad
     // the color of a patch (the same in the 3D view and in the UV view)

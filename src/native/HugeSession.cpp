@@ -125,8 +125,10 @@ bool HugeSession::runImpl(const SessionSettings& s, const Progress& progress, st
     co.normals.sigmaDegrees = s.dev.normalSigma;
     co.refine.maxDepth = s.dev.maxDepth;
     co.refine.splitAtOnceAboveFaces = s.dev.splitAtOnce;
-    co.refine.param.allowLscm = s.dev.allowLscm;
-    co.refine.param.repairNearMisses = s.dev.repairNearMisses;
+    co.refine.param = s.dev.paramOptions();
+    co.refine.minFaces = s.dev.minFaces;
+    co.refine.maxRounds = s.dev.maxRounds;
+    co.refine.policy = s.dev.splitImmediately ? RefinePolicy::SplitImmediately : RefinePolicy::FixFirst;
     k_ = size_t(co.k);
     co.onStage = [&](const std::string& what) { say(what); };
     co.cancel = cancel;

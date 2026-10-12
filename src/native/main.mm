@@ -700,7 +700,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _repackButton = [NSButton buttonWithTitle:@"Repack Atlas" target:self action:@selector(repackAtlas:)];
     _repackButton.enabled = NO;
     _repackButton.toolTip = @"Pack the same patches again with the texture size and mip levels set above (⌥⌘R)";
-    _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:) matchAction:@selector(matchOriginalLayout:)];
+    _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:) matchAction:@selector(matchOriginalLayout:) inspectAction:@selector(inspectPatch:) againAction:@selector(unfoldPatchAgain:)];
     _selectedPatch = -1;
     __weak AppController* weakDev = self;
     _dev.onViewOptions = ^{ [weakDev applyViewOptions]; };
@@ -1339,6 +1339,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
         if (getenv("HUGE_NATIVE_CHECKER")) [_dev setUvChecker:YES msaa:atoi(getenv("HUGE_NATIVE_CHECKER"))];   // testing hook: the UV checker, anti-aliasing with this many samples
+        if (getenv("HUGE_NATIVE_INSPECT")) { _selectedPatch = 0; [self showPatchUnfolding:atoi(getenv("HUGE_NATIVE_INSPECT")) > 1]; }   // testing hook: 1 inspect, 2 unfold again
         if (getenv("HUGE_NATIVE_MATCH")) [self matchOriginalLayout:nil];   // testing hook
         if (getenv("HUGE_NATIVE_MASK")) [self exportMask:nil];
         if (getenv("HUGE_NATIVE_SAVEBAD")) [self saveBadPatches:nil];   // testing hook
@@ -1454,6 +1455,29 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _debugMenuItem.hidden = !_developer;
     if (!_developer && _wire) { _wire = NO; [_scene setWireframe:NO]; }
 }
+
+// the unfolding of the patch chosen in the table, in the UV pane; with the options of the panel when `again`
+- (void)showPatchUnfolding:(BOOL)again
+{
+    if (_running || ![self hasResult]) return;
+    if (_useHuge) { showTextWindow(@"Inspect Patch", @"A big scan does not keep the patches as meshes: this works in the regular mode."); return; }
+    if (_selectedPatch < 0) { _status.stringValue = @"Choose a patch in the table first"; return; }
+    UvChart chart;
+    std::string text;
+    const DeveloperOptions o = [_dev options];
+    const BOOL ok = _session.inspectPatch(int(_selectedPatch), again ? &o : nullptr, &chart, &text);
+    NSString* line = [NSString stringWithUTF8String:text.c_str()];
+    _status.stringValue = ok ? @"Patch unfolding shown in the UV pane" : line;
+    [_dev setReport:line];
+    if (getenv("HUGE_NATIVE_INSPECT")) printf("NATIVE INSPECT:\n%s\n", text.c_str());
+    if (ok) {
+        chart.patch = int(_selectedPatch);
+        [_uv setCharts:{chart} texture:nullptr side:0];
+        [_uvItem.animator setCollapsed:NO];
+    }
+}
+- (void)inspectPatch:(id)sender { [self showPatchUnfolding:NO]; }
+- (void)unfoldPatchAgain:(id)sender { [self showPatchUnfolding:YES]; }
 
 // the texture size and the mip level of the sidebar from the layout of the file
 - (void)matchOriginalLayout:(id)sender

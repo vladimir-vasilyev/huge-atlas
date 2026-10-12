@@ -72,8 +72,8 @@
     NSButton *_cull, *_checker;
     NumberRow* _squares;
     NSTextField* _gpu;
-    NumberRow *_smoothing, *_normalIter, *_normalSigma, *_lloyd, *_depth, *_atOnce, *_percent;
-    NSButton *_lscm, *_repair;
+    NumberRow *_smoothing, *_normalIter, *_normalSigma, *_lloyd, *_depth, *_atOnce, *_percent, *_minFaces, *_rounds, *_stretch;
+    NSButton *_lscm, *_repair, *_immediate, *_activeSet, *_slits, *_tutte;
 }
 
 @synthesize view = _view, compareButton = _compare;
@@ -87,7 +87,7 @@ static NSTextField* heading(NSString* text)
     return t;
 }
 
-- (instancetype)initWithTarget:(id)target compareAction:(SEL)action matchAction:(SEL)match
+- (instancetype)initWithTarget:(id)target compareAction:(SEL)action matchAction:(SEL)match inspectAction:(SEL)inspectAction againAction:(SEL)againAction
 {
     self = [super init];
     if (!self) return nil;
@@ -99,6 +99,23 @@ static NSTextField* heading(NSString* text)
     _depth = [[NumberRow alloc] initWithTitle:@"Splitting depth" min:1 max:20 step:1 value:d.maxDepth decimals:0];
     _atOnce = [[NumberRow alloc] initWithTitle:@"Split at once above" min:0 max:1000000 step:5000 value:d.splitAtOnce decimals:0];
     _percent = [[NumberRow alloc] initWithTitle:@"Huge copy, %" min:0 max:100 step:5 value:d.simplifyPercent decimals:0];
+    _minFaces = [[NumberRow alloc] initWithTitle:@"Min faces per part" min:3 max:1000 step:1 value:d.minFaces decimals:0];
+    _rounds = [[NumberRow alloc] initWithTitle:@"Max refine rounds" min:1 max:100 step:1 value:d.maxRounds decimals:0];
+    _stretch = [[NumberRow alloc] initWithTitle:@"Max stretch" min:1.1 max:20 step:0.5 value:d.maxStretch decimals:1];
+    _immediate = [NSButton checkboxWithTitle:@"Split at once (faster)" target:nil action:nil];
+    _immediate.toolTip = @"Only plain LinABF; a patch that fails is split at once instead of trying the whole ladder";
+    _activeSet = [NSButton checkboxWithTitle:@"Active set" target:nil action:nil];
+    _activeSet.state = d.useActiveSet ? NSControlStateValueOn : NSControlStateValueOff;
+    _slits = [NSButton checkboxWithTitle:@"Slits" target:nil action:nil];
+    _slits.state = d.allowCut ? NSControlStateValueOn : NSControlStateValueOff;
+    _tutte = [NSButton checkboxWithTitle:@"Tutte (last resort)" target:nil action:nil];
+    _tutte.state = d.allowTutte ? NSControlStateValueOn : NSControlStateValueOff;
+    NSButton* inspect = [NSButton buttonWithTitle:@"Inspect Patch" target:target action:inspectAction];
+    inspect.toolTip = @"The unfolding of the patch chosen in the table: its uv with the flipped faces and the crossings";
+    NSButton* again = [NSButton buttonWithTitle:@"Unfold Again" target:target action:againAction];
+    again.toolTip = @"Unfold the chosen patch again with the options above (LSCM, repair, active set, slits, Tutte, stretch); the atlas stays";
+    NSStackView* patchButtons = [NSStackView stackViewWithViews:@[inspect, again]];
+    patchButtons.spacing = 8;
     _lscm = [NSButton checkboxWithTitle:@"LSCM before Tutte" target:nil action:nil];
     _lscm.state = d.allowLscm ? NSControlStateValueOn : NSControlStateValueOff;
     _repair = [NSButton checkboxWithTitle:@"Repair near misses" target:nil action:nil];
@@ -172,12 +189,12 @@ static NSTextField* heading(NSString* text)
     _gpu.textColor = NSColor.secondaryLabelColor;
 
     _view = [NSStackView stackViewWithViews:@[
-        heading(@"Mesh"), _info, _gpu, heading(@"View"), aa, _cull, _checker, _squares, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, matchButton, _compare,
-        heading(@"Patches"), paint, _tableScroll, _report]];
+        heading(@"Mesh"), _info, _gpu, heading(@"View"), aa, _cull, _checker, _squares, heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _minFaces, _rounds, _immediate, _lscm, _repair, _activeSet, _slits, _tutte, _stretch, matchButton, _compare,
+        heading(@"Patches"), paint, _tableScroll, patchButtons, _report]];
     _view.orientation = NSUserInterfaceLayoutOrientationVertical;
     _view.alignment = NSLayoutAttributeLeading;
     _view.spacing = 6;
-    for (NSView* v in @[(NSView*)_smoothing, (NSView*)_normalIter, (NSView*)_normalSigma, (NSView*)_lloyd, (NSView*)_depth, (NSView*)_atOnce, (NSView*)_percent])
+    for (NSView* v in @[(NSView*)_smoothing, (NSView*)_normalIter, (NSView*)_normalSigma, (NSView*)_lloyd, (NSView*)_depth, (NSView*)_atOnce, (NSView*)_percent, (NSView*)_minFaces, (NSView*)_rounds, (NSView*)_stretch])
         [v.widthAnchor constraintEqualToAnchor:_view.widthAnchor].active = YES;
     [_tableScroll.widthAnchor constraintEqualToAnchor:_view.widthAnchor].active = YES;
     _view.hidden = YES;
@@ -196,6 +213,13 @@ static NSTextField* heading(NSString* text)
     o.simplifyPercent = _percent.value;
     o.allowLscm = _lscm.state == NSControlStateValueOn;
     o.repairNearMisses = _repair.state == NSControlStateValueOn;
+    o.minFaces = int(_minFaces.value);
+    o.maxRounds = int(_rounds.value);
+    o.splitImmediately = _immediate.state == NSControlStateValueOn;
+    o.useActiveSet = _activeSet.state == NSControlStateValueOn;
+    o.allowCut = _slits.state == NSControlStateValueOn;
+    o.allowTutte = _tutte.state == NSControlStateValueOn;
+    o.maxStretch = _stretch.value;
     return o;
 }
 
@@ -281,9 +305,8 @@ static NSTextField* heading(NSString* text)
 
 - (void)setEnabled:(BOOL)on
 {
-    for (NumberRow* r in @[_smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent]) [r setEnabled:on];
-    _lscm.enabled = on;
-    _repair.enabled = on;
+    for (NumberRow* r in @[_smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _minFaces, _rounds, _stretch]) [r setEnabled:on];
+    for (NSButton* b in @[_lscm, _repair, _immediate, _activeSet, _slits, _tutte]) b.enabled = on;
 }
 
 @end
