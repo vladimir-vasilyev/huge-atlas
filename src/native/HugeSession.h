@@ -21,6 +21,11 @@ public:
     const std::string& path() const { return path_; }
     void clear();
 
+    // reads the file (and its texture) into flat arrays so that it can be shown; `run` reuses what is loaded
+    bool load(std::string* error);
+    bool loaded() const { return loaded_; }
+    bool hasSourceTexture() const { return sourceW_ > 0; }
+
     bool run(const SessionSettings& settings, const Progress& progress, std::string* error);
     bool repack(const SessionSettings& settings, const Progress& progress, std::string* error);
 
@@ -62,6 +67,7 @@ private:
     std::vector<unsigned char> baked_;
     int bakedResolution_ = 0;
     bool resultValid_ = false;
+    bool loaded_ = false;
     double seconds_ = 0.0;
     size_t k_ = 0;
 };

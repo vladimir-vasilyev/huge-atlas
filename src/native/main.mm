@@ -443,6 +443,7 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 
     AtlasSession _session;
     HugeSession _huge;
+    BOOL _hookPending;
     BOOL _useHuge;              // the mesh is a big scan: it is read by the huge mode when the atlas is made
     BOOL _textureTouched;       // the user chose a texture size: it is not suggested from the size of the mesh any more
     NSButton* _repackButton;
@@ -728,9 +729,8 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     if (_pendingOpen) { [self loadPath:_pendingOpen]; _pendingOpen = nil; }
     const char* arg = getenv("HUGE_NATIVE_OPEN");
     if (arg) {
+        _hookPending = YES;
         [self loadPath:[NSString stringWithUTF8String:arg]];
-        if (getenv("HUGE_NATIVE_AUTORUN")) [self makeAtlas:nil];
-        else [self autoShotAndQuit];
     } else if (getenv("HUGE_NATIVE_SHOT")) {
         [self autoShotAndQuit];
     }
@@ -918,21 +918,48 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
 {
     std::string err;
     const size_t estimate = HugeSession::estimateFaces(path.UTF8String);
-    if (estimate > size_t(_prefs.hugeMillions) * 1000000) {   // a big scan is not loaded for viewing, the huge mode reads it straight from the file
+    if (estimate > size_t(_prefs.hugeMillions) * 1000000) {   // a big scan goes straight into flat arrays (no half-edge mesh), also for viewing
+        if (_running) return;
         _useHuge = YES;
-        _huge.setFile(path.UTF8String);
         _session = AtlasSession();
+        _huge.setFile(path.UTF8String);
         _window.title = path.lastPathComponent;
         _window.representedURL = [NSURL fileURLWithPath:path];
         _meshLabel.stringValue = [NSString stringWithFormat:@"%@ — a big scan, about %.1f million faces", path.lastPathComponent, estimate / 1e6];
         _result.stringValue = @"";
-        _status.stringValue = @"A big scan is read when the atlas is made";
         [_scene clearMesh];
         [_uv clear];
         _uvItem.collapsed = YES;
         [self suggestTextureSize:estimate];
         [self setViewMode:1];
-        [self updateEnabled];
+        [self beginWork:@"Reading the mesh"];
+        __weak AppController* weakSelf = self;
+        _worker = std::thread([self, weakSelf, path]() {
+            std::string e;
+            const bool ok = _huge.load(&e);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                AppController* me = weakSelf;
+                if (!me) return;
+                [me setRunning:NO];
+                me->_progress.indeterminate = NO;
+                if (!ok) {
+                    me->_status.stringValue = [NSString stringWithFormat:@"Cannot open %@: %s", path.lastPathComponent, e.c_str()];
+                    me->_huge.setFile("");
+                    [me updateEnabled];
+                    [me runOpenHook];
+                    return;
+                }
+                me->_meshLabel.stringValue = [NSString stringWithFormat:@"%@ — %zu faces%s", path.lastPathComponent, me->_huge.faceCount(),
+                                                                       me->_huge.hasSourceTexture() ? ", with a texture" : ""];
+                me->_status.stringValue = @"Ready";
+                [me->_scene resetCamera];
+                [me->_scene showFlat:me->_huge.mesh() cornerUV:{} rgba:{}];
+                [me->_scene setTexture:0 pixels:nullptr];
+                [me suggestTextureSize:me->_huge.faceCount()];
+                [me updateEnabled];
+                [me runOpenHook];
+            });
+        });
         return;
     }
     if (!_session.load(path.UTF8String, &err)) {
@@ -955,6 +982,16 @@ static NSTextField* label(NSString* text, CGFloat size = 13, BOOL secondary = NO
     [self suggestTextureSize:_session.mesh().n_faces()];
     [self setViewMode:1];
     [self updateEnabled];
+    [self runOpenHook];
+}
+
+// test hook: after HUGE_NATIVE_OPEN has finished loading, make the atlas or take the shot
+- (void)runOpenHook
+{
+    if (!_hookPending) return;
+    _hookPending = NO;
+    if (getenv("HUGE_NATIVE_AUTORUN")) [self makeAtlas:nil];
+    else [self autoShotAndQuit];
 }
 
 - (void)openMesh:(id)sender

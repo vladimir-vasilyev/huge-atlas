@@ -37,16 +37,14 @@ void HugeSession::clear()
     textureMaterial_ = -1;
     bakedResolution_ = 0;
     resultValid_ = false;
+    loaded_ = false;
 }
 
-bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::string* error)
+bool HugeSession::load(std::string* error)
 {
-    using Clock = std::chrono::steady_clock;
-    const auto t0 = Clock::now();
-    auto say = [&](const std::string& what) { if (progress) progress(what); };
+    const std::string path = path_;
     clear();
-
-    say("Reading the mesh");
+    path_ = path;
     if (!loadFlatMesh(path_, mesh_, nullptr, error, &surface_)) return false;
     transform_ = normalizeFlatToUnitBox(mesh_);
     // the texture of the file: the first material with a map_Kd (OBJ) or the TextureFile comment (PLY)
@@ -54,10 +52,26 @@ bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::s
         std::string name = surface_.textureFile;
         for (size_t i = 0; i < surface_.materials.size() && name.empty(); ++i)
             if (!surface_.materials[i].diffuseMap.empty()) { name = surface_.materials[i].diffuseMap; textureMaterial_ = int(i); }
-        if (!name.empty()) {
-            say("Reading the texture");
-            if (!loadImageRGBA(surface_.directory + "/" + name, sourceW_, sourceH_, sourcePixels_, nullptr)) sourcePixels_.clear();
-        }
+        if (!name.empty() && !loadImageRGBA(surface_.directory + "/" + name, sourceW_, sourceH_, sourcePixels_, nullptr)) sourcePixels_.clear();
+    }
+    loaded_ = true;
+    return true;
+}
+
+bool HugeSession::run(const SessionSettings& s, const Progress& progress, std::string* error)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    auto say = [&](const std::string& what) { if (progress) progress(what); };
+    if (!loaded_) {
+        say("Reading the mesh");
+        if (!load(error)) return false;
+    } else {
+        result_ = FlatResult();   // the file is already in memory: only an earlier result is dropped
+        atlas_ = AtlasResult();
+        baked_.clear();
+        bakedResolution_ = 0;
+        resultValid_ = false;
     }
 
     // the quality: how many patches to start from and how fine the simplified copy is
