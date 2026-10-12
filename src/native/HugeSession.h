@@ -32,6 +32,7 @@ public:
     const FlatResult& result() const { return result_; }
     std::vector<PatchRow> patchRows() const;
     bool patchFrame(int patch, PatchFrame* frame) const;
+    bool patchBorder(int patch, std::vector<float>* segments) const;
     Preset preset(const SessionSettings& settings) const;
     const std::vector<int32_t>& patchOfFace() const { return result_.patchOfFace; }
     bool loaded() const { return loaded_; }

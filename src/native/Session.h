@@ -143,7 +143,9 @@ public:
     // The unfolded patches of the last run, for the bad patches (Debug > Save Bad Patches).
     const std::vector<PatchParam>& params() const { return result_.params; }
     std::vector<PatchRow> patchRows() const;
-    bool patchFrame(int patch, PatchFrame* frame) const;   // where a patch is and which way it faces (for the camera)
+    bool patchFrame(int patch, PatchFrame* frame) const;
+    // The border of a patch as segments (A, B: 6 floats each, in the coordinates of the mesh): the edges that only one of its faces has.
+    bool patchBorder(int patch, std::vector<float>* segments) const;   // where a patch is and which way it faces (for the camera)
     const std::vector<int>& faceToPatch() const { return result_.labels; }
     Preset preset(const SessionSettings& settings) const;   // the settings of the run as a preset
 

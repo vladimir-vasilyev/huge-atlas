@@ -67,6 +67,8 @@
 // A click (no drag) on the model gives the face under the cursor, -1 for the empty space or Esc (the patch of the face is chosen).
 @property (nonatomic, copy) void (^onPickFace)(int face);
 - (int)faceAtViewPoint:(NSPoint)p;
+// The border of the chosen patch drawn over the model in every view (segments A, B: 6 floats each; empty: none).
+- (void)setPatchBorder:(const std::vector<float>&)segments;
 // The camera goes to the ray out of the surface at `centre` along `normal` and looks back at the centre, far enough for the points to fit
 // the view; the world up stays up on the screen (the view is not rolled). Animated, and any mouse action in the view stops the flight.
 - (void)lookAtCentre:(const double*)centre normal:(const double*)normal points:(const std::vector<float>&)points animated:(BOOL)animated;   // p in the coordinates of the view (origin bottom left)
@@ -143,6 +145,7 @@
 {
     [self ensureReady];
     _renderer.invalidateGeometry();
+    _renderer.uploadLines({});   // a border of the chosen patch belongs to the old mesh
     _renderer.upload(mesh, colors, {}, uv);
     float lo = 0.0f;
     bool first = true;
@@ -157,6 +160,7 @@
 - (void)showFlat:(const FlatMesh&)mesh cornerUV:(const std::vector<float>&)uv rgba:(const std::vector<unsigned char>&)rgba
 {
     [self ensureReady];
+    _renderer.uploadLines({});
     _renderer.uploadFlat(mesh, uv, rgba);
     float lo = 0.0f;
     for (size_t i = 1; i < mesh.pos.size(); i += 3) lo = (i == 1 || mesh.pos[i] < lo) ? mesh.pos[i] : lo;
@@ -266,6 +270,7 @@
             _renderer.draw(vp, v, _wire && !_cull, _checkerCells, _mode == 3 && tex && _checkerCells <= 0.0f, _cull, _mode == 1);
         }
         glEndQuery(GL_TIME_ELAPSED);
+        if (_renderer.hasLines()) _renderer.drawLines(vp, int(b.size.width), int(b.size.height), 3.0f * float(b.size.height / std::max<CGFloat>(1.0, self.bounds.size.height)));
     }
     _fbo.end();
     [self.openGLContext flushBuffer];
@@ -292,6 +297,19 @@
 }
 
 - (void)stopFlight { [_flyTimer invalidate]; _flyTimer = nil; }
+
+- (void)setPatchBorder:(const std::vector<float>&)segments
+{
+    [self ensureReady];
+    std::vector<float> lines;   // A, B, color per segment
+    lines.reserve(segments.size() / 6 * 9);
+    for (size_t i = 0; i + 6 <= segments.size(); i += 6) {
+        lines.insert(lines.end(), segments.begin() + i, segments.begin() + i + 6);
+        lines.push_back(1.0f); lines.push_back(0.85f); lines.push_back(0.1f);
+    }
+    _renderer.uploadLines(lines);
+    [self setNeedsDisplay:YES];
+}
 
 - (void)lookAtCentre:(const double*)c normal:(const double*)n points:(const std::vector<float>&)pts animated:(BOOL)animated
 {
@@ -1523,6 +1541,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         [self updateCheckerCells];
         _selectedPatch = -1;
         _uv.selectedPatch = -1;
+        [_scene setPatchBorder:{}];
         if (getenv("HUGE_NATIVE_AUTORUN") && !keepView) printf("NATIVE REPORT:\n%s", rep.c_str());
     }
     if (_prefs.openUV) [_uvItem.animator setCollapsed:NO];
@@ -2041,6 +2060,11 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     _uv.selectedPatch = patch;
     [_dev selectPatchIndex:patch];
     [self recolorPatches];
+    {   // the border of the patch, over every view
+        std::vector<float> border;
+        if (patch >= 0) (_useHuge ? _huge.patchBorder(int(patch), &border) : _session.patchBorder(int(patch), &border));
+        [_scene setPatchBorder:border];
+    }
     if (patch < 0) return;
     BOOL found = NO;
     const PatchRow r = [_dev rowForPatch:patch found:&found];

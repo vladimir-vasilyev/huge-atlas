@@ -11,6 +11,7 @@
 #include "render/MeshRenderer.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -352,4 +353,23 @@ bool HugeSession::patchFrame(int patch, PatchFrame* frame) const
     *frame = computePatchFrame(tris);
     if (frame->ok) frame->area *= double(stride);
     return frame->ok;
+}
+
+bool HugeSession::patchBorder(int patch, std::vector<float>* segments) const
+{
+    if (!resultValid_ || patch < 0 || size_t(patch) >= result_.patches.size()) return false;
+    const FlatPatch& p = result_.patches[size_t(patch)];
+    std::unordered_map<uint64_t, std::pair<std::pair<uint32_t, uint32_t>, int>> edges;
+    for (uint32_t f : p.faces)
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t a = mesh_.idx[3 * size_t(f) + size_t(k)], b = mesh_.idx[3 * size_t(f) + size_t((k + 1) % 3)];
+            auto it = edges.emplace((uint64_t(std::min(a, b)) << 32) | std::max(a, b), std::make_pair(std::make_pair(a, b), 0)).first;
+            ++it->second.second;
+        }
+    segments->clear();
+    for (const auto& e : edges)
+        if (e.second.second == 1)
+            for (uint32_t v : {e.second.first.first, e.second.first.second})
+                for (int k = 0; k < 3; ++k) segments->push_back(mesh_.pos[3 * size_t(v) + size_t(k)]);
+    return true;
 }

@@ -13,7 +13,9 @@
 #include "render/ImageFile.h"
 #include "render/MeshRenderer.h"
 
+#include <array>
 #include <chrono>
+#include <unordered_map>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -638,4 +640,42 @@ bool AtlasSession::patchFrame(int patch, PatchFrame* frame) const
     }
     *frame = computePatchFrame(tris);
     return frame->ok;
+}
+
+// the edges that belong to exactly one face of the given set are its border
+template <class Faces, class Corner, class Pos>
+static void borderSegments(const Faces& faces, Corner corner, Pos pos, std::vector<float>* out)
+{
+    struct Edge { uint32_t a, b; int count; };
+    std::unordered_map<uint64_t, Edge> edges;
+    for (const auto& f : faces)
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t a = corner(f, k), b = corner(f, (k + 1) % 3);
+            const uint64_t key = (uint64_t(std::min(a, b)) << 32) | std::max(a, b);
+            auto it = edges.emplace(key, Edge{a, b, 0}).first;
+            ++it->second.count;
+        }
+    out->clear();
+    for (const auto& e : edges)
+        if (e.second.count == 1) {
+            float p[3];
+            pos(e.second.a, p); out->insert(out->end(), p, p + 3);
+            pos(e.second.b, p); out->insert(out->end(), p, p + 3);
+        }
+}
+
+bool AtlasSession::patchBorder(int patch, std::vector<float>* segments) const
+{
+    if (!resultValid_ || patch < 0 || result_.labels.size() != mesh_.n_faces()) return false;
+    std::vector<std::array<uint32_t, 3>> faces;
+    for (auto f : mesh_.faces()) {
+        if (result_.labels[size_t(f.idx())] != patch) continue;
+        std::array<uint32_t, 3> t{};
+        int c = 0;
+        for (auto v : mesh_.fv_range(f)) { t[size_t(c)] = uint32_t(v.idx()); if (++c == 3) break; }
+        faces.push_back(t);
+    }
+    borderSegments(faces, [](const std::array<uint32_t, 3>& f, int k) { return f[size_t(k)]; },
+                   [&](uint32_t v, float* p) { const auto q = mesh_.point(TriMesh::VertexHandle(int(v))); for (int k = 0; k < 3; ++k) p[k] = float(q[k]); }, segments);
+    return true;
 }
