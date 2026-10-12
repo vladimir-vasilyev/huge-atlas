@@ -3,6 +3,7 @@
 #include "core/MeshTypes.h"
 #include "core/ObjLoader.h"
 #include "app/Preset.h"
+#include "core/PatchFrame.h"
 #include "param/LayoutReport.h"
 #include "param/AtlasBake.h"
 #include "param/AtlasPacker.h"
@@ -142,6 +143,7 @@ public:
     // The unfolded patches of the last run, for the bad patches (Debug > Save Bad Patches).
     const std::vector<PatchParam>& params() const { return result_.params; }
     std::vector<PatchRow> patchRows() const;
+    bool patchFrame(int patch, PatchFrame* frame) const;   // where a patch is and which way it faces (for the camera)
     const std::vector<int>& faceToPatch() const { return result_.labels; }
     Preset preset(const SessionSettings& settings) const;   // the settings of the run as a preset
 

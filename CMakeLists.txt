@@ -66,6 +66,8 @@ target_include_directories(meshopt SYSTEM PUBLIC ${MO_DIR})
 
 # ---------------------------------------------------------------- Core (no GL/ImGui)
 add_library(vsa_core STATIC
+    src/core/PatchFrame.h
+    src/core/PatchFrame.cpp
     src/chat/Json.h
     src/chat/Json.cpp
     src/chat/Tools.h

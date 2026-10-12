@@ -31,6 +31,7 @@ public:
     bool setTexture(const std::vector<float>& cornerUV, int width, int height, const unsigned char* rgba, std::string* error);
     const FlatResult& result() const { return result_; }
     std::vector<PatchRow> patchRows() const;
+    bool patchFrame(int patch, PatchFrame* frame) const;
     Preset preset(const SessionSettings& settings) const;
     const std::vector<int32_t>& patchOfFace() const { return result_.patchOfFace; }
     bool loaded() const { return loaded_; }

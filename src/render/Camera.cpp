@@ -84,6 +84,8 @@ void Camera::view(float m[16]) const
     m[12] = float(panX_); m[13] = float(panY_); m[14] = float(-dist_); m[15] = 1;
 }
 
+double Camera::halfFieldTan(double aspect) { return std::tan(0.5 * 0.7854) * fieldFit(aspect); }
+
 void Camera::viewProj(float aspect, float out[16]) const
 {
     float V[16];
@@ -98,4 +100,75 @@ void Camera::viewProj(float aspect, float out[16]) const
             for (int k = 0; k < 4; ++k) s += P[k*4 + r] * V[c*4 + k];
             out[c*4 + r] = s;
         }
+}
+
+void Camera::axes(double x[3], double y[3], double z[3]) const
+{
+    const double w = q_[0], qx = q_[1], qy = q_[2], qz = q_[3];
+    const double R[3][3] = {
+        {1 - 2*(qy*qy + qz*qz), 2*(qx*qy - w*qz),     2*(qx*qz + w*qy)},
+        {2*(qx*qy + w*qz),     1 - 2*(qx*qx + qz*qz), 2*(qy*qz - w*qx)},
+        {2*(qx*qz - w*qy),     2*(qy*qz + w*qx),     1 - 2*(qx*qx + qy*qy)}};
+    for (int k = 0; k < 3; ++k) { x[k] = R[0][k]; y[k] = R[1][k]; z[k] = R[2][k]; }   // the rows of R are the axes of the view
+}
+
+Camera::State Camera::blend(const State& a, const State& b, double t)
+{
+    State r;
+    double dot = 0;
+    for (int i = 0; i < 4; ++i) dot += a.q[i] * b.q[i];
+    const double sign = dot < 0 ? -1.0 : 1.0;
+    double n = 0;
+    for (int i = 0; i < 4; ++i) { r.q[i] = (1 - t) * a.q[i] + t * sign * b.q[i]; n += r.q[i] * r.q[i]; }
+    n = std::sqrt(n);
+    for (double& v : r.q) v /= n;
+    r.dist = (1 - t) * a.dist + t * b.dist;
+    r.panX = (1 - t) * a.panX + t * b.panX;
+    r.panY = (1 - t) * a.panY + t * b.panY;
+    return r;
+}
+
+Camera::State Camera::lookAtState(const double c[3], const double nIn[3], double distance, const double upIn[3], const double fallbackIn[3])
+{
+    auto norm = [](double v[3]) { const double l = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]); if (l > 1e-12) for (int k = 0; k < 3; ++k) v[k] /= l; return l; };
+    auto cross = [](const double a[3], const double b[3], double o[3]) { o[0] = a[1]*b[2] - a[2]*b[1]; o[1] = a[2]*b[0] - a[0]*b[2]; o[2] = a[0]*b[1] - a[1]*b[0]; };
+    double z[3] = {nIn[0], nIn[1], nIn[2]};   // towards the viewer: the camera is on the side the normal points to
+    norm(z);
+    double u[3] = {upIn[0], upIn[1], upIn[2]};
+    norm(u);
+    // the up direction without its part along the view axis; if nothing is left, the other hint
+    auto flatten = [&](const double v[3], double out[3]) {
+        const double d = v[0]*z[0] + v[1]*z[1] + v[2]*z[2];
+        for (int k = 0; k < 3; ++k) out[k] = v[k] - d * z[k];
+        return norm(out);
+    };
+    double y[3];
+    if (flatten(u, y) < 0.3) { double f[3] = {fallbackIn[0], fallbackIn[1], fallbackIn[2]}; norm(f); if (flatten(f, y) < 1e-6) { const double a[3] = {1, 0, 0}; flatten(a, y); } }
+    double x[3];
+    cross(y, z, x);   // right = up x back
+    norm(x);
+    cross(z, x, y);   // an exact right-handed frame
+    // rotation matrix with rows x, y, z -> quaternion
+    const double R[3][3] = {{x[0], x[1], x[2]}, {y[0], y[1], y[2]}, {z[0], z[1], z[2]}};
+    State s;
+    const double tr = R[0][0] + R[1][1] + R[2][2];
+    if (tr > 0) {
+        const double S = std::sqrt(tr + 1.0) * 2;
+        s.q[0] = 0.25 * S; s.q[1] = (R[2][1] - R[1][2]) / S; s.q[2] = (R[0][2] - R[2][0]) / S; s.q[3] = (R[1][0] - R[0][1]) / S;
+    } else if (R[0][0] > R[1][1] && R[0][0] > R[2][2]) {
+        const double S = std::sqrt(1.0 + R[0][0] - R[1][1] - R[2][2]) * 2;
+        s.q[0] = (R[2][1] - R[1][2]) / S; s.q[1] = 0.25 * S; s.q[2] = (R[0][1] + R[1][0]) / S; s.q[3] = (R[0][2] + R[2][0]) / S;
+    } else if (R[1][1] > R[2][2]) {
+        const double S = std::sqrt(1.0 + R[1][1] - R[0][0] - R[2][2]) * 2;
+        s.q[0] = (R[0][2] - R[2][0]) / S; s.q[1] = (R[0][1] + R[1][0]) / S; s.q[2] = 0.25 * S; s.q[3] = (R[1][2] + R[2][1]) / S;
+    } else {
+        const double S = std::sqrt(1.0 + R[2][2] - R[0][0] - R[1][1]) * 2;
+        s.q[0] = (R[1][0] - R[0][1]) / S; s.q[1] = (R[0][2] + R[2][0]) / S; s.q[2] = (R[1][2] + R[2][1]) / S; s.q[3] = 0.25 * S;
+    }
+    // the view space point of c is R c + (pan, -dist): put it at (0, 0, -distance)
+    const double rc[3] = {x[0]*c[0] + x[1]*c[1] + x[2]*c[2], y[0]*c[0] + y[1]*c[1] + y[2]*c[2], z[0]*c[0] + z[1]*c[1] + z[2]*c[2]};
+    s.panX = -rc[0];
+    s.panY = -rc[1];
+    s.dist = distance + rc[2];
+    return s;
 }

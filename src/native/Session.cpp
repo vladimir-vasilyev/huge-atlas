@@ -624,3 +624,18 @@ std::string AtlasSession::meshInfo() const
                   d.nonManifoldVertices, d.isolatedVertices);
     return buf;
 }
+
+bool AtlasSession::patchFrame(int patch, PatchFrame* frame) const
+{
+    if (!resultValid_ || patch < 0 || result_.labels.size() != mesh_.n_faces()) return false;
+    std::vector<PatchTriangle> tris;
+    for (auto f : mesh_.faces()) {
+        if (result_.labels[size_t(f.idx())] != patch) continue;
+        PatchTriangle t;
+        int c = 0;
+        for (auto v : mesh_.fv_range(f)) { const auto q = mesh_.point(v); for (int k = 0; k < 3; ++k) t.p[c][k] = q[k]; if (++c == 3) break; }
+        tris.push_back(t);
+    }
+    *frame = computePatchFrame(tris);
+    return frame->ok;
+}

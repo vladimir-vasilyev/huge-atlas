@@ -333,3 +333,23 @@ std::vector<PatchRow> HugeSession::patchRows() const
     }
     return rows;
 }
+
+bool HugeSession::patchFrame(int patch, PatchFrame* frame) const
+{
+    if (!resultValid_ || patch < 0 || size_t(patch) >= result_.patches.size()) return false;
+    const FlatPatch& p = result_.patches[size_t(patch)];
+    // a sample of the faces is enough for the centre, the normal and the extent of a patch of millions of triangles
+    const size_t stride = std::max<size_t>(1, p.faces.size() / 60000);
+    std::vector<PatchTriangle> tris;
+    for (size_t i = 0; i < p.faces.size(); i += stride) {
+        PatchTriangle t;
+        for (int c = 0; c < 3; ++c) {
+            const size_t v = mesh_.idx[3 * size_t(p.faces[i]) + size_t(c)];
+            for (int k = 0; k < 3; ++k) t.p[c][k] = mesh_.pos[3 * v + size_t(k)];
+        }
+        tris.push_back(t);
+    }
+    *frame = computePatchFrame(tris);
+    if (frame->ok) frame->area *= double(stride);
+    return frame->ok;
+}

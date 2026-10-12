@@ -53,6 +53,9 @@
     NSPoint _last;
     NSPoint _downPoint;     // where the left button went down: a click is a release that did not move
     BOOL _dragged;
+    NSTimer* _flyTimer;
+    Camera::State _flyFrom, _flyTo;
+    CFTimeInterval _flyStart;
 }
 @property (nonatomic, copy) void (^onDropURL)(NSURL*);
 @property (nonatomic, copy) void (^onGpuTime)(double ms);
@@ -63,7 +66,10 @@
 @property (nonatomic, copy) void (^onBrushEnd)(void);
 // A click (no drag) on the model gives the face under the cursor, -1 for the empty space or Esc (the patch of the face is chosen).
 @property (nonatomic, copy) void (^onPickFace)(int face);
-- (int)faceAtViewPoint:(NSPoint)p;   // p in the coordinates of the view (origin bottom left)
+- (int)faceAtViewPoint:(NSPoint)p;
+// The camera goes to the ray out of the surface at `centre` along `normal` and looks back at the centre, far enough for the points to fit
+// the view; the world up stays up on the screen (the view is not rolled). Animated, and any mouse action in the view stops the flight.
+- (void)lookAtCentre:(const double*)centre normal:(const double*)normal points:(const std::vector<float>&)points animated:(BOOL)animated;   // p in the coordinates of the view (origin bottom left)
 - (void)setMsaa:(int)samples;
 - (void)setCull:(BOOL)on;
 - (BOOL)cull;
@@ -285,6 +291,66 @@
     if (!ids.empty() && _onBrush) _onBrush(ids);
 }
 
+- (void)stopFlight { [_flyTimer invalidate]; _flyTimer = nil; }
+
+- (void)lookAtCentre:(const double*)c normal:(const double*)n points:(const std::vector<float>&)pts animated:(BOOL)animated
+{
+    const NSRect b = self.bounds;
+    const double aspect = b.size.height > 0 ? b.size.width / b.size.height : 1.0;
+    const double up[3] = {0, 1, 0};
+    double cx[3], cy[3], cz[3];
+    _camera.axes(cx, cy, cz);
+    // the axes of the new view first (they do not depend on the distance), then the distance that fits the patch
+    Camera probe;
+    probe.lookAt(c, n, 1.0, up, cy);
+    double x[3], y[3], z[3];
+    probe.axes(x, y, z);
+    double halfW = 0.0, halfH = 0.0, toward = 0.0;   // the extent across the view, and how far the patch comes out towards the camera
+    for (size_t i = 0; i + 2 < pts.size(); i += 3) {
+        const double d[3] = {pts[i] - c[0], pts[i + 1] - c[1], pts[i + 2] - c[2]};
+        halfW = std::max(halfW, std::abs(d[0] * x[0] + d[1] * x[1] + d[2] * x[2]));
+        halfH = std::max(halfH, std::abs(d[0] * y[0] + d[1] * y[1] + d[2] * y[2]));
+        toward = std::max(toward, d[0] * z[0] + d[1] * z[1] + d[2] * z[2]);
+    }
+    const double t = Camera::halfFieldTan(aspect);
+    double distance = std::max(halfH * 1.15 / t, halfW * 1.15 / (t * aspect)) + toward;   // a margin of 15%; the nearest part of the patch must fit too
+    distance = std::max(std::max(0.35, toward + 0.12), std::min(12.0, distance));       // not closer than the near plane allows, not lost in the distance
+    if (getenv("HUGE_NATIVE_VERBOSE")) printf("LOOKAT: centre %.3f %.3f %.3f normal %.3f %.3f %.3f halfW %.3f halfH %.3f toward %.3f aspect %.2f t %.3f distance %.3f points %zu\n", c[0], c[1], c[2], n[0], n[1], n[2], halfW, halfH, toward, aspect, t, distance, pts.size() / 3);
+    const Camera::State target = Camera::lookAtState(c, n, distance, up, cy);
+    [self stopFlight];
+    if (!animated) {
+        _camera.setState(target);
+        if (getenv("HUGE_NATIVE_VERBOSE")) {   // where the points of the patch fall on the screen: all of them must be inside [-1, 1]
+            float vp[16];
+            _camera.viewProj(float(aspect), vp);
+            double mx = 0, my = 0;
+            for (size_t i = 0; i + 2 < pts.size(); i += 3) {
+                const double w = vp[3] * pts[i] + vp[7] * pts[i + 1] + vp[11] * pts[i + 2] + vp[15];
+                mx = std::max(mx, std::abs((vp[0] * pts[i] + vp[4] * pts[i + 1] + vp[8] * pts[i + 2] + vp[12]) / w));
+                my = std::max(my, std::abs((vp[1] * pts[i] + vp[5] * pts[i + 1] + vp[9] * pts[i + 2] + vp[13]) / w));
+            }
+            printf("LOOKAT: the points fall within x +-%.2f, y +-%.2f of the screen\n", mx, my);
+        }
+        [self setNeedsDisplay:YES];
+        return;
+    }
+    _flyFrom = _camera.state();
+    _flyTo = target;
+    _flyStart = CACurrentMediaTime();
+    __weak SceneView* weak = self;
+    _flyTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:YES block:^(NSTimer* timer) {
+        SceneView* me = weak;
+        if (!me) { [timer invalidate]; return; }
+        double s = (CACurrentMediaTime() - me->_flyStart) / 0.35;
+        const BOOL last = s >= 1.0;
+        s = std::min(1.0, s);
+        s = s * s * (3.0 - 2.0 * s);   // ease in and out
+        me->_camera.setState(Camera::blend(me->_flyFrom, me->_flyTo, s));
+        [me setNeedsDisplay:YES];
+        if (last) [me stopFlight];
+    }];
+}
+
 - (int)faceAtViewPoint:(NSPoint)viewPoint
 {
     if (!_hasMesh) return -1;
@@ -316,6 +382,7 @@
 
 - (void)mouseDown:(NSEvent*)e
 {
+    [self stopFlight];
     [self.window makeFirstResponder:self];
     if (_brushActive && !(e.modifierFlags & NSEventModifierFlagOption)) { [self paintWith:e]; return; }
     _dragged = NO;
@@ -358,7 +425,7 @@
     _camera.zoomAt(amount, 2.0 * p.x / w - 1.0, 1.0 - 2.0 * p.y / h, w / h);
     [self setNeedsDisplay:YES];
 }
-- (void)scrollWheel:(NSEvent*)e { [self zoom:(e.hasPreciseScrollingDeltas ? e.scrollingDeltaY * 0.1 : e.scrollingDeltaY) at:e]; }
+- (void)scrollWheel:(NSEvent*)e { [self stopFlight]; [self zoom:(e.hasPreciseScrollingDeltas ? e.scrollingDeltaY * 0.1 : e.scrollingDeltaY) at:e]; }
 - (void)magnifyWithEvent:(NSEvent*)e { [self zoom:e.magnification * 8.0 at:e]; }
 
 - (NSMenu*)menuForEvent:(NSEvent*)e
@@ -639,6 +706,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     dispatch_semaphore_t _atlasSignal;   // released when a run the assistant started has ended
     BOOL _lastOK;
     BOOL _checkerOn;            // the UV checker is drawn (the renderer holds the atlas coordinates)
+    BOOL _lookAtPatch;          // the option: choosing a patch in the atlas or the table turns the camera to it
     NSInteger _selectedPatch;   // the row chosen in the patch table (-1: none)
     BOOL _sourceTextureShown;   // the mesh is shown with the texture of its file (no atlas yet)
     NSString* _lastError;
@@ -687,6 +755,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     BOOL _running;
 }
 - (void)showVsaLab:(id)sender;
+- (void)selectPatch:(NSInteger)patch focus:(BOOL)focus;
+- (void)lookAtSelectedPatch:(id)sender;
 - (Json)hostOpen:(NSString*)path;
 - (Json)hostMakeAtlas:(const Json&)args;
 - (Json)hostRepack:(int)size mip:(int)mip;
@@ -815,8 +885,9 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     __weak AppController* weakDev = self;
     _dev.onViewOptions = ^{ [weakDev applyViewOptions]; };
     _scene.onGpuTime = ^(double ms) { AppController* me = weakDev; if (me) [me->_dev setGpuMilliseconds:ms]; };
-    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) [me selectPatch:patch]; };
-    _scene.onPickFace = ^(int face) { AppController* me = weakDev; if (me) [me selectPatch:[me patchOfFace:face]]; };
+    _lookAtPatch = [NSUserDefaults.standardUserDefaults objectForKey:@"lookAtPatch"] ? [NSUserDefaults.standardUserDefaults boolForKey:@"lookAtPatch"] : YES;
+    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) [me selectPatch:patch focus:YES]; };
+    _scene.onPickFace = ^(int face) { AppController* me = weakDev; if (me) [me selectPatch:[me patchOfFace:face] focus:NO]; };
     _dev.onColorMode = ^(NSInteger mode) { [weakDev recolorPatches]; };
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel,
@@ -935,7 +1006,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     // the atlas on the trailing side: hidden until there is one, opened and closed by the toolbar and by View > Show UV Layout
     _uv = [[UvView alloc] initWithFrame:NSMakeRect(0, 0, 360, 600)];
     __weak AppController* weakUv = self;
-    _uv.onPickPatch = ^(NSInteger patch) { AppController* me = weakUv; if (me) [me selectPatch:patch]; };
+    _uv.onPickPatch = ^(NSInteger patch) { AppController* me = weakUv; if (me) [me selectPatch:patch focus:YES]; };
     NSViewController* uvVC = [[NSViewController alloc] init];
     uvVC.view = _uv;
     _uvItem = [NSSplitViewItem splitViewItemWithViewController:uvVC];
@@ -1120,6 +1191,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     add(view, @"Reset Camera", @selector(resetCamera:), @"0", NSEventModifierFlagCommand, self);
     [view addItem:[NSMenuItem separatorItem]];
     add(view, @"Show UV Layout", @selector(toggleUVLayout:), @"u", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    add(view, @"Look at Selected Patch", @selector(lookAtSelectedPatch:), @"f", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
+    add(view, @"Look at a Patch When It Is Chosen in the Atlas or the Table", @selector(toggleLookAtPatch:), @"", 0, self);
     add(view, @"Show Assistant", @selector(toggleAssistant:), @"i", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     add(view, @"Show Grid", @selector(toggleGrid:), @"g", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
     _wireItem = add(view, @"Show Wireframe", @selector(toggleWireframe:), @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption, self);
@@ -1171,6 +1244,8 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
         item.title = _uvItem.collapsed ? @"Show UV Layout" : @"Hide UV Layout";
         return [self hasResult];
     }
+    if (a == @selector(lookAtSelectedPatch:)) return _selectedPatch >= 0 && [self hasResult] && !_running;
+    if (a == @selector(toggleLookAtPatch:)) { item.state = _lookAtPatch ? NSControlStateValueOn : NSControlStateValueOff; return YES; }
     if (a == @selector(saveBadPatches:)) return !_running && [self hasResult];
     if (a == @selector(loadBadPatch:)) return !_running;
     if (a == @selector(showVsaLab:)) return YES;
@@ -1495,6 +1570,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
             NSEvent* up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:wp modifierFlags:0 timestamp:0 windowNumber:_window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
             [_uv mouseDown:down];
             [_uv mouseUp:up];
+            if (getenv("HUGE_NATIVE_REFOCUS")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self lookAtSelectedPatch:nil]; });   // after the UV pane has opened and the view has its final size
             printf("NATIVE CLICKUV: direct hit %ld, selected %ld\n", long([_uv patchAtViewPoint:vp]), long(_selectedPatch));
         }
         if (getenv("HUGE_NATIVE_INSPECT")) { _selectedPatch = 0; [self showPatchUnfolding:atoi(getenv("HUGE_NATIVE_INSPECT")) > 1]; }   // testing hook: 1 inspect, 2 unfold again
@@ -1956,7 +2032,9 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
 
 // One patch is chosen (-1: none): in the table, white in the 3D view and heavier in the UV pane, whoever chose it: a row, a click in the
 // 3D view or a click in the UV pane
-- (void)selectPatch:(NSInteger)patch
+- (void)selectPatch:(NSInteger)patch { [self selectPatch:patch focus:NO]; }
+
+- (void)selectPatch:(NSInteger)patch focus:(BOOL)focus
 {
     if (![self hasResult] || _running) patch = -1;
     _selectedPatch = patch;
@@ -1967,6 +2045,22 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     BOOL found = NO;
     const PatchRow r = [_dev rowForPatch:patch found:&found];
     if (found) _status.stringValue = [NSString stringWithFormat:@"Patch %ld: %zu faces, %s, stretch %.2f, %s", long(patch), r.faces, r.method.c_str(), r.l2Mean, r.status.c_str()];
+    if (focus && _lookAtPatch) [self lookAtSelectedPatch:nil];
+}
+
+// the camera on the ray out of the middle of the patch, looking back at it
+- (void)lookAtSelectedPatch:(id)sender
+{
+    if (_selectedPatch < 0 || ![self hasResult] || _running) return;
+    PatchFrame frame;
+    if (!(_useHuge ? _huge.patchFrame(int(_selectedPatch), &frame) : _session.patchFrame(int(_selectedPatch), &frame))) return;
+    [_scene lookAtCentre:frame.centre normal:frame.normal points:frame.points animated:!getenv("HUGE_NATIVE_SHOT")];
+}
+
+- (void)toggleLookAtPatch:(id)sender
+{
+    _lookAtPatch = !_lookAtPatch;
+    [NSUserDefaults.standardUserDefaults setBool:_lookAtPatch forKey:@"lookAtPatch"];
 }
 
 // the patches painted by the mode of the table (patch colors, problems, stretch); the chosen patch is white

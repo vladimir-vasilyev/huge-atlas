@@ -19,6 +19,23 @@ public:
     // point is taken on the plane through the orbit centre
     void zoomAt(double wheelDelta, double ndcX, double ndcY, double aspect);
 
+    // The whole pose, to move the camera between two views.
+    struct State { double q[4]; double dist; double panX, panY; };
+    State state() const { return {{q_[0], q_[1], q_[2], q_[3]}, dist_, panX_, panY_}; }
+    void setState(const State& s) { for (int i = 0; i < 4; ++i) q_[i] = s.q[i]; dist_ = s.dist; panX_ = s.panX; panY_ = s.panY; }
+    static State blend(const State& a, const State& b, double t);   // t in [0, 1]; the rotation takes the short way
+
+    // The pose that looks at `center` from the point center + normal * distance (the camera sits on the ray out of the surface and
+    // looks back along it). The view is turned about its own axis as little as possible away from the world up: `up` is the world
+    // direction that should point up on the screen; when it is (nearly) along the normal, `fallbackUp` (e.g. the current up) is used.
+    static State lookAtState(const double center[3], const double normal[3], double distance, const double up[3], const double fallbackUp[3]);
+    void lookAt(const double center[3], const double normal[3], double distance, const double up[3], const double fallbackUp[3])
+    { setState(lookAtState(center, normal, distance, up, fallbackUp)); }
+    // The axes of the view in world coordinates: x to the right, y up, z towards the viewer.
+    void axes(double x[3], double y[3], double z[3]) const;
+
+    // tan of half the vertical field of view of an area of this aspect (what the projection uses): to fit things into the view
+    static double halfFieldTan(double aspect);
     void viewProj(float aspect, float out[16]) const;
     void view(float out[16]) const;
 
