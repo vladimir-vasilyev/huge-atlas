@@ -21,6 +21,7 @@
 #include "chat/Provider.h"
 #include "chat/Tools.h"
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -48,6 +49,8 @@
 - (void)showFlat:(const FlatMesh&)mesh cornerUV:(const std::vector<float>&)uv rgba:(const std::vector<unsigned char>&)rgba;
 - (void)clearMesh;
 - (void)setShowGrid:(BOOL)on;
+- (void)setFaceColors:(const std::vector<float>&)rgb;
+- (void)setFaceRgba:(const std::vector<unsigned char>&)rgba;
 - (BOOL)showGrid;
 - (void)setTexture:(int)side pixels:(const unsigned char*)pixels;
 - (void)setTextureWidth:(int)w height:(int)h pixels:(const unsigned char*)pixels;
@@ -132,6 +135,20 @@
     if (!_hasMesh) _camera.reset();
     _hasMesh = YES;
     _cull = mesh.faceCount() > 500000;   // as in the other build: a scan is drawn without its back faces
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setFaceColors:(const std::vector<float>&)rgb
+{
+    [self ensureReady];
+    _renderer.setFaceColors(rgb);
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setFaceRgba:(const std::vector<unsigned char>&)rgba
+{
+    [self ensureReady];
+    _renderer.setFaceColorsRgba(rgba);
     [self setNeedsDisplay:YES];
 }
 
@@ -283,6 +300,7 @@
     NSPoint _pan;
     NSPoint _last;
 }
+@property (nonatomic) NSInteger selectedPatch;   // its chart is drawn heavier (-1: none)
 - (void)setCharts:(std::vector<UvChart>)charts texture:(const unsigned char*)rgba side:(int)side;
 - (void)clear;
 @end
@@ -361,7 +379,8 @@
             CGPathAddLineToPoint(fill, nullptr, pt(c.triangles[t + 2]).x, pt(c.triangles[t + 2]).y);
             CGPathCloseSubpath(fill);
         }
-        CGContextSetRGBFillColor(g, rgb[0], rgb[1], rgb[2], _image ? 0.10 : 0.55);
+        const BOOL chosen = _selectedPatch >= 0 && c.patch == _selectedPatch;
+        CGContextSetRGBFillColor(g, rgb[0], rgb[1], rgb[2], chosen ? 0.9 : (_image ? 0.10 : 0.55));
         CGContextAddPath(g, fill);
         CGContextFillPath(g);
         CGPathRelease(fill);
@@ -380,7 +399,7 @@
             CGPathRelease(bad);
         }
         CGContextSetRGBStrokeColor(g, rgb[0], rgb[1], rgb[2], 0.95);
-        CGContextSetLineWidth(g, 1.5);
+        CGContextSetLineWidth(g, chosen ? 3.5 : 1.5);
         for (size_t i = 0; i + 1 < c.segments.size(); i += 2) {   // the huge mode: only the border edges
             CGContextMoveToPoint(g, pt(c.segments[i]).x, pt(c.segments[i]).y);
             CGContextAddLineToPoint(g, pt(c.segments[i + 1]).x, pt(c.segments[i + 1]).y);
@@ -475,6 +494,7 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     dispatch_semaphore_t _openSignal;    // released when a file the assistant opened is shown (or failed)
     dispatch_semaphore_t _atlasSignal;   // released when a run the assistant started has ended
     BOOL _lastOK;
+    NSInteger _selectedPatch;   // the row chosen in the patch table (-1: none)
     BOOL _sourceTextureShown;   // the mesh is shown with the texture of its file (no atlas yet)
     NSString* _lastError;
     UvView* _uv;
@@ -644,6 +664,10 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     _repackButton.enabled = NO;
     _repackButton.toolTip = @"Pack the same patches again with the texture size and mip levels set above (⌥⌘R)";
     _dev = [[DeveloperPanel alloc] initWithTarget:self compareAction:@selector(compareLayouts:)];
+    _selectedPatch = -1;
+    __weak AppController* weakDev = self;
+    _dev.onPatchSelected = ^(NSInteger patch) { AppController* me = weakDev; if (me) { me->_selectedPatch = patch; me->_uv.selectedPatch = patch; [me recolorPatches]; } };
+    _dev.onColorMode = ^(NSInteger mode) { [weakDev recolorPatches]; };
     NSStackView* stack = [NSStackView stackViewWithViews:@[
         label(@"Mesh", 11, YES, YES), _meshLabel,
         label(@"Settings", 11, YES, YES), label(@"Quality", 12), _quality, _manual, patchRow,
@@ -1247,6 +1271,9 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     {
         const std::string rep = _useHuge ? _huge.report() : _session.report();
         [_dev setReport:[NSString stringWithUTF8String:rep.c_str()]];
+        [_dev setPatchRows:_useHuge ? _huge.patchRows() : _session.patchRows()];
+        _selectedPatch = -1;
+        _uv.selectedPatch = -1;
         if (getenv("HUGE_NATIVE_AUTORUN") && !keepView) printf("NATIVE REPORT:\n%s", rep.c_str());
     }
     if (_prefs.openUV) [_uvItem.animator setCollapsed:NO];
@@ -1255,6 +1282,17 @@ std::unique_ptr<AtlasHost> makeNativeHost(AppController* controller);
     if (getenv("HUGE_NATIVE_AUTORUN")) {
         printf("NATIVE: %s%s\n", text.UTF8String, [self hasBaked] ? " (texture baked)" : "");
         if (getenv("HUGE_NATIVE_SAVEBAD")) [self saveBadPatches:nil];   // testing hook
+        if (getenv("HUGE_NATIVE_PATCHES")) {   // testing hook: the patch table, the paint modes and a selection
+            const std::vector<PatchRow> rows = _useHuge ? _huge.patchRows() : _session.patchRows();
+            size_t bad = 0;
+            for (const PatchRow& r : rows) bad += r.bad;
+            printf("NATIVE PATCHES: %zu rows, %zu bad; first: #%d %zu faces %s L2 %.3f %s\n", rows.size(), bad, rows.empty() ? -1 : rows[0].index,
+                   rows.empty() ? size_t(0) : rows[0].faces, rows.empty() ? "" : rows[0].method.c_str(), rows.empty() ? 0.0 : rows[0].l2Mean,
+                   rows.empty() ? "" : rows[0].status.c_str());
+            _selectedPatch = 0;
+            _uv.selectedPatch = 0;
+            [self recolorPatches];
+        }
         if (!keepView) {
             if (const char* r = getenv("HUGE_NATIVE_REPACK")) {   // "resolution:mip": pack again as the button does, then look at the result
                 int res = 0, mip = 0;
@@ -1605,6 +1643,50 @@ static Json errorJson(NSString* message) { Json e = Json::object(); e["error"] =
     Json r = Json::object();
     r["saved"] = path;
     return r;
+}
+
+// the patches painted by the mode of the table (patch colors, problems, stretch); the chosen patch is white
+- (void)recolorPatches
+{
+    if (![self hasResult] || _running) return;
+    const std::vector<PatchRow> rows = _useHuge ? _huge.patchRows() : _session.patchRows();
+    const NSInteger mode = _dev.colorMode;
+    auto rgbOf = [&](size_t i, float* c) {
+        const PatchRow& r = rows[i];
+        if (int(i) == _selectedPatch) { c[0] = c[1] = c[2] = 1.0f; return; }
+        if (mode == 1) { if (r.bad) { c[0] = 1.0f; c[1] = 0.25f; c[2] = 0.2f; } else { c[0] = 0.72f; c[1] = 0.76f; c[2] = 0.8f; } return; }
+        if (mode == 2) {
+            const float t = float(std::max(0.0, std::min(1.0, (r.l2Mean - 1.0) / 1.5)));
+            c[0] = 0.2f + 0.8f * t; c[1] = 0.5f * (1.0f - t) + 0.15f; c[2] = 0.95f * (1.0f - t) + 0.15f;
+            return;
+        }
+        AtlasSession::patchColor(int(i), c);
+    };
+    if (_useHuge) {
+        const std::vector<int32_t>& of = _huge.patchOfFace();
+        std::vector<unsigned char> rgba(of.size() * 4, 190);
+        std::vector<std::array<unsigned char, 3>> table(rows.size());
+        for (size_t i = 0; i < rows.size(); ++i) {
+            float c[3];
+            rgbOf(i, c);
+            for (int k = 0; k < 3; ++k) table[i][size_t(k)] = (unsigned char)(255.0f * std::max(0.0f, std::min(1.0f, c[k])));
+        }
+        for (size_t f = 0; f < of.size(); ++f) {
+            rgba[4 * f + 3] = 255;
+            if (of[f] >= 0 && size_t(of[f]) < table.size()) { rgba[4 * f] = table[size_t(of[f])][0]; rgba[4 * f + 1] = table[size_t(of[f])][1]; rgba[4 * f + 2] = table[size_t(of[f])][2]; }
+            else { rgba[4 * f] = rgba[4 * f + 1] = rgba[4 * f + 2] = 190; }
+        }
+        [_scene setFaceRgba:rgba];
+    } else {
+        const std::vector<int>& of = _session.faceToPatch();
+        std::vector<float> rgb(of.size() * 3, 0.72f);
+        std::vector<std::array<float, 3>> table(rows.size());
+        for (size_t i = 0; i < rows.size(); ++i) rgbOf(i, table[i].data());
+        for (size_t f = 0; f < of.size(); ++f)
+            if (of[f] >= 0 && size_t(of[f]) < table.size()) for (int k = 0; k < 3; ++k) rgb[3 * f + size_t(k)] = table[size_t(of[f])][size_t(k)];
+        [_scene setFaceColors:rgb];
+    }
+    [_uv setNeedsDisplay:YES];
 }
 
 - (void)hostCancel { dispatch_async(dispatch_get_main_queue(), ^{ if (self->_running) [self cancelAtlas:nil]; }); }

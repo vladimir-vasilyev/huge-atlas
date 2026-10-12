@@ -505,3 +505,26 @@ std::vector<float> AtlasSession::badPatchColors() const
         }
     return colors;
 }
+
+std::vector<PatchRow> AtlasSession::patchRows() const
+{
+    std::vector<PatchRow> rows;
+    if (!resultValid_) return rows;
+    for (size_t i = 0; i < result_.params.size(); ++i) {
+        const PatchParam& p = result_.params[i];
+        PatchRow r;
+        r.index = int(i);
+        r.faces = p.patch.faceToGlobal.size();
+        r.method = paramMethodName(p.method);
+        r.l2Mean = p.distortion.l2Mean;
+        r.badArea = p.badAreaFraction;
+        if (!p.patch.isDisk()) r.status = "not a disk";
+        else if (p.method == ParamMethod::None || p.uv.empty()) r.status = "no uv";
+        else if (!p.injective) r.status = p.distortion.flipped ? "flipped" : "overlap";
+        else if (p.needsSplit) r.status = "stretch";
+        else r.status = "ok";
+        r.bad = r.status != "ok";
+        rows.push_back(std::move(r));
+    }
+    return rows;
+}

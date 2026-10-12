@@ -292,3 +292,22 @@ Preset HugeSession::preset(const SessionSettings& s) const
     p.refineSmoothLambda = s.dev.smoothing;
     return p;
 }
+
+std::vector<PatchRow> HugeSession::patchRows() const
+{
+    std::vector<PatchRow> rows;
+    if (!resultValid_) return rows;
+    for (size_t i = 0; i < result_.patches.size(); ++i) {
+        const FlatPatch& p = result_.patches[i];
+        PatchRow r;
+        r.index = int(i);
+        r.faces = p.faces.size();
+        r.method = paramMethodName(p.method);
+        r.l2Mean = p.distortion.l2Mean;
+        r.badArea = p.badAreaFraction;
+        r.status = p.method == ParamMethod::None ? "no uv" : !p.injective ? (p.distortion.flipped ? "flipped" : "overlap") : p.needsSplit ? "stretch" : "ok";
+        r.bad = r.status != "ok";
+        rows.push_back(std::move(r));
+    }
+    return rows;
+}

@@ -55,7 +55,14 @@
 
 @end
 
+@interface DeveloperPanel () <NSTableViewDataSource, NSTableViewDelegate>
+@end
+
 @implementation DeveloperPanel {
+    NSTableView* _table;
+    NSScrollView* _tableScroll;
+    NSPopUpButton* _colors;
+    std::vector<PatchRow> _rows;
     NSStackView* _view;
     NSButton* _compare;
     NSTextField* _report;
@@ -64,6 +71,7 @@
 }
 
 @synthesize view = _view, compareButton = _compare;
+@synthesize onPatchSelected, onColorMode;
 
 static NSTextField* heading(NSString* text)
 {
@@ -97,13 +105,47 @@ static NSTextField* heading(NSString* text)
     _report.selectable = YES;
     _report.preferredMaxLayoutWidth = 250;
 
+    // the patches of the last result: a table and the way they are painted
+    _table = [[NSTableView alloc] init];
+    _table.usesAlternatingRowBackgroundColors = YES;
+    _table.rowHeight = 16;
+    _table.headerView = [[NSTableHeaderView alloc] init];
+    _table.allowsEmptySelection = YES;
+    struct { NSString* ident; NSString* title; CGFloat width; } cols[] = {
+        {@"index", @"#", 34}, {@"faces", @"Faces", 52}, {@"method", @"Method", 66}, {@"l2", @"L2", 44}, {@"status", @"State", 62}};
+    for (const auto& c : cols) {
+        NSTableColumn* col = [[NSTableColumn alloc] initWithIdentifier:c.ident];
+        col.title = c.title;
+        col.width = c.width;
+        col.sortDescriptorPrototype = [NSSortDescriptor sortDescriptorWithKey:c.ident ascending:YES];
+        [_table addTableColumn:col];
+    }
+    _table.dataSource = self;
+    _table.delegate = self;
+    _tableScroll = [[NSScrollView alloc] init];
+    _tableScroll.documentView = _table;
+    _tableScroll.hasVerticalScroller = YES;
+    _tableScroll.borderType = NSBezelBorder;
+    _tableScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    [_tableScroll.heightAnchor constraintEqualToConstant:150].active = YES;
+    _tableScroll.accessibilityLabel = @"Patches";
+    _colors = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_colors addItemsWithTitles:@[@"Patch colors", @"Problems", @"Stretch"]];
+    _colors.target = self;
+    _colors.action = @selector(colorModeChanged:);
+    _colors.accessibilityLabel = @"Paint the patches by";
+    NSStackView* paint = [NSStackView stackViewWithViews:@[[NSTextField labelWithString:@"Paint by:"], _colors]];
+    paint.spacing = 6;
+
     _view = [NSStackView stackViewWithViews:@[
-        heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare, _report]];
+        heading(@"Developer"), _smoothing, _normalIter, _normalSigma, _lloyd, _depth, _atOnce, _percent, _lscm, _repair, _compare,
+        heading(@"Patches"), paint, _tableScroll, _report]];
     _view.orientation = NSUserInterfaceLayoutOrientationVertical;
     _view.alignment = NSLayoutAttributeLeading;
     _view.spacing = 6;
     for (NSView* v in @[(NSView*)_smoothing, (NSView*)_normalIter, (NSView*)_normalSigma, (NSView*)_lloyd, (NSView*)_depth, (NSView*)_atOnce, (NSView*)_percent])
         [v.widthAnchor constraintEqualToAnchor:_view.widthAnchor].active = YES;
+    [_tableScroll.widthAnchor constraintEqualToAnchor:_view.widthAnchor].active = YES;
     _view.hidden = YES;
     return self;
 }
@@ -124,6 +166,63 @@ static NSTextField* heading(NSString* text)
 }
 
 - (void)setReport:(NSString*)text { _report.stringValue = text; }
+
+- (NSInteger)colorMode { return _colors.indexOfSelectedItem; }
+- (void)colorModeChanged:(id)sender { if (self.onColorMode) self.onColorMode(_colors.indexOfSelectedItem); }
+
+- (void)setPatchRows:(std::vector<PatchRow>)rows
+{
+    _rows = std::move(rows);
+    [_table reloadData];
+}
+
+// ---- the table
+- (NSInteger)numberOfRowsInTableView:(NSTableView*)t { return NSInteger(_rows.size()); }
+
+- (NSView*)tableView:(NSTableView*)t viewForTableColumn:(NSTableColumn*)col row:(NSInteger)row
+{
+    NSTextField* cell = [t makeViewWithIdentifier:col.identifier owner:self];
+    if (!cell) {
+        cell = [NSTextField labelWithString:@""];
+        cell.identifier = col.identifier;
+        cell.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+        cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    }
+    const PatchRow& r = _rows[size_t(row)];
+    NSString* s = @"";
+    if ([col.identifier isEqual:@"index"]) s = [NSString stringWithFormat:@"%d", r.index];
+    else if ([col.identifier isEqual:@"faces"]) s = [NSString stringWithFormat:@"%zu", r.faces];
+    else if ([col.identifier isEqual:@"method"]) s = [NSString stringWithUTF8String:r.method.c_str()];
+    else if ([col.identifier isEqual:@"l2"]) s = [NSString stringWithFormat:@"%.2f", r.l2Mean];
+    else s = [NSString stringWithUTF8String:r.status.c_str()];
+    cell.stringValue = s;
+    cell.textColor = r.bad ? NSColor.systemRedColor : NSColor.labelColor;
+    return cell;
+}
+
+- (void)tableView:(NSTableView*)t sortDescriptorsDidChange:(NSArray<NSSortDescriptor*>*)old
+{
+    NSSortDescriptor* d = t.sortDescriptors.firstObject;
+    if (!d) return;
+    const BOOL up = d.ascending;
+    NSString* key = d.key;
+    std::stable_sort(_rows.begin(), _rows.end(), [&](const PatchRow& a, const PatchRow& b) {
+        double x, y;
+        if ([key isEqual:@"faces"]) { x = double(a.faces); y = double(b.faces); }
+        else if ([key isEqual:@"l2"]) { x = a.l2Mean; y = b.l2Mean; }
+        else if ([key isEqual:@"method"]) { return up ? a.method < b.method : a.method > b.method; }
+        else if ([key isEqual:@"status"]) { return up ? a.status < b.status : a.status > b.status; }
+        else { x = a.index; y = b.index; }
+        return up ? x < y : x > y;
+    });
+    [t reloadData];
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification*)n
+{
+    const NSInteger row = _table.selectedRow;
+    if (self.onPatchSelected) self.onPatchSelected(row >= 0 && size_t(row) < _rows.size() ? _rows[size_t(row)].index : -1);
+}
 
 - (void)setEnabled:(BOOL)on
 {

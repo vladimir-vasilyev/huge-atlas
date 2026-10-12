@@ -39,6 +39,7 @@ public:
                     const std::vector<unsigned char>& faceRgba = {});
     // New face colors for the current geometry (4 bytes per face); empty = gray.
     void setFaceColorsRgba(const std::vector<unsigned char>& faceRgba);
+    void setFaceColors(const std::vector<float>& rgbPerFace) { uploadColors(rgbPerFace.size() / 3, rgbPerFace); }   // 3 floats per face
 
     // The next upload() rebuilds the geometry (call after the mesh was replaced or edited).
     void invalidateGeometry() { ++geometryVersion_; }

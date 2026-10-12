@@ -48,6 +48,17 @@ struct UvChart {
     std::vector<unsigned> crossings;                // pairs of vertex indices: the border edges that cross another one: drawn magenta
 };
 
+// One line of the patch table of the developer mode.
+struct PatchRow {
+    int index = 0;
+    size_t faces = 0;
+    std::string method;
+    double l2Mean = 0.0;
+    double badArea = 0.0;
+    std::string status;     // ok / stretch / overlap / flipped / not a disk / no uv
+    bool bad = false;
+};
+
 class AtlasSession {
 public:
     using Progress = std::function<void(double fraction, const std::string& what)>;
@@ -103,6 +114,8 @@ public:
 
     // The unfolded patches of the last run, for the bad patches (Debug > Save Bad Patches).
     const std::vector<PatchParam>& params() const { return result_.params; }
+    std::vector<PatchRow> patchRows() const;
+    const std::vector<int>& faceToPatch() const { return result_.labels; }
     Preset preset(const SessionSettings& settings) const;   // the settings of the run as a preset
 
     // Debug > Load Bad Patch: an OBJ saved by Save Bad Patches becomes the mesh and its only patch; the preset next to it (same name,
