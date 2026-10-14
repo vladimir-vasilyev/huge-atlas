@@ -2,6 +2,10 @@
 
 Unwrap 100 million triangles seamlessly—with the market's only tool built for massive meshes.
 
+[![Watch the huge-atlas demo on YouTube](https://img.youtube.com/vi/ybh8OICI92E/hqdefault.jpg)](https://www.youtube.com/watch?v=ybh8OICI92E)
+
+**[Watch the demo video](https://www.youtube.com/watch?v=ybh8OICI92E)**: a 5.7M-face textured scan unwrapped in the native macOS app, with patch picking, the developer mode and the AI assistant.
+
 ![huge-atlas: a 3.2M face scan unwrapped in huge mode, 1102 patches packed into a 4096 x 4096 atlas, the baked texture on the model](docs/screenshot.jpg)
 
 *The Doom combat scene scan (3.2M faces, [Artec 3D](https://www.artec3d.com), CC BY 3.0) in huge mode, unwrapped in 24 seconds (10 s segmentation and unfolding, 14 s packing): 1102 patches, a 4096 x 4096 atlas with the texture baked into it.*
