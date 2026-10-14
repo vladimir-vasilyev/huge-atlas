@@ -2307,9 +2307,9 @@ static void M(void (^block)(void))
     M(^{ const double up[3] = {ux, uy, uz}; [me->_scene setWorldUp:up]; });
 
     // 1. the title over the empty scene with its coordinate grid
-    for (int i = 0; i < 66; ++i) {
+    for (int i = 0; i < 123; ++i) {   // the film follows the narration: every part starts where its sentence does
         M(^{ [me->_scene orbitYaw:0.004]; });
-        emit(nil, 1, i < 50 ? std::min(1.0, (i + 1) / 10.0) : std::max(0.0, (66 - i) / 16.0));
+        emit(nil, 1, i < 107 ? std::min(1.0, (i + 1) / 10.0) : std::max(0.0, (123 - i) / 16.0));
     }
 
     // 2. the scan is opened: 5.7M faces go straight into flat arrays, the texture of the file on the model
@@ -2318,12 +2318,12 @@ static void M(void (^block)(void))
     [self waitUntil:^BOOL { return !me->_running && me->_huge.loaded(); } timeout:300];
     M(^{ [me->_scene setShowGrid:NO]; const double dir[3] = {dx, dy, dz}; [me->_scene viewFromDirection:dir distance:1.85]; });   // the model on its feet, seen from above and the front
     usleep(2500 * 1000);   // the big texture settles on the GPU
-    scene(@"A big scan opens at once, with its texture: no mesh structure, straight from the file", 90, 0.034);
+    scene(@"A big scan opens at once, with its texture: no mesh structure, straight from the file", 108, 0.03);
 
     // 3. the atlas: the first seconds of the run, the stages in the status line
     M(^{ [me makeAtlas:nil]; });
     usleep(500 * 1000);
-    for (int i = 0; i < 66; ++i) emit(i < 3 ? nil : @"One button: segmentation, unfolding, packing, baking", 0, i < 3 ? 1.0 : std::min(1.0, std::min((i - 2) / 8.0, (66 - i) / 8.0)));
+    for (int i = 0; i < 63; ++i) emit(i < 3 ? nil : @"One button: segmentation, unfolding, packing, baking", 0, i < 3 ? 1.0 : std::min(1.0, std::min((i - 2) / 8.0, (63 - i) / 8.0)));
     [self waitUntil:^BOOL { return !me->_running && [me hasResult]; } timeout:1500];
     usleep(800 * 1000);
 
@@ -2331,9 +2331,9 @@ static void M(void (^block)(void))
     __block size_t patchCount = 0;
     __block std::vector<PatchRow> rows;
     M(^{ [me setViewMode:0]; patchCount = me->_huge.patchCount(); rows = me->_huge.patchRows(); });
-    scene([NSString stringWithFormat:@"%zu patches, unfolded and packed with room for mip levels", patchCount], 84, 0.024);
+    scene([NSString stringWithFormat:@"%zu patches, unfolded and packed with room for mip levels", patchCount], 120, 0.02);
     M(^{ [me setViewMode:3]; });
-    scene(@"The old texture re-baked into the new atlas", 48, 0.024);
+    scene(@"The old texture re-baked into the new atlas", 84, 0.02);
 
     // 5. a patch chosen in the atlas, then one chosen on the model: the other view follows each time
     std::vector<int> bySize;
@@ -2345,21 +2345,21 @@ static void M(void (^block)(void))
     M(^{ [me setViewMode:0]; });
     for (int i = 0; i < 12; ++i) emit(nil, 0, 1.0);
     if (first >= 0) M(^{ [me selectPatch:first from:2]; });   // a click in the atlas: the camera turns to the patch and its border is drawn
-    scene(@"Click a patch in the atlas: the model turns to it", 66, 0);
+    scene(@"Click a patch in the atlas: the model turns to it", 45, 0);
     M(^{ [me setViewMode:3]; });
-    scene(@"Its border is drawn over any view, the texture too", 30, 0);
+    scene(@"Its border is drawn over any view, the texture too", 36, 0);
     if (second >= 0) M(^{ [me selectPatch:second from:3]; });   // a click on the model: the atlas zooms to the chart
-    scene(@"Click on the model: the atlas zooms to its chart", 66, 0);
+    scene(@"Click on the model: the atlas zooms to its chart", 76, 0);
     M(^{ [me selectPatch:-1 from:0]; });
 
     // 6. the developer's side: the UV checker with anti-aliasing, the patch table, the paint by stretch
     M(^{ me->_prefs.developer = YES; [me applyDeveloperMode]; const double dir[3] = {dx, dy, dz}; [me->_scene viewFromDirection:dir distance:1.9]; [me->_dev setUvChecker:YES msaa:4]; });
     usleep(800 * 1000);
-    scene(@"UV checker: squares of one size show an even density of texels", 66, 0.03);
+    scene(@"UV checker: squares of one size show an even density of texels", 108, 0.02);
     M(^{ [me->_dev setUvChecker:NO msaa:4]; [me setViewMode:0]; [me->_dev revealPatchTable]; [me->_dev setPaintMode:2]; });
-    scene(@"Developer mode: the patch table, painting by stretch (all blue: low distortion)", 54, 0.02);
+    scene(@"Developer mode: the patch table, painting by stretch (all blue: low distortion)", 74, 0.02);
     if (!bySize.empty()) M(^{ [me selectPatch:bySize[std::min<size_t>(bySize.size() - 1, 3)] from:1]; });
-    scene(@"Choose a row: both views follow, the layout can be measured against the original", 54, 0);
+    scene(@"Choose a row: both views follow, the layout can be measured against the original", 74, 0);
     M(^{ [me->_dev setPaintMode:0]; [me selectPatch:-1 from:0]; });
 
     // 7. the assistant: a model drives the same actions (here a scripted one)
@@ -2367,17 +2367,18 @@ static void M(void (^block)(void))
     usleep(900 * 1000);
     M(^{ [me chatSend:@"Make the texture 4096 with 2 clean mip levels and tell me how it went."]; });
     __block BOOL busy = YES;
-    for (int i = 0; i < 90 && busy; ++i) {
+    int chatFrames = 0;
+    for (int i = 0; i < 100 && busy; ++i, ++chatFrames) {
         M(^{ [me->_scene orbitYaw:0.012]; });
         emit(i < 3 ? nil : @"Assistant: any OpenAI-compatible model drives the same actions (scripted here)", 0, std::min(1.0, (i - 2) / 8.0));
         M(^{ busy = me->_chatBusy; });
     }
     [self waitUntil:^BOOL { return !me->_chatBusy && !me->_running; } timeout:300];
     usleep(800 * 1000);
-    scene(@"Assistant: any OpenAI-compatible model drives the same actions (scripted here)", 48, 0.02);
+    scene(@"Assistant: any OpenAI-compatible model drives the same actions (scripted here)", std::max(20, 159 - chatFrames), 0.012);
 
     // 8. the closing card
-    for (int i = 0; i < 54; ++i) emit(nil, 2, std::min(1.0, std::min((i + 1) / 12.0, (54 - i) / 10.0)));
+    for (int i = 0; i < 99; ++i) emit(nil, 2, std::min(1.0, std::min((i + 1) / 12.0, (99 - i) / 14.0)));
 
     printf("DEMO: %d frames written to %s\n", frameNo, dir.UTF8String);
     fflush(stdout);
